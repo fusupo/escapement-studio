@@ -78,13 +78,17 @@ This runs the server TypeScript check plus the production frontend build.
 6. Send a planner message from the browser and confirm it posts to `POST /api/agent/message`.
 7. Confirm assistant output streams into the chat panel in real time via `GET /api/agent/stream`.
 8. Ask the planner to use a tool (for example, bash `pwd`) and confirm tool activity appears in the tool activity panel.
-9. Refresh the page and confirm recent transcript state is restored.
-10. Verify the graph view still loads data from `/api/graph`.
-11. Select a node to edit it in the sidebar.
-12. Create a new work item in the sidebar and confirm it appears in the graph.
-13. Create an edge between two nodes and confirm it appears in the graph and edge list.
-14. Delete an edge from the sidebar.
-15. Change repo/state/track/phase filters and confirm the rendered graph updates.
+9. Ask the planner to propose graph mutations and confirm a reviewable mutation proposal appears in the browser.
+10. Approve a subset of the proposed mutations and confirm the commit succeeds.
+11. Confirm the graph refreshes and the D3 view reflects the approved changes.
+12. Ask the planner to revise or reject the current proposal from the browser and confirm the follow-up stays in the same planner conversation.
+13. Refresh the page and confirm recent transcript state plus the latest active proposal/commit result are restored.
+14. Verify the graph view still loads data from `/api/graph`.
+15. Select a node to edit it in the sidebar.
+16. Create a new work item in the sidebar and confirm it appears in the graph.
+17. Create an edge between two nodes and confirm it appears in the graph and edge list.
+18. Delete an edge from the sidebar.
+19. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -235,6 +239,38 @@ The assembled planner context includes:
 - a small recent conversation window
 
 The stream should emit SDK-native event names like `agent_start`, `turn_start`, `message_update`, and `agent_end` inside the Studio SSE envelope.
+It also emits Studio mutation workflow events: `mutation_proposal` and `graph_commit_result`.
+
+### Approve a structured mutation proposal
+
+First, ask the planner to stage a proposal:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/message \
+  -H 'content-type: application/json' \
+  -d '{
+    "message":"Use propose_mutations to stage one demo create_work_item proposal and then reply with exactly: proposal-ready"
+  }'
+```
+
+Then inspect the active proposal:
+
+```bash
+curl http://localhost:3000/api/agent/session
+```
+
+Approve a subset of mutation IDs from that proposal:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/proposals/approve \
+  -H 'content-type: application/json' \
+  -d '{
+    "proposal_id": "prop_123",
+    "approved_mutation_ids": ["m1"]
+  }'
+```
+
+The approval result returns the graph writer status (`applied`, `validation_failed`, or `stale`) plus any remaining active proposal state for the browser.
 
 ### Delete test data
 

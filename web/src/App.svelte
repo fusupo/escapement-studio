@@ -149,7 +149,7 @@
     </div>
   </header>
 
-  <PlannerChatAdapter />
+  <PlannerChatAdapter on:graphChanged={refresh} />
 
   <FiltersToolbar {filters} options={filterOptions} onChange={handleFilterChange} onReset={resetFilters} />
 

@@ -23,6 +23,8 @@ export function connectPlannerStream({ onEvent, onOpen, onError } = {}) {
     "tool_execution_start",
     "tool_execution_update",
     "tool_execution_end",
+    "mutation_proposal",
+    "graph_commit_result",
   ].forEach(forward);
 
   stream.onopen = () => onOpen?.();
