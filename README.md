@@ -16,6 +16,8 @@ npm run start
 
 Default server URL: `http://localhost:3000`
 
+This repo also supports a local `.env` override. For example, setting `PORT=5000` avoids conflicts with other services already using `3000`.
+
 ### Run the graph frontend
 
 ```bash
@@ -29,6 +31,8 @@ If the API is running on a non-default port, point Vite at it with:
 ```bash
 STUDIO_API_URL=http://localhost:3100 npm run dev:web
 ```
+
+Vite will also read `STUDIO_API_URL` from a local `.env` file.
 
 ### Configure manifest path
 

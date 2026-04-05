@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --import tsx --watch src/main.ts",
-    "dev:server": "node --import tsx --watch src/main.ts",
+    "dev": "node --env-file-if-exists=.env --import tsx --watch src/main.ts",
+    "dev:server": "node --env-file-if-exists=.env --import tsx --watch src/main.ts",
     "dev:web": "vite --config web/vite.config.ts",
-    "start": "node --import tsx src/main.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/main.ts",
     "build": "npm run check && npm run build:web",
     "build:web": "vite build --config web/vite.config.ts",
     "check": "tsc --noEmit"
