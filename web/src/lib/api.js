@@ -33,6 +33,14 @@ export function sendAgentMessage(payload) {
   });
 }
 
+export function approveMutationProposal(payload) {
+  return request("/api/agent/proposals/approve", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getGraph(filters = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {

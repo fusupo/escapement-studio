@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Inject, MessageEvent, Post, Sse } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { PlanningService } from "./planning.service.js";
-import type { SendAgentMessageDto } from "./types.js";
+import type { ApproveMutationProposalDto, SendAgentMessageDto } from "./types.js";
 
 @Controller("api/agent")
 export class PlanningController {
@@ -15,6 +15,11 @@ export class PlanningController {
   @Post("message")
   sendMessage(@Body() body: SendAgentMessageDto) {
     return this.planningService.sendMessage(body);
+  }
+
+  @Post("proposals/approve")
+  approveProposal(@Body() body: ApproveMutationProposalDto) {
+    return this.planningService.approveProposal(body);
   }
 
   @Sse("stream")
