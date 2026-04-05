@@ -1,4 +1,5 @@
 .manifest/
+.studio/
 node_modules/
 web-dist/
 .env
