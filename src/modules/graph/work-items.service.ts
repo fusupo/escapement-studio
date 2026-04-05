@@ -1,6 +1,7 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { parseJsonArray } from "../../lib/manifest-core.js";
+import { GraphWriterService } from "./graph-writer.service.js";
 import { SQLiteService } from "./sqlite.service.js";
 import type { CreateWorkItemDto, UpdateWorkItemDto, WorkItemRecord } from "./types.js";
 
@@ -23,7 +24,10 @@ interface RawWorkItemRecord {
 
 @Injectable()
 export class WorkItemsService {
-  constructor(@Inject(SQLiteService) private readonly sqlite: SQLiteService) {}
+  constructor(
+    @Inject(SQLiteService) private readonly sqlite: SQLiteService,
+    @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
+  ) {}
 
   private get db(): DatabaseType {
     return this.sqlite.getDb();
@@ -67,76 +71,36 @@ export class WorkItemsService {
   }
 
   create(input: CreateWorkItemDto): WorkItemRecord {
-    try {
-      this.db
-        .prepare(
-          `INSERT INTO work_items (
-            id, name, kind, state, repo, issue_number, issue_url, scope_hint,
-            branch, archive_path, predicted_files, actual_files, meta
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          input.id,
-          input.name,
-          input.kind,
-          input.state ?? "planned",
-          input.repo ?? null,
-          input.issue_number ?? null,
-          input.issue_url ?? null,
-          input.scope_hint ?? null,
-          input.branch ?? null,
-          input.archive_path ?? null,
-          JSON.stringify(input.predicted_files ?? []),
-          JSON.stringify(input.actual_files ?? []),
-          JSON.stringify(input.meta ?? {}),
-        );
-    } catch (error) {
-      throw new BadRequestException(this.getErrorMessage(error));
+    const result = this.graphWriter.apply({
+      mutations: [{ kind: "create_work_item", work_item: input }],
+    });
+
+    if (result.status !== "applied") {
+      throw new BadRequestException(this.getMutationFailureMessage(result));
     }
 
     return this.get(input.id);
   }
 
   update(id: string, input: UpdateWorkItemDto): WorkItemRecord {
-    this.get(id);
+    const result = this.graphWriter.apply({
+      mutations: [{ kind: "update_work_item", id, patch: input }],
+    });
 
-    const assignments: string[] = [];
-    const params: unknown[] = [];
-    const entries = Object.entries(input) as [keyof UpdateWorkItemDto, unknown][];
-
-    for (const [key, value] of entries) {
-      assignments.push(`${key} = ?`);
-      if (key === "predicted_files" || key === "actual_files" || key === "meta") {
-        params.push(JSON.stringify(value ?? (key === "meta" ? {} : [])));
-      } else {
-        params.push(value ?? null);
-      }
-    }
-
-    if (assignments.length === 0) {
-      return this.get(id);
-    }
-
-    assignments.push("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')");
-
-    try {
-      this.db
-        .prepare(`UPDATE work_items SET ${assignments.join(", ")} WHERE id = ?`)
-        .run(...params, id);
-    } catch (error) {
-      throw new BadRequestException(this.getErrorMessage(error));
+    if (result.status !== "applied") {
+      throw new BadRequestException(this.getMutationFailureMessage(result));
     }
 
     return this.get(id);
   }
 
   delete(id: string): { deleted: true; id: string } {
-    this.get(id);
+    const result = this.graphWriter.apply({
+      mutations: [{ kind: "delete_work_item", id }],
+    });
 
-    try {
-      this.db.prepare("DELETE FROM work_items WHERE id = ?").run(id);
-    } catch (error) {
-      throw new BadRequestException(this.getErrorMessage(error));
+    if (result.status !== "applied") {
+      throw new BadRequestException(this.getMutationFailureMessage(result));
     }
 
     return { deleted: true, id };
@@ -162,5 +126,15 @@ export class WorkItemsService {
 
   private getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : "Unknown SQLite error";
+  }
+
+  private getMutationFailureMessage(result: { status: string; errors?: Array<{ message: string }>; message?: string }) {
+    if (result.status === "validation_failed") {
+      return result.errors?.[0]?.message ?? "Graph mutation validation failed";
+    }
+    if (result.status === "stale") {
+      return result.message ?? "Graph mutation is stale";
+    }
+    return "Graph mutation failed";
   }
 }

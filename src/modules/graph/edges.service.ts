@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import type { Database as DatabaseType } from "better-sqlite3";
+import { GraphWriterService } from "./graph-writer.service.js";
 import { SQLiteService } from "./sqlite.service.js";
 import type { CreateEdgeDto, EdgeRecord, UpdateEdgeDto } from "./types.js";
 
@@ -15,7 +16,10 @@ interface RawEdgeRecord {
 
 @Injectable()
 export class EdgesService {
-  constructor(@Inject(SQLiteService) private readonly sqlite: SQLiteService) {}
+  constructor(
+    @Inject(SQLiteService) private readonly sqlite: SQLiteService,
+    @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
+  ) {}
 
   private get db(): DatabaseType {
     return this.sqlite.getDb();
@@ -52,51 +56,39 @@ export class EdgesService {
   }
 
   create(input: CreateEdgeDto): EdgeRecord {
-    let id: number;
-    try {
-      const result = this.db
-        .prepare(`INSERT INTO edges (from_id, rel, to_id, confidence, meta) VALUES (?, ?, ?, ?, ?)`)
-        .run(
-          input.from_id,
-          input.rel,
-          input.to_id,
-          input.confidence ?? "certain",
-          JSON.stringify(input.meta ?? {}),
-        );
-      id = Number(result.lastInsertRowid);
-    } catch (error) {
-      throw new BadRequestException(this.getErrorMessage(error));
+    const previousMaxId = this.getMaxEdgeId();
+    const result = this.graphWriter.apply({
+      mutations: [{ kind: "create_edge", edge: input }],
+    });
+
+    if (result.status !== "applied") {
+      throw new BadRequestException(this.getMutationFailureMessage(result));
     }
-    return this.get(id);
+
+    return this.get(previousMaxId + 1);
   }
 
   update(id: number, input: UpdateEdgeDto): EdgeRecord {
-    this.get(id);
+    const result = this.graphWriter.apply({
+      mutations: [{ kind: "update_edge", id, patch: input }],
+    });
 
-    const assignments: string[] = [];
-    const params: unknown[] = [];
-
-    for (const [key, value] of Object.entries(input)) {
-      assignments.push(`${key} = ?`);
-      params.push(key === "meta" ? JSON.stringify(value ?? {}) : value ?? null);
-    }
-
-    if (assignments.length === 0) {
-      return this.get(id);
-    }
-
-    try {
-      this.db.prepare(`UPDATE edges SET ${assignments.join(", ")} WHERE id = ?`).run(...params, id);
-    } catch (error) {
-      throw new BadRequestException(this.getErrorMessage(error));
+    if (result.status !== "applied") {
+      throw new BadRequestException(this.getMutationFailureMessage(result));
     }
 
     return this.get(id);
   }
 
   delete(id: number): { deleted: true; id: number } {
-    this.get(id);
-    this.db.prepare("DELETE FROM edges WHERE id = ?").run(id);
+    const result = this.graphWriter.apply({
+      mutations: [{ kind: "delete_edge", id }],
+    });
+
+    if (result.status !== "applied") {
+      throw new BadRequestException(this.getMutationFailureMessage(result));
+    }
+
     return { deleted: true, id };
   }
 
@@ -118,5 +110,20 @@ export class EdgesService {
 
   private getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : "Unknown SQLite error";
+  }
+
+  private getMutationFailureMessage(result: { status: string; errors?: Array<{ message: string }>; message?: string }) {
+    if (result.status === "validation_failed") {
+      return result.errors?.[0]?.message ?? "Graph mutation validation failed";
+    }
+    if (result.status === "stale") {
+      return result.message ?? "Graph mutation is stale";
+    }
+    return "Graph mutation failed";
+  }
+
+  private getMaxEdgeId(): number {
+    const row = this.db.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM edges").get() as { max_id: number };
+    return row.max_id;
   }
 }

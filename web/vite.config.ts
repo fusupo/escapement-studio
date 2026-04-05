@@ -1,9 +1,11 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-const apiBaseUrl = process.env.STUDIO_API_URL ?? "http://localhost:3000";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+  const apiBaseUrl = env.STUDIO_API_URL || "http://localhost:3000";
 
-export default defineConfig({
+  return {
   root: "web",
   plugins: [svelte()],
   server: {
@@ -17,4 +19,5 @@ export default defineConfig({
     outDir: "../web-dist",
     emptyOutDir: true,
   },
+  };
 });

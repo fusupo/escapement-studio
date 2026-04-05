@@ -1,10 +1,14 @@
-import { Controller, Get, Inject, Query } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Post, Query } from "@nestjs/common";
 import { GraphService } from "./graph.service.js";
-import type { WorkItemState } from "./types.js";
+import { GraphWriterService } from "./graph-writer.service.js";
+import type { ApplyGraphMutationsDto, WorkItemState } from "./types.js";
 
 @Controller("api")
 export class GraphController {
-  constructor(@Inject(GraphService) private readonly graphService: GraphService) {}
+  constructor(
+    @Inject(GraphService) private readonly graphService: GraphService,
+    @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
+  ) {}
 
   @Get("graph")
   getGraph(
@@ -24,5 +28,10 @@ export class GraphController {
   @Get("plan")
   getPlan(@Query("repo") repo?: string) {
     return this.graphService.getPlan(repo);
+  }
+
+  @Post("graph/mutations")
+  applyMutations(@Body() body: ApplyGraphMutationsDto) {
+    return this.graphWriter.apply(body);
   }
 }

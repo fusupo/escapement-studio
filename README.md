@@ -16,6 +16,8 @@ npm run start
 
 Default server URL: `http://localhost:3000`
 
+This repo also supports a local `.env` override. For example, setting `PORT=5000` avoids conflicts with other services already using `3000`.
+
 ### Run the graph frontend
 
 ```bash
@@ -29,6 +31,8 @@ If the API is running on a non-default port, point Vite at it with:
 ```bash
 STUDIO_API_URL=http://localhost:3100 npm run dev:web
 ```
+
+Vite will also read `STUDIO_API_URL` from a local `.env` file.
 
 ### Configure manifest path
 
@@ -125,6 +129,50 @@ curl http://localhost:3000/api/graph?state=planned
 curl http://localhost:3000/api/frontier
 curl http://localhost:3000/api/plan
 ```
+
+`GET /api/graph` also returns `graph_version` for stale-write detection.
+
+### Apply an atomic graph mutation batch
+
+```bash
+curl -X POST http://localhost:3000/api/graph/mutations \
+  -H 'content-type: application/json' \
+  -d '{
+    "proposal_id": "prop-1",
+    "based_on_graph_version": "0",
+    "mutations": [
+      {
+        "mutation_id": "m1",
+        "kind": "create_work_item",
+        "work_item": {
+          "id": "studio-track",
+          "name": "Studio Track",
+          "kind": "track"
+        }
+      },
+      {
+        "mutation_id": "m2",
+        "kind": "create_work_item",
+        "work_item": {
+          "id": "studio-1",
+          "name": "Server scaffold",
+          "kind": "issue"
+        }
+      },
+      {
+        "mutation_id": "m3",
+        "kind": "create_edge",
+        "edge": {
+          "from_id": "studio-1",
+          "rel": "is_part_of",
+          "to_id": "studio-track"
+        }
+      }
+    ]
+  }'
+```
+
+The server validates the full batch, applies it transactionally, and returns either `applied`, `validation_failed`, or `stale`.
 
 ### Delete test data
 
