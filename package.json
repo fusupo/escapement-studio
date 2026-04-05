@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "node --import tsx --watch src/main.ts",
+    "dev:server": "node --import tsx --watch src/main.ts",
+    "dev:web": "vite --config web/vite.config.ts",
     "start": "node --import tsx src/main.ts",
-    "build": "tsc --noEmit",
+    "build": "npm run check && npm run build:web",
+    "build:web": "vite build --config web/vite.config.ts",
     "check": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,9 +22,13 @@
     "rxjs": "^7.8.2"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.14.1",
+    "d3": "^7.9.0",
+    "svelte": "^5.28.2",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vite": "^6.3.2"
   }
 }

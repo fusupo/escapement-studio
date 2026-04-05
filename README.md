@@ -16,6 +16,20 @@ npm run start
 
 Default server URL: `http://localhost:3000`
 
+### Run the graph frontend
+
+```bash
+npm run dev:web
+```
+
+Default frontend URL: `http://localhost:5173`
+
+If the API is running on a non-default port, point Vite at it with:
+
+```bash
+STUDIO_API_URL=http://localhost:3100 npm run dev:web
+```
+
 ### Configure manifest path
 
 By default, the server uses `.manifest/`. Override with:
@@ -23,6 +37,37 @@ By default, the server uses `.manifest/`. Override with:
 ```bash
 MANIFEST_PATH=/path/to/manifest npm run start
 ```
+
+### Build checks
+
+```bash
+npm run build
+```
+
+This runs the server TypeScript check plus the production frontend build.
+
+## Graph workspace manual verification
+
+1. Start the API server:
+
+   ```bash
+   npm run start
+   ```
+
+2. In another terminal, start the frontend:
+
+   ```bash
+   npm run dev:web
+   ```
+
+3. Open the Vite URL shown in the terminal.
+4. Confirm the header shows `API healthy`.
+5. Verify the graph view loads data from `/api/graph`.
+6. Select a node to edit it in the sidebar.
+7. Create a new work item in the sidebar and confirm it appears in the graph.
+8. Create an edge between two nodes and confirm it appears in the graph and edge list.
+9. Delete an edge from the sidebar.
+10. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -44,7 +89,7 @@ curl http://localhost:3000/api/work-items
 curl -X POST http://localhost:3000/api/work-items \
   -H 'content-type: application/json' \
   -d '{
-    "id": "studio#1",
+    "id": "studio-1",
     "name": "Server scaffold",
     "kind": "issue",
     "state": "planned",
@@ -55,7 +100,7 @@ curl -X POST http://localhost:3000/api/work-items \
 ### Update a work item
 
 ```bash
-curl -X PUT http://localhost:3000/api/work-items/studio#1 \
+curl -X PUT http://localhost:3000/api/work-items/studio-1 \
   -H 'content-type: application/json' \
   -d '{"scope_hint": "Initial backend setup"}'
 ```
@@ -66,7 +111,7 @@ curl -X PUT http://localhost:3000/api/work-items/studio#1 \
 curl -X POST http://localhost:3000/api/edges \
   -H 'content-type: application/json' \
   -d '{
-    "from_id": "studio#1",
+    "from_id": "studio-1",
     "rel": "is_part_of",
     "to_id": "track:foundation"
   }'
@@ -85,5 +130,5 @@ curl http://localhost:3000/api/plan
 
 ```bash
 curl -X DELETE http://localhost:3000/api/edges/1
-curl -X DELETE http://localhost:3000/api/work-items/studio#1
+curl -X DELETE http://localhost:3000/api/work-items/studio-1
 ```
