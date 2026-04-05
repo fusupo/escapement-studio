@@ -198,6 +198,29 @@ curl -X POST http://localhost:3000/api/agent/message \
   -d '{"message":"Reply with exactly: ok"}'
 ```
 
+You can also request a specific graph context mode for the turn:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/message \
+  -H 'content-type: application/json' \
+  -d '{
+    "message":"Inspect the current planning graph",
+    "context": {
+      "graph_mode": "focused",
+      "repo": "fusupo/escapement-studio",
+      "track": "track:foundation"
+    }
+  }'
+```
+
+`graph_mode` supports `default`, `focused`, and `full`.
+The assembled planner context includes:
+- truncated `STUDIO_OVERVIEW.md`
+- truncated `STUDIO_ARCHITECTURE.md`
+- `PLANNING_MEMORY.md`
+- graph triples for the selected slice
+- a small recent conversation window
+
 The stream should emit SDK-native event names like `agent_start`, `turn_start`, `message_update`, and `agent_end` inside the Studio SSE envelope.
 
 ### Delete test data

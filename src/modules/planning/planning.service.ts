@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable, Logger, MessageEvent, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, MessageEvent, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { createAgentSession, SessionManager, type AgentSession, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
 import { resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { getConfig } from "../../config.js";
+import { ContextService } from "./context.service.js";
 import type { SendAgentMessageDto, SendAgentMessageResult, StudioSseEnvelope } from "./types.js";
 
 @Injectable()
@@ -19,6 +20,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private eventCounter = 0;
   private turnCounter = 0;
   private currentTurnId: string | null = null;
+
+  constructor(@Inject(ContextService) private readonly contextService: ContextService) {}
 
   async onModuleInit() {
     await this.ensureSession();
@@ -45,10 +48,20 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     }
 
     const session = await this.ensureSession();
+    const prompt = this.contextService.formatForPrompt(
+      this.contextService.assemble({
+        graph_mode: input.context?.graph_mode,
+        repo: input.context?.repo,
+        track: input.context?.track,
+        session,
+      }),
+      input.message,
+    );
+
     const queued = session.isStreaming;
     const promptPromise = queued
-      ? session.prompt(input.message, { streamingBehavior: "followUp" })
-      : session.prompt(input.message);
+      ? session.prompt(prompt, { streamingBehavior: "followUp" })
+      : session.prompt(prompt);
 
     void promptPromise.catch((error) => {
       this.logger.error(`Planner prompt failed: ${this.getErrorMessage(error)}`);
