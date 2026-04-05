@@ -18,6 +18,22 @@ export interface SendAgentMessageResult {
   session_file?: string;
 }
 
+export interface PlanningSessionTranscriptEntry {
+  id: string;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  timestamp: string;
+  tool_name?: string;
+  is_error?: boolean;
+}
+
+export interface PlanningSessionSnapshot {
+  session_id: string;
+  session_file?: string;
+  is_streaming: boolean;
+  messages: PlanningSessionTranscriptEntry[];
+}
+
 export interface StudioSseEnvelope {
   event_id: string;
   stream_id: string;

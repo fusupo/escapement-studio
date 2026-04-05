@@ -21,6 +21,18 @@ export function getHealth() {
   return request("/health");
 }
 
+export function getPlannerSessionSnapshot() {
+  return request("/api/agent/session");
+}
+
+export function sendAgentMessage(payload) {
+  return request("/api/agent/message", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getGraph(filters = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {

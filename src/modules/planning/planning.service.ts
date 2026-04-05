@@ -1,11 +1,17 @@
 import { BadRequestException, Inject, Injectable, Logger, MessageEvent, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { createAgentSession, SessionManager, type AgentSession, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import { createAgentSession, SessionManager, type AgentSession, type AgentSessionEvent, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
 import { resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { getConfig } from "../../config.js";
 import { ContextService } from "./context.service.js";
-import type { SendAgentMessageDto, SendAgentMessageResult, StudioSseEnvelope } from "./types.js";
+import type {
+  PlanningSessionSnapshot,
+  PlanningSessionTranscriptEntry,
+  SendAgentMessageDto,
+  SendAgentMessageResult,
+  StudioSseEnvelope,
+} from "./types.js";
 
 @Injectable()
 export class PlanningService implements OnModuleInit, OnModuleDestroy {
@@ -40,6 +46,17 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       const subscription = this.eventSubject.subscribe(subscriber);
       return () => subscription.unsubscribe();
     });
+  }
+
+  async getSessionSnapshot(): Promise<PlanningSessionSnapshot> {
+    const session = await this.ensureSession();
+
+    return {
+      session_id: session.sessionId,
+      session_file: session.sessionFile,
+      is_streaming: session.isStreaming,
+      messages: this.projectSessionEntries(session.sessionManager.getEntries()),
+    };
   }
 
   async sendMessage(input: SendAgentMessageDto): Promise<SendAgentMessageResult> {
@@ -139,6 +156,88 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     if (event.type === "turn_end") {
       this.currentTurnId = null;
     }
+  }
+
+  private projectSessionEntries(entries: SessionEntry[]): PlanningSessionTranscriptEntry[] {
+    const transcript: PlanningSessionTranscriptEntry[] = [];
+
+    for (const entry of entries) {
+      if (entry.type !== "message") {
+        continue;
+      }
+
+      const message = entry.message as unknown as Record<string, unknown>;
+      const role = message["role"];
+      const timestamp = typeof message["timestamp"] === "number"
+        ? new Date(message["timestamp"] as number).toISOString()
+        : entry.timestamp;
+
+      if (role === "user") {
+        transcript.push({
+          id: entry.id,
+          role: "user",
+          content: this.stripStudioContext(this.messageContentToText(message)),
+          timestamp,
+        });
+        continue;
+      }
+
+      if (role === "assistant") {
+        transcript.push({
+          id: entry.id,
+          role: "assistant",
+          content: this.messageContentToText(message),
+          timestamp,
+        });
+        continue;
+      }
+
+      if (role === "toolResult") {
+        transcript.push({
+          id: entry.id,
+          role: "tool",
+          content: this.messageContentToText(message) || "(no tool output)",
+          timestamp,
+          tool_name: typeof message["toolName"] === "string" ? message["toolName"] : undefined,
+          is_error: typeof message["isError"] === "boolean" ? message["isError"] : undefined,
+        });
+      }
+    }
+
+    return transcript.slice(-40);
+  }
+
+  private messageContentToText(message: Record<string, unknown>): string {
+    const content = message["content"];
+
+    if (typeof content === "string") {
+      return content.trim();
+    }
+
+    if (!Array.isArray(content)) {
+      return "";
+    }
+
+    return content
+      .map((part) => {
+        if (part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part) {
+          return typeof part.text === "string" ? part.text : "";
+        }
+
+        if (part && typeof part === "object" && "type" in part && part.type === "thinking" && "thinking" in part) {
+          return typeof part.thinking === "string" ? part.thinking : "";
+        }
+
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+
+  private stripStudioContext(content: string): string {
+    const match = content.match(/<user_message>\s*([\s\S]*?)\s*<\/user_message>/);
+    return match ? match[1].trim() : content.trim();
   }
 
   private isStreamableEvent(type: AgentSessionEvent["type"]): boolean {
