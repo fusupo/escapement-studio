@@ -42,6 +42,14 @@ By default, the server uses `.manifest/`. Override with:
 MANIFEST_PATH=/path/to/manifest npm run start
 ```
 
+### Configure root planner session storage
+
+By default, the server stores the dedicated root planner session under `.studio/planning/sessions/`. Override with:
+
+```bash
+PLANNING_SESSION_DIR=/path/to/planning-sessions npm run start
+```
+
 ### Build checks
 
 ```bash
@@ -173,6 +181,24 @@ curl -X POST http://localhost:3000/api/graph/mutations \
 ```
 
 The server validates the full batch, applies it transactionally, and returns either `applied`, `validation_failed`, or `stale`.
+
+### Root planner message + stream
+
+Open the SSE stream in one terminal:
+
+```bash
+curl -N http://localhost:3000/api/agent/stream
+```
+
+Then send a planner message in another terminal:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/message \
+  -H 'content-type: application/json' \
+  -d '{"message":"Reply with exactly: ok"}'
+```
+
+The stream should emit SDK-native event names like `agent_start`, `turn_start`, `message_update`, and `agent_end` inside the Studio SSE envelope.
 
 ### Delete test data
 
