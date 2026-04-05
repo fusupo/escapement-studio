@@ -58,7 +58,7 @@ npm run build
 
 This runs the server TypeScript check plus the production frontend build.
 
-## Graph workspace manual verification
+## Graph workspace + planner chat manual verification
 
 1. Start the API server:
 
@@ -74,12 +74,17 @@ This runs the server TypeScript check plus the production frontend build.
 
 3. Open the Vite URL shown in the terminal.
 4. Confirm the header shows `API healthy`.
-5. Verify the graph view loads data from `/api/graph`.
-6. Select a node to edit it in the sidebar.
-7. Create a new work item in the sidebar and confirm it appears in the graph.
-8. Create an edge between two nodes and confirm it appears in the graph and edge list.
-9. Delete an edge from the sidebar.
-10. Change repo/state/track/phase filters and confirm the rendered graph updates.
+5. In the planner chat panel, confirm the transcript loads from `GET /api/agent/session`.
+6. Send a planner message from the browser and confirm it posts to `POST /api/agent/message`.
+7. Confirm assistant output streams into the chat panel in real time via `GET /api/agent/stream`.
+8. Ask the planner to use a tool (for example, bash `pwd`) and confirm tool activity appears in the tool activity panel.
+9. Refresh the page and confirm recent transcript state is restored.
+10. Verify the graph view still loads data from `/api/graph`.
+11. Select a node to edit it in the sidebar.
+12. Create a new work item in the sidebar and confirm it appears in the graph.
+13. Create an edge between two nodes and confirm it appears in the graph and edge list.
+14. Delete an edge from the sidebar.
+15. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -181,6 +186,14 @@ curl -X POST http://localhost:3000/api/graph/mutations \
 ```
 
 The server validates the full batch, applies it transactionally, and returns either `applied`, `validation_failed`, or `stale`.
+
+### Root planner session snapshot
+
+```bash
+curl http://localhost:3000/api/agent/session
+```
+
+The snapshot returns the recent planner transcript used by the browser to restore chat state after refresh.
 
 ### Root planner message + stream
 
