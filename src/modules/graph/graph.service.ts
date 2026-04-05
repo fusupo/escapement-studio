@@ -44,6 +44,7 @@ export class GraphService {
 
     return {
       filters,
+      graph_version: this.sqlite.getGraphVersion(),
       items,
       edges,
     };

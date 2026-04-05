@@ -64,3 +64,95 @@ export interface GraphFilters {
   track?: string;
   phase?: string;
 }
+
+export interface CreateWorkItemMutation {
+  mutation_id?: string;
+  kind: "create_work_item";
+  work_item: CreateWorkItemDto;
+}
+
+export interface UpdateWorkItemMutation {
+  mutation_id?: string;
+  kind: "update_work_item";
+  id: string;
+  patch: UpdateWorkItemDto;
+}
+
+export interface DeleteWorkItemMutation {
+  mutation_id?: string;
+  kind: "delete_work_item";
+  id: string;
+}
+
+export interface CreateEdgeMutation {
+  mutation_id?: string;
+  kind: "create_edge";
+  edge: CreateEdgeDto;
+}
+
+export interface UpdateEdgeMutation {
+  mutation_id?: string;
+  kind: "update_edge";
+  id: number;
+  patch: UpdateEdgeDto;
+}
+
+export interface DeleteEdgeMutation {
+  mutation_id?: string;
+  kind: "delete_edge";
+  id: number;
+}
+
+export type GraphMutation =
+  | CreateWorkItemMutation
+  | UpdateWorkItemMutation
+  | DeleteWorkItemMutation
+  | CreateEdgeMutation
+  | UpdateEdgeMutation
+  | DeleteEdgeMutation;
+
+export interface ApplyGraphMutationsDto {
+  proposal_id?: string;
+  based_on_graph_version?: string;
+  mutations: GraphMutation[];
+}
+
+export interface GraphMutationError {
+  mutation_id: string | null;
+  code:
+    | "missing_entity"
+    | "duplicate_entity"
+    | "duplicate_edge"
+    | "invalid_relation"
+    | "unsafe_delete"
+    | "malformed_payload";
+  message: string;
+}
+
+export interface GraphMutationsAppliedResult {
+  status: "applied";
+  proposal_id: string | null;
+  applied_mutation_ids: string[];
+  previous_graph_version: string;
+  new_graph_version: string;
+}
+
+export interface GraphMutationsValidationFailedResult {
+  status: "validation_failed";
+  proposal_id: string | null;
+  current_graph_version: string;
+  errors: GraphMutationError[];
+}
+
+export interface GraphMutationsStaleResult {
+  status: "stale";
+  proposal_id: string | null;
+  previous_graph_version: string;
+  current_graph_version: string;
+  message: string;
+}
+
+export type ApplyGraphMutationsResult =
+  | GraphMutationsAppliedResult
+  | GraphMutationsValidationFailedResult
+  | GraphMutationsStaleResult;
