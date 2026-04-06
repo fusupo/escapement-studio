@@ -1,5 +1,13 @@
 export type ExecutionRunStatus = "queued" | "blocked" | "preparing" | "running" | "completed" | "error";
 export type ExecutionSafetyStatus = "pass" | "warn" | "fail";
+export type ActivityLogEntryKind = "status_change" | "tool_start" | "tool_end" | "turn_start" | "turn_end" | "reasoning" | "error" | "info";
+
+export interface ActivityLogEntry {
+  timestamp: string;
+  kind: ActivityLogEntryKind;
+  message: string;
+  detail?: string;
+}
 
 export interface ExecutionSafetyCheck {
   code: string;
@@ -83,6 +91,7 @@ export interface ExecutionRunRecord {
   prompt: string;
   progress_message?: string;
   result_summary?: string;
+  activity_log: ActivityLogEntry[];
   changed_files?: string[];
   pull_request?: ExecutionPullRequestRecord;
   safety_checks: ExecutionSafetyCheck[];

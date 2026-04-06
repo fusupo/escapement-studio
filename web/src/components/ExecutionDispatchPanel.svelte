@@ -77,6 +77,25 @@
     return "";
   }
 
+  function activityIcon(kind) {
+    if (kind === "tool_start") return "⚙️";
+    if (kind === "tool_end") return "✅";
+    if (kind === "turn_start" || kind === "turn_end") return "🔄";
+    if (kind === "reasoning") return "💡";
+    if (kind === "error") return "❌";
+    if (kind === "status_change") return "📌";
+    return "ℹ️";
+  }
+
+  function formatActivityTime(timestamp) {
+    if (!timestamp) return "";
+    try {
+      return new Date(timestamp).toLocaleTimeString();
+    } catch {
+      return "";
+    }
+  }
+
   async function copyValue(value, message) {
     if (!value || !window?.navigator?.clipboard) {
       copiedMessage = "Clipboard unavailable in this browser.";
@@ -429,7 +448,24 @@
                   </div>
 
                   {#if run.progress_message}
-                    <p>{run.progress_message}</p>
+                    <p class="run-progress-message">{run.progress_message}</p>
+                  {/if}
+
+                  {#if run.activity_log?.length}
+                    <details class="activity-log-details" open={["running", "preparing"].includes(run.status)}>
+                      <summary>Activity log ({run.activity_log.length} event{run.activity_log.length === 1 ? '' : 's'})</summary>
+                      <div class="activity-log">
+                        {#each run.activity_log as entry}
+                          <div class="activity-entry activity-{entry.kind}">
+                            <span class="activity-icon">{activityIcon(entry.kind)}</span>
+                            <span class="activity-time">{formatActivityTime(entry.timestamp)}</span>
+                            <span class="activity-message">{entry.message}</span>
+                          </div>
+                        {/each}
+                      </div>
+                    </details>
+                  {:else if ["running", "preparing"].includes(run.status)}
+                    <div class="activity-log-placeholder muted small-text">Waiting for activity events…</div>
                   {/if}
 
                   <div class="execute-card-actions">
@@ -603,6 +639,80 @@
   .run-timestamp-grid {
     display: grid;
     gap: 0.2rem;
+  }
+
+  .run-progress-message {
+    margin: 0;
+  }
+
+  .activity-log-details {
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .activity-log-details summary {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+    background: rgba(15, 23, 42, 0.5);
+    color: #93c5fd;
+    user-select: none;
+  }
+
+  .activity-log {
+    max-height: 240px;
+    overflow-y: auto;
+    display: grid;
+    gap: 0;
+    font-size: 0.8rem;
+  }
+
+  .activity-entry {
+    display: grid;
+    grid-template-columns: 1.4em 5.2em 1fr;
+    gap: 0.35rem;
+    align-items: baseline;
+    padding: 0.25rem 0.75rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.06);
+  }
+
+  .activity-entry:first-child {
+    border-top: none;
+  }
+
+  .activity-icon {
+    font-size: 0.75rem;
+    text-align: center;
+  }
+
+  .activity-time {
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .activity-message {
+    color: #e2e8f0;
+    word-break: break-word;
+  }
+
+  .activity-reasoning .activity-message {
+    color: #fde68a;
+    font-style: italic;
+  }
+
+  .activity-error .activity-message {
+    color: #fca5a5;
+  }
+
+  .activity-tool_start .activity-message,
+  .activity-tool_end .activity-message {
+    color: #93c5fd;
+  }
+
+  .activity-log-placeholder {
+    padding: 0.5rem 0;
   }
 
   .ghost-link {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Inject, Post, Query, Sse } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Param, Post, Query, Sse } from "@nestjs/common";
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./execution.service.js";
@@ -16,6 +16,11 @@ export class ExecutionController {
   @Get("runs")
   getRecentRuns() {
     return this.executionService.listRecentRuns();
+  }
+
+  @Get("runs/:runId/activity")
+  getRunActivity(@Param("runId") runId: string) {
+    return this.executionService.getRunActivityLog(runId);
   }
 
   @Post("launch")
