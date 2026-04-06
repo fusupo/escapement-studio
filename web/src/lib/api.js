@@ -107,6 +107,18 @@ export function openPullRequest(payload) {
   });
 }
 
+export function sendFollowUpMessage(payload) {
+  return request("/api/execution/follow-up", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getRunChatHistory(runId) {
+  return request(`/api/execution/runs/${encodeURIComponent(runId)}/chat`);
+}
+
 export function getReconciliationReports(params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

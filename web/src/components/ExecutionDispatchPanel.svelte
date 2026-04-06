@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { getExecutionPreview, launchExecutionRun, listExecutionRuns, openPullRequest } from "../lib/api.js";
+  import { getExecutionPreview, getRunChatHistory, launchExecutionRun, listExecutionRuns, openPullRequest, sendFollowUpMessage } from "../lib/api.js";
 
   let preview = null;
   let runs = [];
@@ -14,6 +14,10 @@
   let launchingIds = [];
   let openingPrRunIds = [];
   let prResults = {};
+  let followUpTexts = {};
+  let sendingFollowUp = {};
+  let chatHistories = {};
+  let expandedChat = {};
 
   $: activeRuns = runs.filter((run) => ["queued", "preparing", "running"].includes(run.status));
   $: completedRuns = runs.filter((run) => run.status === "completed");
@@ -149,6 +153,67 @@
       error = prError.message;
     } finally {
       openingPrRunIds = openingPrRunIds.filter((id) => id !== run.run_id);
+    }
+  }
+
+  function canSendFollowUp(run) {
+    return ["running", "preparing", "completed"].includes(run.status);
+  }
+
+  async function handleSendFollowUp(run) {
+    const text = (followUpTexts[run.run_id] || "").trim();
+    if (!text) return;
+
+    sendingFollowUp = { ...sendingFollowUp, [run.run_id]: true };
+    error = "";
+
+    // Optimistically add to local chat history
+    const userMsg = { timestamp: new Date().toISOString(), role: "user", text };
+    chatHistories = {
+      ...chatHistories,
+      [run.run_id]: [...(chatHistories[run.run_id] || []), userMsg],
+    };
+    followUpTexts = { ...followUpTexts, [run.run_id]: "" };
+    expandedChat = { ...expandedChat, [run.run_id]: true };
+
+    try {
+      const delivery = ["running", "preparing"].includes(run.status) ? "followUp" : undefined;
+      const result = await sendFollowUpMessage({
+        run_id: run.run_id,
+        message: text,
+        ...(delivery ? { delivery } : {}),
+      });
+      if (!result.accepted) {
+        error = result.error || "Follow-up was not accepted.";
+      }
+    } catch (followUpError) {
+      error = followUpError.message;
+    } finally {
+      sendingFollowUp = { ...sendingFollowUp, [run.run_id]: false };
+    }
+  }
+
+  async function loadChatHistory(runId) {
+    try {
+      const result = await getRunChatHistory(runId);
+      chatHistories = { ...chatHistories, [runId]: result.messages || [] };
+    } catch (chatError) {
+      console.error("Failed to load chat history", chatError);
+    }
+  }
+
+  function toggleChat(runId) {
+    const next = !expandedChat[runId];
+    expandedChat = { ...expandedChat, [runId]: next };
+    if (next && !chatHistories[runId]) {
+      loadChatHistory(runId);
+    }
+  }
+
+  function handleFollowUpKeydown(event, run) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      handleSendFollowUp(run);
     }
   }
 
@@ -474,6 +539,11 @@
                     {/if}
                     <button class="secondary small" on:click={() => copyValue(run.branch, `Copied branch ${run.branch}`)}>Copy branch</button>
                     <button class="secondary small" on:click={() => copyValue(run.worktree_path, `Copied worktree for ${run.work_item_id}`)}>Copy worktree</button>
+                    {#if canSendFollowUp(run)}
+                      <button class="secondary small" on:click={() => toggleChat(run.run_id)}>
+                        {expandedChat[run.run_id] ? 'Hide chat' : 'Follow-up chat'}
+                      </button>
+                    {/if}
                     {#if run.status === "completed"}
                       {#if run.pull_request}
                         <a class="ghost-link small" href={run.pull_request.url} target="_blank" rel="noreferrer">PR #{run.pull_request.number}</a>
@@ -487,6 +557,39 @@
                       <a class="ghost-link small" href="#reconciliation-panel">Review reconciliation</a>
                     {/if}
                   </div>
+
+                  {#if expandedChat[run.run_id] && canSendFollowUp(run)}
+                    <div class="follow-up-chat">
+                      {#if chatHistories[run.run_id]?.length}
+                        <div class="follow-up-messages">
+                          {#each chatHistories[run.run_id] as msg}
+                            <div class="follow-up-msg follow-up-{msg.role}">
+                              <span class="follow-up-role">{msg.role === 'user' ? 'You' : 'Agent'}</span>
+                              <span class="follow-up-time">{formatActivityTime(msg.timestamp)}</span>
+                              <div class="follow-up-text">{msg.text}</div>
+                            </div>
+                          {/each}
+                        </div>
+                      {/if}
+                      <div class="follow-up-input-row">
+                        <textarea
+                          class="follow-up-input"
+                          placeholder={["running", "preparing"].includes(run.status) ? "Steer or follow up on the active run…" : "Send a follow-up message to continue this run…"}
+                          bind:value={followUpTexts[run.run_id]}
+                          on:keydown={(e) => handleFollowUpKeydown(e, run)}
+                          rows="2"
+                          disabled={sendingFollowUp[run.run_id]}
+                        ></textarea>
+                        <button
+                          class="follow-up-send"
+                          on:click={() => handleSendFollowUp(run)}
+                          disabled={sendingFollowUp[run.run_id] || !(followUpTexts[run.run_id] || '').trim()}
+                        >
+                          {sendingFollowUp[run.run_id] ? 'Sending…' : 'Send'}
+                        </button>
+                      </div>
+                    </div>
+                  {/if}
 
                   {#if run.result_summary}
                     <details>
@@ -713,6 +816,93 @@
 
   .activity-log-placeholder {
     padding: 0.5rem 0;
+  }
+
+  /* Follow-up chat */
+  .follow-up-chat {
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(15, 23, 42, 0.45);
+  }
+
+  .follow-up-messages {
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 0.5rem 0.65rem;
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .follow-up-msg {
+    display: grid;
+    gap: 0.15rem;
+  }
+
+  .follow-up-role {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .follow-up-user .follow-up-role {
+    color: #93c5fd;
+  }
+
+  .follow-up-assistant .follow-up-role {
+    color: #86efac;
+  }
+
+  .follow-up-time {
+    font-size: 0.7rem;
+    color: #64748b;
+  }
+
+  .follow-up-text {
+    font-size: 0.82rem;
+    color: #e2e8f0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 80px;
+    overflow-y: auto;
+  }
+
+  .follow-up-input-row {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 0.65rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.1);
+    align-items: flex-end;
+  }
+
+  .follow-up-input {
+    flex: 1;
+    resize: vertical;
+    min-height: 2.2rem;
+    max-height: 6rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    background: rgba(2, 6, 23, 0.6);
+    color: #e2e8f0;
+    font-size: 0.85rem;
+    font-family: inherit;
+    line-height: 1.4;
+  }
+
+  .follow-up-input::placeholder {
+    color: #64748b;
+  }
+
+  .follow-up-input:focus {
+    outline: none;
+    border-color: rgba(96, 165, 250, 0.5);
+  }
+
+  .follow-up-send {
+    align-self: flex-end;
+    white-space: nowrap;
   }
 
   .ghost-link {

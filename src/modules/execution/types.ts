@@ -1,6 +1,6 @@
 export type ExecutionRunStatus = "queued" | "blocked" | "preparing" | "running" | "completed" | "error";
 export type ExecutionSafetyStatus = "pass" | "warn" | "fail";
-export type ActivityLogEntryKind = "status_change" | "tool_start" | "tool_end" | "turn_start" | "turn_end" | "reasoning" | "error" | "info";
+export type ActivityLogEntryKind = "status_change" | "tool_start" | "tool_end" | "turn_start" | "turn_end" | "reasoning" | "error" | "info" | "follow_up";
 
 export interface ActivityLogEntry {
   timestamp: string;
@@ -192,4 +192,30 @@ export interface SyncMergedExecutionResult {
 
 export interface ExecutionStatusEvent {
   run: ExecutionRunRecord;
+}
+
+export interface FollowUpMessageDto {
+  run_id: string;
+  message: string;
+  /** "steer" interrupts the current turn; "followUp" waits for the current turn to finish. Default: "followUp" */
+  delivery?: "steer" | "followUp";
+}
+
+export interface FollowUpMessageResult {
+  accepted: boolean;
+  run_id: string;
+  delivery: "steer" | "followUp" | "new_turn";
+  message: string;
+  error?: string;
+}
+
+export interface RunChatHistory {
+  run_id: string;
+  messages: RunChatMessage[];
+}
+
+export interface RunChatMessage {
+  timestamp: string;
+  role: "user" | "assistant";
+  text: string;
 }
