@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Post, Query, Sse } from "@nestjs/common"
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./execution.service.js";
-import type { CreateExecutionPullRequestDto, LaunchExecutionRunDto, SyncMergedExecutionDto } from "./types.js";
+import type { CleanupWorktreeDto, CreateExecutionPullRequestDto, LaunchExecutionRunDto, SyncMergedExecutionDto } from "./types.js";
 
 @Controller("api/execution")
 export class ExecutionController {
@@ -31,6 +31,16 @@ export class ExecutionController {
   @Post("post-merge-sync")
   syncMergedPullRequest(@Body() body: SyncMergedExecutionDto) {
     return this.executionService.syncMergedPullRequest(body);
+  }
+
+  @Post("cleanup")
+  cleanupWorktree(@Body() body: CleanupWorktreeDto) {
+    return this.executionService.cleanupWorktree(body);
+  }
+
+  @Post("cleanup-all")
+  cleanupAllStale() {
+    return this.executionService.cleanupAllStale();
   }
 
   @Sse("stream")

@@ -1,7 +1,7 @@
 import { BadRequestException, Inject, Injectable, Logger, MessageEvent } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -22,6 +22,8 @@ import type {
   ExecutionStatusEvent,
   LaunchExecutionRunDto,
   LaunchExecutionRunResult,
+  CleanupWorktreeDto,
+  CleanupWorktreeResult,
   SyncMergedExecutionDto,
   SyncMergedExecutionResult,
 } from "./types.js";
@@ -300,7 +302,94 @@ export class ExecutionService {
       actual_files_source: actualFilesSelection.source,
       dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
       managed_block_sync: managedBlockSync,
+      cleanup: matchedRun ? this.safeCleanupWorktree(matchedRun) : null,
     };
+  }
+
+  cleanupWorktree(input: CleanupWorktreeDto): CleanupWorktreeResult {
+    const runId = input.run_id?.trim();
+    if (!runId) {
+      throw new BadRequestException("run_id is required");
+    }
+
+    const run = this.recentRuns.find((r) => r.run_id === runId);
+    if (!run) {
+      throw new BadRequestException(`No recent run found with id ${runId}`);
+    }
+
+    if (run.status === "running" || run.status === "preparing") {
+      throw new BadRequestException(`Cannot cleanup worktree for run ${runId} — status is ${run.status}`);
+    }
+
+    return this.removeWorktreeAndBranch(run);
+  }
+
+  cleanupAllStale(): CleanupWorktreeResult[] {
+    const results: CleanupWorktreeResult[] = [];
+    for (const run of this.recentRuns) {
+      if (run.status !== "running" && run.status !== "preparing" && run.status !== "queued") {
+        const result = this.safeCleanupWorktree(run);
+        if (result) {
+          results.push(result);
+        }
+      }
+    }
+    return results;
+  }
+
+  private safeCleanupWorktree(run: ExecutionRunRecord): CleanupWorktreeResult | null {
+    try {
+      return this.removeWorktreeAndBranch(run);
+    } catch (error) {
+      this.logger.warn(`Failed to cleanup worktree for run ${run.run_id}: ${error}`);
+      return null;
+    }
+  }
+
+  private removeWorktreeAndBranch(run: ExecutionRunRecord): CleanupWorktreeResult {
+    const worktreeRemoved = this.removeWorktreeDir(run.worktree_path);
+    const branchRemoved = this.removeLocalBranch(run.branch);
+
+    if (worktreeRemoved || branchRemoved) {
+      this.logger.log(`Cleaned up run ${run.run_id}: worktree=${worktreeRemoved}, branch=${branchRemoved}`);
+    }
+
+    return {
+      run_id: run.run_id,
+      branch: run.branch,
+      worktree_path: run.worktree_path,
+      worktree_removed: worktreeRemoved,
+      branch_removed: branchRemoved,
+    };
+  }
+
+  private removeWorktreeDir(worktreePath: string): boolean {
+    if (!existsSync(worktreePath)) {
+      return false;
+    }
+    try {
+      this.runGit(["worktree", "remove", worktreePath, "--force"]);
+      return true;
+    } catch {
+      // Fallback: remove directory and prune
+      try {
+        rmSync(worktreePath, { recursive: true, force: true });
+        this.runGit(["worktree", "prune"]);
+        return true;
+      } catch (error) {
+        this.logger.warn(`Failed to remove worktree at ${worktreePath}: ${error}`);
+        return false;
+      }
+    }
+  }
+
+  private removeLocalBranch(branch: string): boolean {
+    try {
+      this.runGit(["branch", "-D", branch]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview) {
