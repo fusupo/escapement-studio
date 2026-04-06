@@ -70,7 +70,9 @@ export class SQLiteService {
     }
 
     // SQLite doesn't support ALTER CHECK — recreate with new constraint
+    // Disable FK checks during table swap to avoid edges FK violation
     this.db.exec(`
+      PRAGMA foreign_keys = OFF;
       CREATE TABLE IF NOT EXISTS work_items_new (
         id          TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
@@ -100,6 +102,7 @@ export class SQLiteService {
       INSERT OR IGNORE INTO work_items_new SELECT * FROM work_items;
       DROP TABLE work_items;
       ALTER TABLE work_items_new RENAME TO work_items;
+      PRAGMA foreign_keys = ON;
     `);
   }
 }
