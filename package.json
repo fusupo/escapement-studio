@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --import tsx --watch src/main.ts",
-    "dev:server": "node --env-file-if-exists=.env --import tsx --watch src/main.ts",
+    "dev": "nodemon --signal SIGTERM --delay 500ms --ext ts,json --watch src --exec 'node --env-file-if-exists=.env --import tsx src/main.ts'",
+    "dev:server": "nodemon --signal SIGTERM --delay 500ms --ext ts,json --watch src --exec 'node --env-file-if-exists=.env --import tsx src/main.ts'",
     "dev:web": "vite --config web/vite.config.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/main.ts",
     "build": "npm run check && npm run build:web",
@@ -28,6 +28,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.14.1",
     "d3": "^7.9.0",
+    "nodemon": "^3.1.14",
     "svelte": "^5.28.2",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",
