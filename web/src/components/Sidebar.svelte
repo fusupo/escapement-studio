@@ -1,4 +1,6 @@
 <script>
+  import { getPullRequestDetails } from "../lib/api.js";
+
   const defaultWorkItem = {
     id: "",
     name: "",
@@ -28,6 +30,9 @@
   export let onCloseIssue = () => {};
   export let closingIssue = false;
 
+  let linkedPrDetails = null;
+  let loadingPr = false;
+
   let editForm = { ...defaultWorkItem };
   let createForm = { ...defaultWorkItem };
   let edgeForm = { ...defaultEdge };
@@ -48,6 +53,35 @@
       edgeForm = { ...edgeForm, from_id: selectedItem.id };
     }
   }
+
+  // Extract linked PR number from the work item (check multiple meta locations)
+  $: linkedPrNumber = selectedItem?.pull_request?.number
+    ?? selectedItem?.meta?.pull_request?.number
+    ?? selectedItem?.meta?.studio_post_merge_sync?.pull_request?.number
+    ?? null;
+
+  // Fetch live PR details when the selected item has a linked PR
+  $: void loadLinkedPrDetails(selectedItem?.repo, linkedPrNumber);
+
+  async function loadLinkedPrDetails(repo, prNumber) {
+    if (!repo || !prNumber) {
+      linkedPrDetails = null;
+      return;
+    }
+    loadingPr = true;
+    try {
+      linkedPrDetails = await getPullRequestDetails({ repo, pull_request_number: prNumber });
+    } catch {
+      linkedPrDetails = null;
+    } finally {
+      loadingPr = false;
+    }
+  }
+
+  // Close issue is allowed only when the GitHub issue is open and the linked PR is merged
+  $: canCloseIssue = issueDetails
+    && issueDetails.state?.toLowerCase() === "open"
+    && linkedPrDetails?.merged_at != null;
 
   $: if (!selectedItem && edgeForm.from_id && !graph.items.some((item) => item.id === edgeForm.from_id)) {
     edgeForm = { ...defaultEdge };
@@ -122,12 +156,23 @@
                 <pre>{issueDetails.managed_block.content}</pre>
               </details>
             {/if}
-            {#if selectedItem.meta?.pull_request?.url}
+            {#if linkedPrDetails}
+              <a href={linkedPrDetails.url} target="_blank" rel="noreferrer">
+                PR #{linkedPrDetails.number}{linkedPrDetails.is_draft ? ' (draft)' : ''}
+                {#if linkedPrDetails.merged_at}
+                  <span class="status-pill">merged</span>
+                {:else if linkedPrDetails.state === 'OPEN'}
+                  <span class="status-pill">open</span>
+                {:else}
+                  <span class="status-pill">{linkedPrDetails.state?.toLowerCase()}</span>
+                {/if}
+              </a>
+            {:else if selectedItem.meta?.pull_request?.url}
               <a href={selectedItem.meta.pull_request.url} target="_blank" rel="noreferrer">
                 PR #{selectedItem.meta.pull_request.number}{selectedItem.meta.pull_request.is_draft ? ' (draft)' : ''}
               </a>
             {/if}
-            {#if issueDetails.state?.toLowerCase() !== 'closed'}
+            {#if canCloseIssue}
               <button class="danger small" on:click={() => onCloseIssue(selectedItem)} disabled={closingIssue}>
                 {closingIssue ? 'Closing…' : 'Close issue'}
               </button>
