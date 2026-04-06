@@ -41,6 +41,14 @@ export function approveMutationProposal(payload) {
   });
 }
 
+export function approveMemoryChange(payload) {
+  return request("/api/agent/memory/approve", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getGraph(filters = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {

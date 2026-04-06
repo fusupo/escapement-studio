@@ -1,7 +1,11 @@
 import { Body, Controller, Get, Inject, MessageEvent, Post, Sse } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { PlanningService } from "./planning.service.js";
-import type { ApproveMutationProposalDto, SendAgentMessageDto } from "./types.js";
+import type {
+  ApproveMutationProposalDto,
+  ApprovePlanningMemoryChangeDto,
+  SendAgentMessageDto,
+} from "./types.js";
 
 @Controller("api/agent")
 export class PlanningController {
@@ -20,6 +24,11 @@ export class PlanningController {
   @Post("proposals/approve")
   approveProposal(@Body() body: ApproveMutationProposalDto) {
     return this.planningService.approveProposal(body);
+  }
+
+  @Post("memory/approve")
+  approveMemoryChange(@Body() body: ApprovePlanningMemoryChangeDto) {
+    return this.planningService.approveMemoryChange(body);
   }
 
   @Sse("stream")

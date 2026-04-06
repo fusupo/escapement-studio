@@ -8,7 +8,6 @@ import { getConfig } from "../../config.js";
 import { GraphService } from "../graph/graph.service.js";
 import { GraphWriterService } from "../graph/graph-writer.service.js";
 import type {
-  ApplyGraphMutationsResult,
   CreateEdgeDto,
   CreateWorkItemDto,
   DeleteEdgeMutation,
@@ -18,16 +17,22 @@ import type {
   UpdateWorkItemDto,
 } from "../graph/types.js";
 import { ContextService } from "./context.service.js";
+import { MemoryService } from "./memory.service.js";
 import type {
   ApproveMutationProposalDto,
+  ApprovePlanningMemoryChangeDto,
   CreateEdgePayload,
   CreateWorkItemPayload,
   GraphQueryToolInput,
   PlanningGraphCommitResult,
+  PlanningMemoryChange,
+  PlanningMemoryEdit,
+  PlanningMemoryWriteResult,
   PlanningMutationProposal,
   PlanningMutationProposalMutation,
   PlanningSessionSnapshot,
   PlanningSessionTranscriptEntry,
+  ProposeMemoryWriteToolInput,
   ProposeMutationsToolInput,
   SendAgentMessageDto,
   SendAgentMessageResult,
@@ -42,6 +47,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private readonly eventSubject = new Subject<MessageEvent>();
   private readonly sessionDir = resolve(process.cwd(), getConfig().planningSessionDir);
   private readonly proposals = new Map<string, PlanningMutationProposal>();
+  private readonly memoryChanges = new Map<string, PlanningMemoryChange>();
 
   private session?: AgentSession;
   private sessionPromise?: Promise<AgentSession>;
@@ -51,11 +57,14 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private currentTurnId: string | null = null;
   private activeProposalId: string | null = null;
   private lastCommitResult: PlanningGraphCommitResult | null = null;
+  private activeMemoryChangeId: string | null = null;
+  private lastMemoryWriteResult: PlanningMemoryWriteResult | null = null;
 
   constructor(
     @Inject(ContextService) private readonly contextService: ContextService,
     @Inject(GraphService) private readonly graphService: GraphService,
     @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
+    @Inject(MemoryService) private readonly memoryService: MemoryService,
   ) {}
 
   async onModuleInit() {
@@ -87,6 +96,9 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       messages: this.projectSessionEntries(session.sessionManager.getEntries()),
       active_proposal: this.getActiveProposal(),
       last_commit_result: this.lastCommitResult,
+      active_memory_change: this.getActiveMemoryChange(),
+      last_memory_write_result: this.lastMemoryWriteResult,
+      memory: this.memoryService.read(),
     };
   }
 
@@ -170,6 +182,40 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     return commitResult;
   }
 
+  async approveMemoryChange(input: ApprovePlanningMemoryChangeDto): Promise<PlanningMemoryWriteResult> {
+    const changeId = input.change_id?.trim();
+    if (!changeId) {
+      throw new BadRequestException("change_id is required");
+    }
+
+    const approvedEditIds = Array.from(new Set((input.approved_edit_ids ?? []).filter((id) => typeof id === "string" && id.trim())));
+    if (approvedEditIds.length === 0) {
+      throw new BadRequestException("approved_edit_ids must contain at least one edit id");
+    }
+
+    const change = this.memoryChanges.get(changeId);
+    if (!change) {
+      throw new BadRequestException(`Unknown memory change: ${changeId}`);
+    }
+
+    const { result, memory } = this.memoryService.applyChange(change, approvedEditIds);
+    const activeMemoryChange = result.status === "applied"
+      ? this.updateActiveMemoryChangeAfterApply(change, approvedEditIds)
+      : this.getActiveMemoryChange();
+
+    const writeResult: PlanningMemoryWriteResult = {
+      change_id: change.change_id,
+      approved_edit_ids: approvedEditIds,
+      result,
+      active_memory_change: activeMemoryChange,
+      memory,
+    };
+
+    this.lastMemoryWriteResult = writeResult;
+    this.emitStudioEvent("memory_write_result", writeResult);
+    return writeResult;
+  }
+
   private async ensureSession(): Promise<AgentSession> {
     if (this.session) {
       return this.session;
@@ -192,7 +238,13 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: process.cwd(),
       sessionManager: SessionManager.continueRecent(process.cwd(), this.sessionDir),
-      customTools: [this.createGraphQueryTool(), this.createProposeMutationsTool(), this.createGraphMutateTool()],
+      customTools: [
+        this.createGraphQueryTool(),
+        this.createProposeMutationsTool(),
+        this.createGraphMutateTool(),
+        this.createMemoryReadTool(),
+        this.createMemoryWriteTool(),
+      ],
     });
 
     if (modelFallbackMessage) {
@@ -358,6 +410,75 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private createMemoryReadTool() {
+    return defineTool({
+      name: "memory_read",
+      label: "Planning Memory Read",
+      description: "Read the curated durable planning memory file.",
+      promptSnippet: "memory_read: inspect the curated planning memory before proposing durable memory changes.",
+      promptGuidelines: [
+        "Use memory_read before suggesting durable planning-memory edits so you can update the existing curated structure intentionally.",
+      ],
+      parameters: Type.Object({}),
+      execute: async () => {
+        const memory = this.memoryService.read();
+        return {
+          content: [{ type: "text", text: memory.content }],
+          details: memory,
+        };
+      },
+    });
+  }
+
+  private createMemoryWriteTool() {
+    return defineTool({
+      name: "memory_write",
+      label: "Planning Memory Write",
+      description: "Stage targeted planning memory edits for browser approval.",
+      promptSnippet: "memory_write: stage targeted edits to PLANNING_MEMORY.md for browser approval instead of writing directly.",
+      promptGuidelines: [
+        "Use memory_write only for durable, curated planning-memory updates.",
+        "Prefer targeted replacements or section-specific inserts over append-only growth.",
+        "Do not include transcript residue, raw tool output, or broad dumps.",
+      ],
+      parameters: Type.Object({
+        change_id: Type.Optional(Type.String()),
+        created_at: Type.Optional(Type.String()),
+        source: Type.Optional(Type.Object({
+          agent: Type.Optional(Type.String()),
+          turn_id: Type.Optional(Type.String()),
+          session_id: Type.Optional(Type.String()),
+        })),
+        summary: Type.String(),
+        edits: Type.Array(Type.Object({
+          id: Type.Optional(Type.String()),
+          kind: Type.Union([
+            Type.Literal("replace_text"),
+            Type.Literal("insert_after_heading"),
+            Type.Literal("delete_text"),
+          ]),
+          summary: Type.String(),
+          rationale: Type.String(),
+          old_text: Type.Optional(Type.String()),
+          new_text: Type.Optional(Type.String()),
+          target_heading: Type.Optional(Type.String()),
+        })),
+      }),
+      execute: async (_toolCallId, params: ProposeMemoryWriteToolInput) => {
+        const change = this.normalizeMemoryChange(params);
+        this.memoryChanges.set(change.change_id, change);
+        this.activeMemoryChangeId = change.change_id;
+        this.lastMemoryWriteResult = null;
+        this.emitStudioEvent("memory_change_proposal", { change });
+
+        return {
+          content: [{ type: "text", text: `Staged planning memory change ${change.change_id} with ${change.edits.length} edit(s).` }],
+          details: { change },
+        };
+      },
+    });
+  }
+
   private normalizeProposal(input: ProposeMutationsToolInput): PlanningMutationProposal {
     const graphVersion = input.context?.based_on_graph_version ?? this.graphService.getGraph().graph_version;
     const proposalId = input.proposal_id?.trim() || `prop_${Date.now()}`;
@@ -403,6 +524,37 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       validation: mutation.validation,
       group_id: mutation.group_id,
       depends_on_mutation_ids: mutation.depends_on_mutation_ids,
+    };
+  }
+
+  private normalizeMemoryChange(input: ProposeMemoryWriteToolInput): PlanningMemoryChange {
+    const memory = this.memoryService.read();
+    const changeId = input.change_id?.trim() || `mem_${Date.now()}`;
+    const createdAt = input.created_at?.trim() || this.now();
+
+    return {
+      change_id: changeId,
+      created_at: createdAt,
+      source: {
+        agent: input.source?.agent?.trim() || "root-planner",
+        turn_id: input.source?.turn_id?.trim() || this.currentTurnId,
+        session_id: input.source?.session_id?.trim() || this.session?.sessionId || "planning-root",
+      },
+      summary: input.summary.trim(),
+      based_on_content_hash: memory.content_hash,
+      edits: input.edits.map((edit, index) => this.normalizeMemoryEdit(edit, index)),
+    };
+  }
+
+  private normalizeMemoryEdit(edit: ProposeMemoryWriteToolInput["edits"][number], index: number): PlanningMemoryEdit {
+    return {
+      id: edit.id?.trim() || `e${index + 1}`,
+      kind: edit.kind,
+      summary: edit.summary.trim(),
+      rationale: edit.rationale.trim(),
+      old_text: edit.old_text,
+      new_text: edit.new_text,
+      target_heading: edit.target_heading,
     };
   }
 
@@ -517,8 +669,37 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     return nextProposal;
   }
 
+  private updateActiveMemoryChangeAfterApply(
+    change: PlanningMemoryChange,
+    approvedEditIds: string[],
+  ): PlanningMemoryChange | null {
+    const remainingEdits = change.edits.filter((edit) => !approvedEditIds.includes(edit.id));
+
+    if (remainingEdits.length === 0) {
+      this.memoryChanges.delete(change.change_id);
+      if (this.activeMemoryChangeId === change.change_id) {
+        this.activeMemoryChangeId = null;
+      }
+      return null;
+    }
+
+    const nextChange: PlanningMemoryChange = {
+      ...change,
+      summary: `${change.summary} (${remainingEdits.length} edit(s) remaining)`,
+      edits: remainingEdits,
+      based_on_content_hash: this.memoryService.read().content_hash,
+    };
+    this.memoryChanges.set(nextChange.change_id, nextChange);
+    this.activeMemoryChangeId = nextChange.change_id;
+    return nextChange;
+  }
+
   private getActiveProposal(): PlanningMutationProposal | null {
     return this.activeProposalId ? this.proposals.get(this.activeProposalId) ?? null : null;
+  }
+
+  private getActiveMemoryChange(): PlanningMemoryChange | null {
+    return this.activeMemoryChangeId ? this.memoryChanges.get(this.activeMemoryChangeId) ?? null : null;
   }
 
   private emitStudioEvent(eventType: string, payload: unknown) {

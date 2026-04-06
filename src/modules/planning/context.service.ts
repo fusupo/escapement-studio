@@ -7,6 +7,7 @@ import { EdgesService } from "../graph/edges.service.js";
 import { SQLiteService } from "../graph/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { EdgeRecord, WorkItemRecord } from "../graph/types.js";
+import { MemoryService } from "./memory.service.js";
 import type {
   AssemblePlanningContextInput,
   PlanningContext,
@@ -29,6 +30,7 @@ export class ContextService {
     @Inject(SQLiteService) private readonly sqlite: SQLiteService,
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
     @Inject(EdgesService) private readonly edges: EdgesService,
+    @Inject(MemoryService) private readonly memoryService: MemoryService,
   ) {}
 
   assemble(input: AssemblePlanningContextInput = {}): PlanningContext {
@@ -39,7 +41,7 @@ export class ContextService {
       documents: [
         this.readDocument("studio_overview", this.overviewPath),
         this.readDocument("studio_architecture", this.architecturePath),
-        this.readDocument("planning_memory", this.planningMemoryPath),
+        this.readPlanningMemoryDocument(),
       ],
       graph,
       conversation_window: this.buildConversationWindow(input.session),
@@ -275,6 +277,16 @@ export class ContextService {
       label: this.getDocumentLabel(kind),
       path,
       content: this.compact(content, this.documentCharLimit),
+    };
+  }
+
+  private readPlanningMemoryDocument(): PlanningContextDocument {
+    const memory = this.memoryService.read();
+    return {
+      kind: "planning_memory",
+      label: this.getDocumentLabel("planning_memory"),
+      path: memory.path,
+      content: this.compact(memory.content, this.documentCharLimit),
     };
   }
 
