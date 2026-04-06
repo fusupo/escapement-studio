@@ -672,18 +672,7 @@ export class ExecutionService {
   }
 
   private parseChangedFilePath(line: string): string | null {
-    if (!line.trim()) {
-      return null;
-    }
-
-    const path = line.length > 3 ? line.slice(3) : line;
-    const renameSeparator = " -> ";
-    const renamedIndex = path.indexOf(renameSeparator);
-    if (renamedIndex >= 0) {
-      return path.slice(renamedIndex + renameSeparator.length).trim();
-    }
-
-    return path.trim();
+    return parseChangedFilePath(line);
   }
 
   private countCommitsAhead(worktreePath: string, baseRef: string, branch: string): number {
@@ -922,4 +911,20 @@ export class ExecutionService {
   private getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+/** Parse a single line from `git status --short` into a file path, or null for empty lines. */
+export function parseChangedFilePath(line: string): string | null {
+  if (!line.trim()) {
+    return null;
+  }
+
+  const path = line.length > 3 ? line.slice(3) : line;
+  const renameSeparator = " -> ";
+  const renamedIndex = path.indexOf(renameSeparator);
+  if (renamedIndex >= 0) {
+    return path.slice(renamedIndex + renameSeparator.length).trim();
+  }
+
+  return path.trim();
 }
