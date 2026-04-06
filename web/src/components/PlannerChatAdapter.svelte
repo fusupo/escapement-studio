@@ -36,6 +36,7 @@
   let lastGitHubSyncResult = null;
   let memoryDocument = null;
   let recentSubagentRuns = [];
+  let hasLoadedSnapshot = false;
   let stream;
 
   function syncMutationSelection(proposal, preserve = false) {
@@ -103,6 +104,7 @@
     } catch (loadError) {
       error = loadError.message;
     } finally {
+      hasLoadedSnapshot = true;
       loading = false;
     }
   }
@@ -429,6 +431,8 @@
     selectedGitHubOperationIds = checked ? [...selectedGitHubOperationIds, operationId] : selectedGitHubOperationIds.filter((id) => id !== operationId);
   }
 
+  $: waitingForInitialSnapshot = loading && !hasLoadedSnapshot;
+
   onMount(() => {
     loadSnapshot();
     stream = connectPlannerStream({
@@ -445,7 +449,7 @@
   });
 </script>
 
-<section class="card planner-chat">
+<section class="card planner-chat" class:planner-chat-loading={waitingForInitialSnapshot} aria-busy={waitingForInitialSnapshot}>
   <div class="planner-header">
     <div>
       <h2>Planner chat</h2>
@@ -457,26 +461,56 @@
     </div>
   </div>
 
-  <div class="planner-controls">
-    <label>
-      Graph mode
-      <select bind:value={graphMode}>
-        {#each graphModes as mode}<option value={mode}>{mode}</option>{/each}
-      </select>
-    </label>
-    <label>
-      Repo filter
-      <input bind:value={repo} placeholder="fusupo/escapement-studio" />
-    </label>
-    <label>
-      Track filter
-      <input bind:value={track} placeholder="track:foundation" />
-    </label>
-  </div>
+  {#if waitingForInitialSnapshot}
+    <div class="planner-loading-state" role="status" aria-live="polite">
+      <div>
+        <h3>Loading planner workspace…</h3>
+        <p class="muted">Waiting for the initial planner session snapshot.</p>
+      </div>
 
-  {#if error}<div class="banner error inline-banner">{error}</div>{/if}
+      <div class="planner-controls planner-loading-controls" aria-hidden="true">
+        {#each [0, 1, 2] as index}
+          <div class="planner-loading-field" data-field={index}></div>
+        {/each}
+      </div>
 
-  {#if lastCommitResult}
+      <div class="planner-body planner-loading-body" aria-hidden="true">
+        <div class="planner-loading-panel planner-loading-transcript">
+          <div class="planner-loading-line planner-loading-line-long"></div>
+          <div class="planner-loading-line"></div>
+          <div class="planner-loading-line planner-loading-line-short"></div>
+          <div class="planner-loading-bubble"></div>
+          <div class="planner-loading-bubble planner-loading-bubble-accent"></div>
+        </div>
+        <div class="planner-loading-panel planner-loading-tools">
+          <div class="planner-loading-line"></div>
+          <div class="planner-loading-line planner-loading-line-short"></div>
+          <div class="planner-loading-card"></div>
+          <div class="planner-loading-card"></div>
+        </div>
+      </div>
+    </div>
+  {:else}
+    <div class="planner-controls">
+      <label>
+        Graph mode
+        <select bind:value={graphMode}>
+          {#each graphModes as mode}<option value={mode}>{mode}</option>{/each}
+        </select>
+      </label>
+      <label>
+        Repo filter
+        <input bind:value={repo} placeholder="fusupo/escapement-studio" />
+      </label>
+      <label>
+        Track filter
+        <input bind:value={track} placeholder="track:foundation" />
+      </label>
+    </div>
+
+    {#if error}<div class="banner error inline-banner">{error}</div>{/if}
+
+    {#if lastCommitResult}
     <div class="banner {lastCommitResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
       {#if lastCommitResult.result.status === 'applied'}
         Applied {lastCommitResult.approved_mutation_ids.length} mutation(s) from {lastCommitResult.proposal_id}. Graph version {lastCommitResult.result.previous_graph_version} → {lastCommitResult.result.new_graph_version}.
@@ -486,9 +520,9 @@
         Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((item) => item.message).join('; ')}
       {/if}
     </div>
-  {/if}
+    {/if}
 
-  {#if lastMemoryWriteResult}
+    {#if lastMemoryWriteResult}
     <div class="banner {lastMemoryWriteResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
       {#if lastMemoryWriteResult.result.status === 'applied'}
         Applied {lastMemoryWriteResult.approved_edit_ids.length} planning memory edit(s). Memory hash {lastMemoryWriteResult.result.previous_content_hash.slice(0, 8)} → {lastMemoryWriteResult.result.new_content_hash.slice(0, 8)}.
@@ -498,9 +532,9 @@
         Memory write failed: {lastMemoryWriteResult.result.errors.map((item) => item.message).join('; ')}
       {/if}
     </div>
-  {/if}
+    {/if}
 
-  {#if lastGitHubSyncResult}
+    {#if lastGitHubSyncResult}
     <div class="banner {lastGitHubSyncResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
       {#if lastGitHubSyncResult.result.status === 'applied'}
         Applied {lastGitHubSyncResult.approved_operation_ids.length} GitHub sync operation(s). Body hash {lastGitHubSyncResult.result.previous_body_hash.slice(0, 8)} → {lastGitHubSyncResult.result.new_body_hash.slice(0, 8)}.
@@ -510,9 +544,9 @@
         GitHub sync failed: {lastGitHubSyncResult.result.errors.map((item) => item.message).join('; ')}
       {/if}
     </div>
-  {/if}
+    {/if}
 
-  <div class="planner-body">
+    <div class="planner-body">
     <div class="planner-transcript">
       {#if loading}
         <div class="empty-state compact">Loading planner transcript…</div>
@@ -553,9 +587,9 @@
         </ul>
       {/if}
     </aside>
-  </div>
+    </div>
 
-  <section class="proposal-panel">
+    <section class="proposal-panel">
     <div class="proposal-header">
       <div>
         <h3>Active mutation proposal</h3>
@@ -593,9 +627,9 @@
         <button class="secondary" on:click={reviseProposal} disabled={sending}>Revise via follow-up</button>
       </div>
     {/if}
-  </section>
+    </section>
 
-  <section class="proposal-panel memory-panel">
+    <section class="proposal-panel memory-panel">
     <div class="proposal-header">
       <div>
         <h3>Planning memory</h3>
@@ -652,9 +686,9 @@
         <button class="secondary" on:click={reviseMemoryChange} disabled={sending}>Revise via follow-up</button>
       </div>
     {/if}
-  </section>
+    </section>
 
-  <section class="proposal-panel github-sync-panel">
+    <section class="proposal-panel github-sync-panel">
     <div class="proposal-header">
       <div>
         <h3>GitHub sync</h3>
@@ -701,9 +735,9 @@
         <button class="secondary" on:click={reviseGitHubSync} disabled={sending}>Revise via follow-up</button>
       </div>
     {/if}
-  </section>
+    </section>
 
-  <section class="proposal-panel subagent-panel">
+    <section class="proposal-panel subagent-panel">
     <div class="proposal-header">
       <div>
         <h3>Recent specialist runs</h3>
@@ -746,9 +780,9 @@
         {/each}
       </div>
     {/if}
-  </section>
+    </section>
 
-  <div class="planner-composer">
+    <div class="planner-composer">
     <label>
       Message
       <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, delegate specialists, review reconciliation drift, propose memory updates, or explain blockers."></textarea>
@@ -757,5 +791,6 @@
       <button class="secondary" on:click={loadSnapshot} disabled={loading}>Refresh transcript</button>
       <button on:click={submitMessage} disabled={sending || !draft.trim()}>{sending ? 'Sending...' : isStreaming ? 'Queue follow-up' : 'Send to planner'}</button>
     </div>
-  </div>
+    </div>
+  {/if}
 </section>

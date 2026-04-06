@@ -180,7 +180,9 @@ h2 {
 .planner-composer,
 .planner-actions,
 .proposal-panel,
-.proposal-list {
+.proposal-list,
+.planner-loading-state,
+.planner-loading-panel {
   display: grid;
   gap: 0.75rem;
 }
@@ -198,6 +200,79 @@ h2 {
 
 .planner-controls {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.planner-chat-loading {
+  min-height: 420px;
+}
+
+.planner-loading-state {
+  align-content: start;
+}
+
+.planner-loading-controls {
+  pointer-events: none;
+}
+
+.planner-loading-field,
+.planner-loading-line,
+.planner-loading-bubble,
+.planner-loading-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.planner-loading-field::after,
+.planner-loading-line::after,
+.planner-loading-bubble::after,
+.planner-loading-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(191, 219, 254, 0.16), transparent);
+  animation: planner-loading-shimmer 1.2s ease-in-out infinite;
+}
+
+.planner-loading-field {
+  min-height: 54px;
+}
+
+.planner-loading-panel {
+  padding: 0.85rem;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.35);
+}
+
+.planner-loading-line {
+  height: 0.8rem;
+}
+
+.planner-loading-line-long {
+  width: 72%;
+}
+
+.planner-loading-line-short {
+  width: 42%;
+}
+
+.planner-loading-bubble,
+.planner-loading-card {
+  min-height: 108px;
+}
+
+.planner-loading-bubble-accent {
+  min-height: 132px;
+  background: rgba(96, 165, 250, 0.14);
+}
+
+@keyframes planner-loading-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 .planner-body {
@@ -685,6 +760,7 @@ h2 {
   }
 
   .planner-controls,
+  .planner-loading-controls,
   .toolbar,
   .sync-preview-grid,
   .execution-summary-grid,
@@ -706,6 +782,7 @@ h2 {
   }
 
   .planner-controls,
+  .planner-loading-controls,
   .toolbar,
   .planner-actions,
   .sync-preview-grid,
