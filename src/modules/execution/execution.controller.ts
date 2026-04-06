@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Post, Query, Sse } from "@nestjs/common"
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./configured-execution.service.js";
-import type { LaunchExecutionRunDto } from "./types.js";
+import type { CreateExecutionPullRequestDto, LaunchExecutionRunDto } from "./types.js";
 
 @Controller("api/execution")
 export class ExecutionController {
@@ -21,6 +21,11 @@ export class ExecutionController {
   @Post("launch")
   launch(@Body() body: LaunchExecutionRunDto) {
     return this.executionService.launch(body);
+  }
+
+  @Post("pull-request")
+  createPullRequest(@Body() body: CreateExecutionPullRequestDto) {
+    return this.executionService.createPullRequest(body);
   }
 
   @Sse("stream")
