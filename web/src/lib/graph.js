@@ -314,18 +314,8 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       })
     );
 
-  // PR ring — outer ring indicating pull request status
-  node.filter((d) => d._prStatus === "open" || d._prStatus === "draft")
-    .append("circle")
-    .attr("class", "pr-ring")
-    .attr("r", (d) => (KIND_RADIUS[d.kind] ?? 8) + 4)
-    .attr("fill", "none")
-    .attr("stroke", (d) => d._prStatus === "draft" ? "#8b949e" : PR_RING_COLOR)
-    .attr("stroke-width", 2)
-    .attr("stroke-dasharray", (d) => d._prStatus === "draft" ? "3,2" : null)
-    .attr("opacity", 0.85);
-
-  node.filter((d) => d._prStatus === "merged")
+  // PR ring — only for merged PRs (open_pr state handles open/draft via node color)
+  node.filter((d) => d._prStatus === "merged" && d.state === "done")
     .append("circle")
     .attr("class", "pr-ring")
     .attr("r", (d) => (KIND_RADIUS[d.kind] ?? 8) + 4)
@@ -341,17 +331,13 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     .attr("stroke", (d) => d.id === selectedId ? "#e6edf3" : "#0d1117")
     .attr("stroke-width", (d) => d.id === selectedId ? 2.5 : 1.5);
 
-  // PR badge — small "PR" label below nodes with pull requests
-  node.filter((d) => d._prStatus != null)
+  // PR badge — only for merged PRs on done items
+  node.filter((d) => d._prStatus === "merged" && d.state === "done")
     .append("text")
-    .text((d) => d._prStatus === "merged" ? "✓PR" : d._prStatus === "draft" ? "dPR" : "PR")
+    .text("✓PR")
     .attr("dy", (d) => (KIND_RADIUS[d.kind] ?? 8) + 13)
     .attr("text-anchor", "middle")
-    .attr("fill", (d) => {
-      if (d._prStatus === "merged") return PR_MERGED_RING_COLOR;
-      if (d._prStatus === "draft") return "#8b949e";
-      return PR_RING_COLOR;
-    })
+    .attr("fill", PR_MERGED_RING_COLOR)
     .attr("font-size", "9px")
     .attr("font-weight", "600")
     .attr("font-family", "inherit")
