@@ -199,53 +199,55 @@
 
   <WorkspaceTabs tabs={workspaceTabs} bind:activeTab />
 
-  <section id="planning-panel" aria-labelledby="planning-tab" hidden={activeTab !== "planning"} class="workspace-panel">
-    <div class="planning-workspace">
-      <PlannerChatAdapter on:graphChanged={refresh} />
+  {#if activeTab === "planning"}
+    <section id="planning-panel" role="tabpanel" aria-labelledby="planning-tab" class="workspace-panel">
+      <div class="planning-workspace">
+        <PlannerChatAdapter on:graphChanged={refresh} />
 
-      <FiltersToolbar {filters} options={filterOptions} onChange={handleFilterChange} onReset={resetFilters} />
+        <FiltersToolbar {filters} options={filterOptions} onChange={handleFilterChange} onReset={resetFilters} />
 
-      {#if error}
-        <div class="banner error">{error}</div>
-      {/if}
+        {#if error}
+          <div class="banner error">{error}</div>
+        {/if}
 
-      <main class="layout">
-        <section class="graph-panel card">
-          <div class="panel-header">
-            <div>
-              <h2>Dependency graph</h2>
-              <p class="muted">{graph.items.length} items · {graph.edges.length} edges</p>
+        <main class="layout">
+          <section class="graph-panel card">
+            <div class="panel-header">
+              <div>
+                <h2>Dependency graph</h2>
+                <p class="muted">{graph.items.length} items · {graph.edges.length} edges</p>
+              </div>
             </div>
-          </div>
 
-          {#if loading}
-            <div class="empty-state">Loading graph from the Studio server…</div>
-          {:else}
-            <GraphView {graph} {selectedId} onSelect={(item) => (selectedId = item.id)} />
-          {/if}
-        </section>
+            {#if loading}
+              <div class="empty-state">Loading graph from the Studio server…</div>
+            {:else}
+              <GraphView {graph} {selectedId} onSelect={(item) => (selectedId = item.id)} />
+            {/if}
+          </section>
 
-        <Sidebar
-          {selectedItem}
-          issueDetails={selectedIssueDetails}
-          {graph}
-          {saving}
-          {edgeSaving}
-          onSaveItem={handleSaveItem}
-          onCreateItem={handleCreateItem}
-          onCreateEdge={handleCreateEdge}
-          onDeleteEdge={handleDeleteEdge}
-        />
-      </main>
-    </div>
-  </section>
-
-  <section id="execute-panel" aria-labelledby="execute-tab" hidden={activeTab !== "execute"} class="workspace-panel">
-    <div class="execute-workspace">
-      <ExecutionDispatchPanel />
-      <ReconciliationPanel />
-    </div>
-  </section>
+          <Sidebar
+            {selectedItem}
+            issueDetails={selectedIssueDetails}
+            {graph}
+            {saving}
+            {edgeSaving}
+            onSaveItem={handleSaveItem}
+            onCreateItem={handleCreateItem}
+            onCreateEdge={handleCreateEdge}
+            onDeleteEdge={handleDeleteEdge}
+          />
+        </main>
+      </div>
+    </section>
+  {:else if activeTab === "execute"}
+    <section id="execute-panel" role="tabpanel" aria-labelledby="execute-tab" class="workspace-panel">
+      <div class="execute-workspace">
+        <ExecutionDispatchPanel />
+        <ReconciliationPanel />
+      </div>
+    </section>
+  {/if}
 </div>
 
 <style>

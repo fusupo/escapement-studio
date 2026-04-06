@@ -3,6 +3,18 @@
   export let activeTab = tabs[0]?.id ?? "";
 
   function handleKeydown(event, index) {
+    if (event.key === "Home") {
+      event.preventDefault();
+      activeTab = tabs[0]?.id ?? activeTab;
+      return;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      activeTab = tabs[tabs.length - 1]?.id ?? activeTab;
+      return;
+    }
+
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
       return;
     }
@@ -16,7 +28,7 @@
 </script>
 
 <nav class="workspace-tabs" aria-label="Studio workspace sections">
-  <div class="workspace-tab-list" role="tablist" aria-orientation="horizontal">
+  <div class="workspace-tab-list" role="tablist" aria-orientation="horizontal" style={`--tab-count: ${Math.max(tabs.length, 1)}`}>
     {#each tabs as tab, index}
       <button
         id={`${tab.id}-tab`}
@@ -46,7 +58,7 @@
 
   .workspace-tab-list {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(var(--tab-count), minmax(0, 1fr));
     gap: 0.75rem;
   }
 
@@ -59,6 +71,13 @@
     background: rgba(15, 23, 42, 0.72);
     border: 1px solid rgba(148, 163, 184, 0.16);
     color: #cbd5e1;
+    transition: border-color 140ms ease, background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  }
+
+  button[role="tab"]:focus-visible {
+    outline: none;
+    border-color: rgba(147, 197, 253, 0.72);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.22);
   }
 
   button[role="tab"] small {
