@@ -5,6 +5,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
+import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord } from "../graph/types.js";
@@ -55,7 +56,8 @@ export class ExecutionService {
       nodes: group.nodes.map((node) => {
         const workItem = this.safeGetWorkItem(node.id);
         const worktreePath = this.getWorktreePath(node.branch);
-        const safetyChecks = this.evaluateSafety(node.branch, worktreePath);
+        const defaultBaseRef = getDefaultWorkingBranch(workItem?.repo ?? (group.repo === "unknown" ? null : group.repo));
+        const safetyChecks = this.evaluateSafety(node.branch, worktreePath, defaultBaseRef);
         return {
           id: node.id,
           name: node.name,
@@ -63,6 +65,7 @@ export class ExecutionService {
           branch: node.branch,
           issue_url: node.issue_url,
           scope_hint: workItem?.scope_hint ?? null,
+          default_base_ref: defaultBaseRef,
           files_owned: node.files_owned,
           files_shared: node.files_shared,
           files_forbidden: node.files_forbidden,
@@ -75,7 +78,10 @@ export class ExecutionService {
 
     return {
       generated_at: plan.generated_at,
-      assumptions: plan.assumptions,
+      assumptions: [
+        ...plan.assumptions,
+        `Default working branches: ${JSON.stringify(listDefaultWorkingBranches())}. Fallback: ${getDefaultWorkingBranch(null)}.`,
+      ],
       validation_policy: plan.validation_policy,
       summary: plan.summary,
       groups,
@@ -92,7 +98,7 @@ export class ExecutionService {
     const preview = this.getPreview();
     const node = preview.groups.flatMap((group) => group.nodes).find((candidate) => candidate.id === workItemId);
     const workItem = this.workItemsService.get(workItemId);
-    const baseRef = input.base_ref?.trim() || "develop";
+    const baseRef = input.base_ref?.trim() || getDefaultWorkingBranch(workItem.repo);
 
     if (!node) {
       const run = this.createRunRecord({
@@ -257,7 +263,7 @@ export class ExecutionService {
     }
   }
 
-  private evaluateSafety(branch: string, worktreePath: string, baseRef = "develop"): ExecutionSafetyCheck[] {
+  private evaluateSafety(branch: string, worktreePath: string, baseRef = getDefaultWorkingBranch(null)): ExecutionSafetyCheck[] {
     const checks: ExecutionSafetyCheck[] = [];
     checks.push(this.checkTrackedRepoClean());
     checks.push(this.checkBaseRef(baseRef));
