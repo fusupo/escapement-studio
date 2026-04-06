@@ -229,6 +229,29 @@ export class ExecutionService {
     this.appendEvent(nextRun, { type: "pull_request_created", pull_request: pullRequest });
     this.writeSummary(nextRun);
 
+    // Update work item: set state to in_progress and store PR metadata
+    try {
+      const existingMeta = workItem.meta ?? {};
+      this.workItemsService.update(run.work_item_id, {
+        state: "in_progress",
+        branch: run.branch,
+        meta: {
+          ...existingMeta,
+          pull_request: {
+            number: pullRequest.number,
+            url: pullRequest.url,
+            title: pullRequest.title,
+            is_draft: pullRequest.is_draft,
+            head_ref: pullRequest.head_ref,
+            base_ref: pullRequest.base_ref,
+            created_at: pullRequest.created_at,
+          },
+        },
+      });
+    } catch (updateError) {
+      this.logger.warn(`Failed to update work item ${run.work_item_id} after PR creation: ${this.getErrorMessage(updateError)}`);
+    }
+
     return { run: nextRun, pull_request: pullRequest };
   }
 
