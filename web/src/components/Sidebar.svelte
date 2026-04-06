@@ -122,6 +122,11 @@
                 <pre>{issueDetails.managed_block.content}</pre>
               </details>
             {/if}
+            {#if selectedItem.meta?.pull_request?.url}
+              <a href={selectedItem.meta.pull_request.url} target="_blank" rel="noreferrer">
+                PR #{selectedItem.meta.pull_request.number}{selectedItem.meta.pull_request.is_draft ? ' (draft)' : ''}
+              </a>
+            {/if}
             {#if issueDetails.state?.toLowerCase() !== 'closed'}
               <button class="danger small" on:click={() => onCloseIssue(selectedItem)} disabled={closingIssue}>
                 {closingIssue ? 'Closing…' : 'Close issue'}
