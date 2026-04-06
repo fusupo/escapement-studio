@@ -103,6 +103,9 @@ export interface ExecutionPullRequestRecord {
   head_ref: string;
   is_draft: boolean;
   created_at: string;
+  state?: string;
+  merged_at?: string | null;
+  merge_commit_sha?: string | null;
 }
 
 export interface CreateExecutionPullRequestDto {
@@ -116,6 +119,51 @@ export interface CreateExecutionPullRequestDto {
 export interface CreateExecutionPullRequestResult {
   run: ExecutionRunRecord;
   pull_request: ExecutionPullRequestRecord;
+}
+
+export interface SyncMergedExecutionDto {
+  work_item_id: string;
+  pull_request_number?: number;
+  actual_files?: string[];
+  archive_path?: string | null;
+  branch?: string | null;
+  stage_github_sync?: boolean;
+}
+
+export interface SyncMergedExecutionResult {
+  synced: true;
+  work_item: {
+    id: string;
+    state: string;
+    branch: string | null;
+    archive_path: string | null;
+    actual_files: string[];
+    meta: Record<string, unknown>;
+    updated_at: string;
+  };
+  pull_request: ExecutionPullRequestRecord;
+  matched_run_id: string | null;
+  actual_files_source: "input" | "work_item" | "run";
+  dispatch_preview: ExecutionDispatchPreview;
+  managed_block_sync?: {
+    work_item_id: string;
+    based_on_body_hash: string;
+    operations: Array<{
+      id: string;
+      kind: string;
+      summary: string;
+      rationale: string;
+      target: {
+        repo: string;
+        issue_number: number;
+        work_item_id: string;
+      };
+      preview: {
+        before: string;
+        after: string;
+      };
+    }>;
+  } | null;
 }
 
 export interface ExecutionStatusEvent {

@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Post, Query, Sse } from "@nestjs/common"
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./configured-execution.service.js";
-import type { CreateExecutionPullRequestDto, LaunchExecutionRunDto } from "./types.js";
+import type { CreateExecutionPullRequestDto, LaunchExecutionRunDto, SyncMergedExecutionDto } from "./types.js";
 
 @Controller("api/execution")
 export class ExecutionController {
@@ -26,6 +26,11 @@ export class ExecutionController {
   @Post("pull-request")
   createPullRequest(@Body() body: CreateExecutionPullRequestDto) {
     return this.executionService.createPullRequest(body);
+  }
+
+  @Post("post-merge-sync")
+  syncMergedPullRequest(@Body() body: SyncMergedExecutionDto) {
+    return this.executionService.syncMergedPullRequest(body);
   }
 
   @Sse("stream")
