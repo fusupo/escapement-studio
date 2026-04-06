@@ -3,6 +3,7 @@ import type { ApplyGraphMutationsResult, EdgeRel, WorkItemKind, WorkItemState } 
 
 export type PlanningContextGraphMode = "default" | "focused" | "full";
 export type PlanningMutationType = "create_work_item" | "update_work_item" | "create_edge" | "delete_edge" | "delete_work_item";
+export type PlanningMemoryEditKind = "replace_text" | "insert_after_heading" | "delete_text";
 
 export interface SendAgentMessageDto {
   message: string;
@@ -73,6 +74,68 @@ export interface PlanningGraphCommitResult {
   active_proposal: PlanningMutationProposal | null;
 }
 
+export interface PlanningMemoryDocument {
+  path: string;
+  content: string;
+  content_hash: string;
+}
+
+export interface PlanningMemoryEdit {
+  id: string;
+  kind: PlanningMemoryEditKind;
+  summary: string;
+  rationale: string;
+  old_text?: string;
+  new_text?: string;
+  target_heading?: string;
+}
+
+export interface PlanningMemoryChange {
+  change_id: string;
+  created_at: string;
+  source: PlanningMutationProposalSource;
+  summary: string;
+  based_on_content_hash: string;
+  edits: PlanningMemoryEdit[];
+}
+
+export interface ApprovePlanningMemoryChangeDto {
+  change_id: string;
+  approved_edit_ids: string[];
+}
+
+export interface PlanningMemoryApplySuccess {
+  status: "applied";
+  applied_edit_ids: string[];
+  previous_content_hash: string;
+  new_content_hash: string;
+}
+
+export interface PlanningMemoryApplyValidationFailure {
+  status: "validation_failed";
+  errors: Array<{ edit_id: string; message: string }>;
+}
+
+export interface PlanningMemoryApplyStale {
+  status: "stale";
+  previous_content_hash: string;
+  current_content_hash: string;
+  message: string;
+}
+
+export type PlanningMemoryApplyResult =
+  | PlanningMemoryApplySuccess
+  | PlanningMemoryApplyValidationFailure
+  | PlanningMemoryApplyStale;
+
+export interface PlanningMemoryWriteResult {
+  change_id: string;
+  approved_edit_ids: string[];
+  result: PlanningMemoryApplyResult;
+  active_memory_change: PlanningMemoryChange | null;
+  memory: PlanningMemoryDocument;
+}
+
 export interface PlanningSessionSnapshot {
   session_id: string;
   session_file?: string;
@@ -80,6 +143,9 @@ export interface PlanningSessionSnapshot {
   messages: PlanningSessionTranscriptEntry[];
   active_proposal: PlanningMutationProposal | null;
   last_commit_result: PlanningGraphCommitResult | null;
+  active_memory_change: PlanningMemoryChange | null;
+  last_memory_write_result: PlanningMemoryWriteResult | null;
+  memory: PlanningMemoryDocument;
 }
 
 export interface StudioSseEnvelope {
@@ -152,6 +218,22 @@ export interface ProposeMutationsToolInput {
     validation?: Record<string, unknown>;
     group_id?: string;
     depends_on_mutation_ids?: string[];
+  }>;
+}
+
+export interface ProposeMemoryWriteToolInput {
+  change_id?: string;
+  created_at?: string;
+  source?: Partial<PlanningMutationProposalSource>;
+  summary: string;
+  edits: Array<{
+    id?: string;
+    kind: PlanningMemoryEditKind;
+    summary: string;
+    rationale: string;
+    old_text?: string;
+    new_text?: string;
+    target_heading?: string;
   }>;
 }
 

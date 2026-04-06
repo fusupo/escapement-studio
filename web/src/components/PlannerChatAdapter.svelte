@@ -1,6 +1,11 @@
 <script>
   import { createEventDispatcher, onMount } from "svelte";
-  import { approveMutationProposal, getPlannerSessionSnapshot, sendAgentMessage } from "../lib/api.js";
+  import {
+    approveMemoryChange,
+    approveMutationProposal,
+    getPlannerSessionSnapshot,
+    sendAgentMessage,
+  } from "../lib/api.js";
   import { connectPlannerStream, extractMessageText, toToolStatus } from "../lib/planner-chat.js";
 
   const dispatch = createEventDispatcher();
@@ -22,18 +27,30 @@
   let activeProposal = null;
   let selectedMutationIds = [];
   let lastCommitResult = null;
+  let activeMemoryChange = null;
+  let selectedMemoryEditIds = [];
+  let lastMemoryWriteResult = null;
+  let memoryDocument = null;
   let stream;
 
-  function syncSelection(proposal, preserve = false) {
+  function syncMutationSelection(proposal, preserve = false) {
     if (!proposal) {
       selectedMutationIds = [];
       return;
     }
 
     const ids = proposal.mutations?.map((mutation) => mutation.id) ?? [];
-    selectedMutationIds = preserve
-      ? selectedMutationIds.filter((id) => ids.includes(id))
-      : ids;
+    selectedMutationIds = preserve ? selectedMutationIds.filter((id) => ids.includes(id)) : ids;
+  }
+
+  function syncMemorySelection(change, preserve = false) {
+    if (!change) {
+      selectedMemoryEditIds = [];
+      return;
+    }
+
+    const ids = change.edits?.map((edit) => edit.id) ?? [];
+    selectedMemoryEditIds = preserve ? selectedMemoryEditIds.filter((id) => ids.includes(id)) : ids;
   }
 
   function mergeSnapshot(snapshot) {
@@ -41,11 +58,18 @@
     isStreaming = snapshot.is_streaming;
     messages = snapshot.messages ?? [];
     lastCommitResult = snapshot.last_commit_result ?? null;
+    lastMemoryWriteResult = snapshot.last_memory_write_result ?? null;
+    memoryDocument = snapshot.memory ?? null;
 
     const nextProposal = snapshot.active_proposal ?? null;
-    const changedProposal = nextProposal?.proposal_id !== activeProposal?.proposal_id;
+    const proposalChanged = nextProposal?.proposal_id !== activeProposal?.proposal_id;
     activeProposal = nextProposal;
-    syncSelection(activeProposal, !changedProposal);
+    syncMutationSelection(activeProposal, !proposalChanged);
+
+    const nextMemoryChange = snapshot.active_memory_change ?? null;
+    const memoryChanged = nextMemoryChange?.change_id !== activeMemoryChange?.change_id;
+    activeMemoryChange = nextMemoryChange;
+    syncMemorySelection(activeMemoryChange, !memoryChanged);
   }
 
   async function loadSnapshot() {
@@ -77,18 +101,32 @@
     if (event.event_type === "mutation_proposal") {
       activeProposal = event.payload?.proposal ?? null;
       lastCommitResult = null;
-      syncSelection(activeProposal);
+      syncMutationSelection(activeProposal);
       return;
     }
 
     if (event.event_type === "graph_commit_result") {
       lastCommitResult = event.payload ?? null;
       activeProposal = event.payload?.active_proposal ?? null;
-      syncSelection(activeProposal);
-
+      syncMutationSelection(activeProposal);
       if (event.payload?.result?.status === "applied") {
         dispatch("graphChanged");
       }
+      return;
+    }
+
+    if (event.event_type === "memory_change_proposal") {
+      activeMemoryChange = event.payload?.change ?? null;
+      lastMemoryWriteResult = null;
+      syncMemorySelection(activeMemoryChange);
+      return;
+    }
+
+    if (event.event_type === "memory_write_result") {
+      lastMemoryWriteResult = event.payload ?? null;
+      activeMemoryChange = event.payload?.active_memory_change ?? null;
+      memoryDocument = event.payload?.memory ?? memoryDocument;
+      syncMemorySelection(activeMemoryChange);
       return;
     }
 
@@ -104,9 +142,7 @@
 
     if (event.event_type === "message_start" || event.event_type === "message_update" || event.event_type === "message_end") {
       const payloadMessage = event.payload?.message;
-      const role = payloadMessage?.role;
-
-      if (role !== "assistant") {
+      if (payloadMessage?.role !== "assistant") {
         return;
       }
 
@@ -114,11 +150,8 @@
         id: `${event.turn_id || event.event_id}:assistant`,
         role: "assistant",
         content: extractMessageText(payloadMessage),
-        timestamp: payloadMessage?.timestamp
-          ? new Date(payloadMessage.timestamp).toISOString()
-          : event.timestamp,
+        timestamp: payloadMessage?.timestamp ? new Date(payloadMessage.timestamp).toISOString() : event.timestamp,
       });
-
       return;
     }
 
@@ -191,7 +224,6 @@
 
     approving = true;
     error = "";
-
     try {
       const commitResult = await approveMutationProposal({
         proposal_id: activeProposal.proposal_id,
@@ -199,11 +231,33 @@
       });
       lastCommitResult = commitResult;
       activeProposal = commitResult.active_proposal;
-      syncSelection(activeProposal);
-
+      syncMutationSelection(activeProposal);
       if (commitResult.result?.status === "applied") {
         dispatch("graphChanged");
       }
+    } catch (approveError) {
+      error = approveError.message;
+    } finally {
+      approving = false;
+    }
+  }
+
+  async function approveSelectedMemoryEdits() {
+    if (!activeMemoryChange || selectedMemoryEditIds.length === 0 || approving) {
+      return;
+    }
+
+    approving = true;
+    error = "";
+    try {
+      const writeResult = await approveMemoryChange({
+        change_id: activeMemoryChange.change_id,
+        approved_edit_ids: selectedMemoryEditIds,
+      });
+      lastMemoryWriteResult = writeResult;
+      activeMemoryChange = writeResult.active_memory_change;
+      memoryDocument = writeResult.memory ?? memoryDocument;
+      syncMemorySelection(activeMemoryChange);
     } catch (approveError) {
       error = approveError.message;
     } finally {
@@ -216,9 +270,7 @@
       return;
     }
 
-    await sendPlannerMessage(
-      `Reject proposal ${activeProposal.proposal_id}. Do not restage the same mutations unchanged. Briefly explain why it was rejected and propose a better alternative if appropriate.`,
-    );
+    await sendPlannerMessage(`Reject proposal ${activeProposal.proposal_id}. Do not restage the same mutations unchanged. Briefly explain why it was rejected and propose a better alternative if appropriate.`);
   }
 
   async function reviseProposal() {
@@ -241,15 +293,44 @@
     }
   }
 
+  async function rejectMemoryChange() {
+    if (!activeMemoryChange) {
+      return;
+    }
+
+    await sendPlannerMessage(`Reject planning memory change ${activeMemoryChange.change_id}. Keep planning memory compact and curated, explain what was wrong, and propose a better targeted edit if appropriate.`);
+  }
+
+  async function reviseMemoryChange() {
+    if (!activeMemoryChange) {
+      return;
+    }
+
+    const revisionNote = draft.trim() || window.prompt("How should the planner revise this memory change?", "");
+    if (!revisionNote?.trim()) {
+      return;
+    }
+
+    const sent = await sendPlannerMessage(
+      `Revise planning memory change ${activeMemoryChange.change_id}. Keep the same durable memory goal, but adjust it as follows: ${revisionNote.trim()}`,
+      { clearDraft: draft.trim() === revisionNote.trim() },
+    );
+
+    if (sent && draft.trim() === revisionNote.trim()) {
+      draft = "";
+    }
+  }
+
   function toggleMutationSelection(mutationId, checked) {
-    selectedMutationIds = checked
-      ? [...selectedMutationIds, mutationId]
-      : selectedMutationIds.filter((id) => id !== mutationId);
+    selectedMutationIds = checked ? [...selectedMutationIds, mutationId] : selectedMutationIds.filter((id) => id !== mutationId);
+  }
+
+  function toggleMemorySelection(editId, checked) {
+    selectedMemoryEditIds = checked ? [...selectedMemoryEditIds, editId] : selectedMemoryEditIds.filter((id) => id !== editId);
   }
 
   onMount(() => {
     loadSnapshot();
-
     stream = connectPlannerStream({
       onOpen: () => {
         connected = true;
@@ -272,9 +353,7 @@
     </div>
     <div class="planner-status">
       <span class:healthy={connected} class="status-pill">{connected ? "stream connected" : "stream reconnecting"}</span>
-      {#if sessionId}
-        <code>{sessionId}</code>
-      {/if}
+      {#if sessionId}<code>{sessionId}</code>{/if}
     </div>
   </div>
 
@@ -282,9 +361,7 @@
     <label>
       Graph mode
       <select bind:value={graphMode}>
-        {#each graphModes as mode}
-          <option value={mode}>{mode}</option>
-        {/each}
+        {#each graphModes as mode}<option value={mode}>{mode}</option>{/each}
       </select>
     </label>
     <label>
@@ -297,9 +374,7 @@
     </label>
   </div>
 
-  {#if error}
-    <div class="banner error inline-banner">{error}</div>
-  {/if}
+  {#if error}<div class="banner error inline-banner">{error}</div>{/if}
 
   {#if lastCommitResult}
     <div class="banner {lastCommitResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
@@ -308,7 +383,19 @@
       {:else if lastCommitResult.result.status === 'stale'}
         Proposal {lastCommitResult.proposal_id} is stale. Current graph version: {lastCommitResult.result.current_graph_version}.
       {:else}
-        Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((error) => error.message).join('; ')}
+        Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((item) => item.message).join('; ')}
+      {/if}
+    </div>
+  {/if}
+
+  {#if lastMemoryWriteResult}
+    <div class="banner {lastMemoryWriteResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+      {#if lastMemoryWriteResult.result.status === 'applied'}
+        Applied {lastMemoryWriteResult.approved_edit_ids.length} planning memory edit(s). Memory hash {lastMemoryWriteResult.result.previous_content_hash.slice(0, 8)} → {lastMemoryWriteResult.result.new_content_hash.slice(0, 8)}.
+      {:else if lastMemoryWriteResult.result.status === 'stale'}
+        Memory change {lastMemoryWriteResult.change_id} is stale. Current memory hash: {lastMemoryWriteResult.result.current_content_hash.slice(0, 8)}.
+      {:else}
+        Memory write failed: {lastMemoryWriteResult.result.errors.map((item) => item.message).join('; ')}
       {/if}
     </div>
   {/if}
@@ -323,10 +410,10 @@
         {#each messages as message}
           <article class="chat-entry {message.role}">
             <div class="chat-entry-meta">
-              <strong>{message.role === "user" ? "You" : message.role === "assistant" ? "Planner" : message.tool_name || "Tool"}</strong>
+              <strong>{message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Planner' : message.tool_name || 'Tool'}</strong>
               <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
             </div>
-            <pre>{message.content || (message.role === "assistant" && isStreaming ? "…" : "")}</pre>
+            <pre>{message.content || (message.role === 'assistant' && isStreaming ? '…' : '')}</pre>
           </article>
         {/each}
       {/if}
@@ -337,7 +424,6 @@
         <h3>Tool activity</h3>
         <p class="muted">Live SDK-native tool execution events.</p>
       </div>
-
       {#if toolEvents.length === 0}
         <p class="muted">Tool activity will appear here during planner turns.</p>
       {:else}
@@ -349,9 +435,7 @@
                 <span>{new Date(toolEvent.timestamp).toLocaleTimeString()}</span>
               </div>
               <p>{toolEvent.status}</p>
-              {#if toolEvent.content}
-                <pre>{toolEvent.content}</pre>
-              {/if}
+              {#if toolEvent.content}<pre>{toolEvent.content}</pre>{/if}
             </li>
           {/each}
         </ul>
@@ -363,52 +447,97 @@
     <div class="proposal-header">
       <div>
         <h3>Active mutation proposal</h3>
-        <p class="muted">Latest structured proposal emitted by the planner.</p>
+        <p class="muted">Latest structured graph proposal emitted by the planner.</p>
       </div>
-      {#if activeProposal?.context?.based_on_graph_version}
-        <span class="status-pill healthy">graph v{activeProposal.context.based_on_graph_version}</span>
-      {/if}
+      {#if activeProposal?.context?.based_on_graph_version}<span class="status-pill healthy">graph v{activeProposal.context.based_on_graph_version}</span>{/if}
     </div>
 
     {#if !activeProposal}
-      <p class="muted">No active proposal yet. Ask the planner to propose graph mutations.</p>
+      <p class="muted">No active graph proposal yet.</p>
     {:else}
       <div class="proposal-summary">
         <strong>{activeProposal.proposal_id}</strong>
         <p>{activeProposal.summary}</p>
       </div>
-
       <div class="proposal-list">
         {#each activeProposal.mutations as mutation}
           <label class="proposal-card">
             <div class="proposal-card-header">
-              <input
-                type="checkbox"
-                checked={selectedMutationIds.includes(mutation.id)}
-                on:change={(event) => toggleMutationSelection(mutation.id, event.currentTarget.checked)}
-              />
+              <input type="checkbox" checked={selectedMutationIds.includes(mutation.id)} on:change={(event) => toggleMutationSelection(mutation.id, event.currentTarget.checked)} />
               <div>
                 <strong>{mutation.id}</strong>
                 <span class="proposal-type">{mutation.type}</span>
-                {#if mutation.entity_id}
-                  <code>{mutation.entity_id}</code>
-                {/if}
+                {#if mutation.entity_id}<code>{mutation.entity_id}</code>{/if}
               </div>
             </div>
             <p>{mutation.rationale}</p>
-            {#if mutation.payload}
-              <pre>{JSON.stringify(mutation.payload, null, 2)}</pre>
+            {#if mutation.payload}<pre>{JSON.stringify(mutation.payload, null, 2)}</pre>{/if}
+          </label>
+        {/each}
+      </div>
+      <div class="planner-actions proposal-actions">
+        <button on:click={approveSelectedMutations} disabled={approving || selectedMutationIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMutationIds.length} selected`}</button>
+        <button class="secondary" on:click={rejectProposal} disabled={sending}>Reject via follow-up</button>
+        <button class="secondary" on:click={reviseProposal} disabled={sending}>Revise via follow-up</button>
+      </div>
+    {/if}
+  </section>
+
+  <section class="proposal-panel memory-panel">
+    <div class="proposal-header">
+      <div>
+        <h3>Planning memory</h3>
+        <p class="muted">Curated durable memory from <code>PLANNING_MEMORY.md</code>.</p>
+      </div>
+      {#if memoryDocument}<span class="status-pill">{memoryDocument.content_hash.slice(0, 8)}</span>{/if}
+    </div>
+
+    {#if memoryDocument}
+      <details class="memory-preview">
+        <summary>Current planning memory</summary>
+        <pre>{memoryDocument.content}</pre>
+      </details>
+    {/if}
+
+    {#if !activeMemoryChange}
+      <p class="muted">No staged planning memory change yet.</p>
+    {:else}
+      <div class="proposal-summary">
+        <strong>{activeMemoryChange.change_id}</strong>
+        <p>{activeMemoryChange.summary}</p>
+      </div>
+      <div class="proposal-list">
+        {#each activeMemoryChange.edits as edit}
+          <label class="proposal-card memory-edit-card">
+            <div class="proposal-card-header">
+              <input type="checkbox" checked={selectedMemoryEditIds.includes(edit.id)} on:change={(event) => toggleMemorySelection(edit.id, event.currentTarget.checked)} />
+              <div>
+                <strong>{edit.id}</strong>
+                <span class="proposal-type">{edit.kind}</span>
+                {#if edit.target_heading}<code>{edit.target_heading}</code>{/if}
+              </div>
+            </div>
+            <strong>{edit.summary}</strong>
+            <p>{edit.rationale}</p>
+            {#if edit.old_text}
+              <div>
+                <div class="muted">Old text</div>
+                <pre>{edit.old_text}</pre>
+              </div>
+            {/if}
+            {#if edit.new_text}
+              <div>
+                <div class="muted">New text</div>
+                <pre>{edit.new_text}</pre>
+              </div>
             {/if}
           </label>
         {/each}
       </div>
-
       <div class="planner-actions proposal-actions">
-        <button on:click={approveSelectedMutations} disabled={approving || selectedMutationIds.length === 0}>
-          {approving ? "Applying..." : `Approve ${selectedMutationIds.length} selected`}
-        </button>
-        <button class="secondary" on:click={rejectProposal} disabled={sending}>Reject via follow-up</button>
-        <button class="secondary" on:click={reviseProposal} disabled={sending}>Revise via follow-up</button>
+        <button on:click={approveSelectedMemoryEdits} disabled={approving || selectedMemoryEditIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMemoryEditIds.length} memory edit(s)`}</button>
+        <button class="secondary" on:click={rejectMemoryChange} disabled={sending}>Reject via follow-up</button>
+        <button class="secondary" on:click={reviseMemoryChange} disabled={sending}>Revise via follow-up</button>
       </div>
     {/if}
   </section>
@@ -416,11 +545,11 @@
   <div class="planner-composer">
     <label>
       Message
-      <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, explain blockers, or propose next work."></textarea>
+      <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, propose memory updates, or explain blockers."></textarea>
     </label>
     <div class="planner-actions">
       <button class="secondary" on:click={loadSnapshot} disabled={loading}>Refresh transcript</button>
-      <button on:click={submitMessage} disabled={sending || !draft.trim()}>{sending ? "Sending..." : isStreaming ? "Queue follow-up" : "Send to planner"}</button>
+      <button on:click={submitMessage} disabled={sending || !draft.trim()}>{sending ? 'Sending...' : isStreaming ? 'Queue follow-up' : 'Send to planner'}</button>
     </div>
   </div>
 </section>

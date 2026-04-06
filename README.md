@@ -81,14 +81,16 @@ This runs the server TypeScript check plus the production frontend build.
 9. Ask the planner to propose graph mutations and confirm a reviewable mutation proposal appears in the browser.
 10. Approve a subset of the proposed mutations and confirm the commit succeeds.
 11. Confirm the graph refreshes and the D3 view reflects the approved changes.
-12. Ask the planner to revise or reject the current proposal from the browser and confirm the follow-up stays in the same planner conversation.
-13. Refresh the page and confirm recent transcript state plus the latest active proposal/commit result are restored.
-14. Verify the graph view still loads data from `/api/graph`.
-15. Select a node to edit it in the sidebar.
-16. Create a new work item in the sidebar and confirm it appears in the graph.
-17. Create an edge between two nodes and confirm it appears in the graph and edge list.
-18. Delete an edge from the sidebar.
-19. Change repo/state/track/phase filters and confirm the rendered graph updates.
+12. Ask the planner to propose a planning memory update and confirm a staged memory change appears in the browser.
+13. Approve the staged memory change and confirm `PLANNING_MEMORY.md` updates only after approval.
+14. Ask the planner to revise or reject the current graph or memory proposal from the browser and confirm the follow-up stays in the same planner conversation.
+15. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/commit results are restored.
+16. Verify the graph view still loads data from `/api/graph`.
+17. Select a node to edit it in the sidebar.
+18. Create a new work item in the sidebar and confirm it appears in the graph.
+19. Create an edge between two nodes and confirm it appears in the graph and edge list.
+20. Delete an edge from the sidebar.
+21. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -239,7 +241,40 @@ The assembled planner context includes:
 - a small recent conversation window
 
 The stream should emit SDK-native event names like `agent_start`, `turn_start`, `message_update`, and `agent_end` inside the Studio SSE envelope.
-It also emits Studio mutation workflow events: `mutation_proposal` and `graph_commit_result`.
+It also emits Studio workflow events: `mutation_proposal`, `graph_commit_result`, `memory_change_proposal`, and `memory_write_result`.
+
+### Stage and approve a planning memory change
+
+First, ask the planner to read memory and stage a targeted change:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/message \
+  -H 'content-type: application/json' \
+  -d '{
+    "message":"Use memory_read and then memory_write to stage one targeted planning memory edit"
+  }'
+```
+
+Then inspect the staged change and current memory hash:
+
+```bash
+curl http://localhost:3000/api/agent/session
+```
+
+Approve a subset of staged memory edit IDs:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/memory/approve \
+  -H 'content-type: application/json' \
+  -d '{
+    "change_id": "mem_123",
+    "approved_edit_ids": ["e1"]
+  }'
+```
+
+The write result returns `applied`, `validation_failed`, or `stale`, plus the latest `PLANNING_MEMORY.md` content/hash and any remaining active staged memory change.
+
+### Approve a structured mutation proposal
 
 ### Approve a structured mutation proposal
 

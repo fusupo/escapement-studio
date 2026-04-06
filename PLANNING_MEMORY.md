@@ -13,6 +13,8 @@
 - Use a hybrid execution backend with Studio-owned orchestration over pi SDK primitives.
 
 ## Planning Conventions
+- Keep planning memory compact enough to read directly in context.
+- Mutation proposals require browser approval before graph apply.
 - Keep planning docs and issues lean and demoable.
 - Prefer explicit, approval-gated structural updates over append-only planning sprawl.
 - GitHub issues are the execution-facing substrate; the Studio graph is canonical for planning structure.
