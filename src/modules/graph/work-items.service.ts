@@ -3,7 +3,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { parseJsonArray } from "../../lib/manifest-core.js";
 import { GraphWriterService } from "./graph-writer.service.js";
 import { SQLiteService } from "./sqlite.service.js";
-import type { CreateWorkItemDto, UpdateWorkItemDto, WorkItemRecord } from "./types.js";
+import { deriveIssueWorkItemId, type CreateWorkItemDto, type MisalignedWorkItem, type UpdateWorkItemDto, type WorkItemRecord } from "./types.js";
 
 interface RawWorkItemRecord {
   id: string;
@@ -92,6 +92,27 @@ export class WorkItemsService {
     }
 
     return this.get(id);
+  }
+
+  /**
+   * Find issue-backed work items whose ID does not match their issue_number.
+   */
+  findMisaligned(): MisalignedWorkItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, issue_number FROM work_items
+         WHERE kind = 'issue' AND issue_number IS NOT NULL`
+      )
+      .all() as Array<{ id: string; issue_number: number }>;
+
+    const misaligned: MisalignedWorkItem[] = [];
+    for (const row of rows) {
+      const expected = deriveIssueWorkItemId(row.issue_number);
+      if (row.id !== expected) {
+        misaligned.push({ id: row.id, issue_number: row.issue_number, expected_id: expected });
+      }
+    }
+    return misaligned;
   }
 
   delete(id: string): { deleted: true; id: string } {

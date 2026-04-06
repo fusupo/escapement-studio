@@ -15,6 +15,11 @@ export class WorkItemsController {
     return this.workItems.list({ repo, state, kind });
   }
 
+  @Get("misaligned")
+  findMisaligned() {
+    return this.workItems.findMisaligned();
+  }
+
   @Get(":id")
   get(@Param("id") id: string) {
     return this.workItems.get(id);

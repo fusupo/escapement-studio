@@ -1,4 +1,33 @@
 export type WorkItemKind = "issue" | "capability" | "phase" | "track";
+
+/**
+ * Derive the canonical work-item ID for an issue-backed item.
+ * Convention: "studio-{issue_number}"
+ */
+export function deriveIssueWorkItemId(issueNumber: number): string {
+  return `studio-${issueNumber}`;
+}
+
+/**
+ * Check whether a work item's ID is aligned with its issue_number.
+ * Returns null if aligned or not applicable, otherwise a diagnostic string.
+ */
+export function checkIdAlignment(
+  id: string,
+  kind: WorkItemKind,
+  issueNumber: number | null | undefined,
+): string | null {
+  if (kind !== "issue" || issueNumber == null) return null;
+  const expected = deriveIssueWorkItemId(issueNumber);
+  if (id === expected) return null;
+  return `ID "${id}" does not match issue_number ${issueNumber} (expected "${expected}")`;
+}
+
+export interface MisalignedWorkItem {
+  id: string;
+  issue_number: number;
+  expected_id: string;
+}
 export type WorkItemState = "planned" | "in_progress" | "open_pr" | "done" | "deferred" | "cancelled";
 export type EdgeRel = "depends_on" | "is_part_of" | "implemented_by";
 export type EdgeConfidence = "certain" | "inferred" | "ambiguous";

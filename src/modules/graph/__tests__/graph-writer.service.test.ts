@@ -230,6 +230,68 @@ describe("GraphWriterService", () => {
     });
   });
 
+  describe("apply — ID alignment validation", () => {
+    it("rejects issue-backed work item with misaligned ID", () => {
+      const result = writer.apply({
+        mutations: [
+          {
+            mutation_id: "m1",
+            kind: "create_work_item",
+            work_item: { id: "studio-99", name: "Wrong ID", kind: "issue", issue_number: 42 },
+          },
+        ],
+      });
+
+      expect(result.status).toBe("validation_failed");
+      const failed = result as GraphMutationsValidationFailedResult;
+      expect(failed.errors).toHaveLength(1);
+      expect(failed.errors[0].code).toBe("malformed_payload");
+      expect(failed.errors[0].message).toContain("studio-42");
+    });
+
+    it("accepts issue-backed work item with aligned ID", () => {
+      const result = writer.apply({
+        mutations: [
+          {
+            mutation_id: "m1",
+            kind: "create_work_item",
+            work_item: { id: "studio-42", name: "Aligned", kind: "issue", issue_number: 42 },
+          },
+        ],
+      });
+
+      expect(result.status).toBe("applied");
+    });
+
+    it("skips alignment check for non-issue kinds", () => {
+      const result = writer.apply({
+        mutations: [
+          {
+            mutation_id: "m1",
+            kind: "create_work_item",
+            work_item: { id: "phase:core", name: "Core Phase", kind: "phase" },
+          },
+        ],
+      });
+
+      expect(result.status).toBe("applied");
+    });
+
+    it("skips alignment check for issue items without issue_number", () => {
+      const result = writer.apply({
+        mutations: [
+          {
+            mutation_id: "m1",
+            kind: "create_work_item",
+            work_item: { id: "draft-item", name: "Draft", kind: "issue" },
+          },
+        ],
+      });
+
+      expect(result.status).toBe("applied");
+    });
+  });
+
   describe("apply — version tracking", () => {
     it("increments version on each successful apply", () => {
       writer.apply({

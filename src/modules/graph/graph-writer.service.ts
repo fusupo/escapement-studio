@@ -1,19 +1,20 @@
 import { BadRequestException, Inject, Injectable } from "@nestjs/common";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { SQLiteService } from "./sqlite.service.js";
-import type {
-  ApplyGraphMutationsDto,
-  ApplyGraphMutationsResult,
-  CreateEdgeDto,
-  CreateWorkItemDto,
-  EdgeConfidence,
-  EdgeRel,
-  GraphMutation,
-  GraphMutationError,
-  UpdateEdgeDto,
-  UpdateWorkItemDto,
-  WorkItemKind,
-  WorkItemState,
+import {
+  checkIdAlignment,
+  type ApplyGraphMutationsDto,
+  type ApplyGraphMutationsResult,
+  type CreateEdgeDto,
+  type CreateWorkItemDto,
+  type EdgeConfidence,
+  type EdgeRel,
+  type GraphMutation,
+  type GraphMutationError,
+  type UpdateEdgeDto,
+  type UpdateWorkItemDto,
+  type WorkItemKind,
+  type WorkItemState,
 } from "./types.js";
 
 interface RawWorkItemRecord {
@@ -136,6 +137,11 @@ export class GraphWriterService {
           }
           if (snapshot.workItems.has(work_item.id)) {
             errors.push(this.error(mutation, "duplicate_entity", `work item already exists: ${work_item.id}`));
+            continue;
+          }
+          const alignmentIssue = checkIdAlignment(work_item.id, work_item.kind, work_item.issue_number);
+          if (alignmentIssue) {
+            errors.push(this.error(mutation, "malformed_payload", alignmentIssue));
             continue;
           }
           snapshot.workItems.set(work_item.id, this.toRawWorkItem(work_item));
