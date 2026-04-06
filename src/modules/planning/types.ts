@@ -303,6 +303,18 @@ export interface GitHubSyncToolInput {
   work_item_id: string;
 }
 
+export interface GitHubCreateIssueToolInput {
+  repo: string;
+  title: string;
+  body?: string;
+  labels?: string[];
+  work_item_id?: string;
+  scope_hint?: string;
+  predicted_files?: string[];
+  parent_id?: string;
+  depends_on_ids?: string[];
+}
+
 export interface PlanningSessionSnapshot {
   session_id: string;
   session_file?: string;

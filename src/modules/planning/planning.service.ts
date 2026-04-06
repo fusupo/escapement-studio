@@ -48,6 +48,7 @@ import type {
   StudioSseEnvelope,
   UpdateWorkItemPayload,
   ReconciliationQueryToolInput,
+  GitHubCreateIssueToolInput,
 } from "./types.js";
 
 @Injectable()
@@ -299,6 +300,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         this.createMemoryWriteTool(),
         this.createDelegateSubAgentTool(),
         this.createGitHubReadTool(),
+        this.createGitHubCreateIssueTool(),
         this.createGitHubSyncTool(),
         this.createReconciliationQueryTool(),
       ],
@@ -588,6 +590,113 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         return {
           content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
           details: issue,
+        };
+      },
+    });
+  }
+
+  private createGitHubCreateIssueTool() {
+    return defineTool({
+      name: "github_create_issue",
+      label: "GitHub Create Issue",
+      description: "Create a GitHub issue and automatically stage a graph work item proposal for browser approval.",
+      promptSnippet: "github_create_issue: create a GitHub issue and auto-stage the corresponding graph work item proposal in one step.",
+      promptGuidelines: [
+        "Use github_create_issue when the user asks to create a new issue — it handles both GitHub issue creation and graph proposal staging.",
+        "The graph mutation proposal is staged automatically for browser approval; no separate propose_mutations call is needed.",
+        "Provide a work_item_id that follows the project's naming convention (e.g. 'studio-57').",
+        "Include scope_hint and predicted_files when available to enrich the graph node.",
+        "Use parent_id and depends_on_ids to wire the new item into the graph hierarchy.",
+      ],
+      parameters: Type.Object({
+        repo: Type.String(),
+        title: Type.String(),
+        body: Type.Optional(Type.String()),
+        labels: Type.Optional(Type.Array(Type.String())),
+        work_item_id: Type.Optional(Type.String()),
+        scope_hint: Type.Optional(Type.String()),
+        predicted_files: Type.Optional(Type.Array(Type.String())),
+        parent_id: Type.Optional(Type.String()),
+        depends_on_ids: Type.Optional(Type.Array(Type.String())),
+      }),
+      execute: async (_toolCallId, params: GitHubCreateIssueToolInput) => {
+        const created = await this.githubService.createIssue({
+          repo: params.repo,
+          title: params.title,
+          body: params.body,
+          labels: params.labels,
+        });
+
+        const workItemId = params.work_item_id?.trim() || `studio-${created.number}`;
+
+        const mutations: ProposeMutationsToolInput["mutations"] = [
+          {
+            id: "m1",
+            type: "create_work_item",
+            entity_id: workItemId,
+            payload: {
+              id: workItemId,
+              name: created.title,
+              kind: "issue",
+              state: "planned",
+              repo: params.repo,
+              issue_number: created.number,
+              issue_url: created.url,
+              scope_hint: params.scope_hint ?? null,
+              predicted_files: params.predicted_files ?? [],
+            },
+            rationale: `Graph representation for newly created GitHub issue #${created.number}.`,
+          },
+        ];
+
+        let edgeIndex = 2;
+        if (params.parent_id?.trim()) {
+          mutations.push({
+            id: `m${edgeIndex++}`,
+            type: "create_edge",
+            payload: {
+              from_id: workItemId,
+              rel: "is_part_of",
+              to_id: params.parent_id.trim(),
+            },
+            rationale: `Attach ${workItemId} under parent ${params.parent_id.trim()}.`,
+          });
+        }
+
+        if (params.depends_on_ids) {
+          for (const depId of params.depends_on_ids) {
+            if (depId?.trim()) {
+              mutations.push({
+                id: `m${edgeIndex++}`,
+                type: "create_edge",
+                payload: {
+                  from_id: workItemId,
+                  rel: "depends_on",
+                  to_id: depId.trim(),
+                },
+                rationale: `${workItemId} depends on ${depId.trim()}.`,
+              });
+            }
+          }
+        }
+
+        const proposal = this.normalizeProposal({
+          summary: `Graph work item for GitHub issue #${created.number}: ${created.title}`,
+          mutations,
+        });
+        this.proposals.set(proposal.proposal_id, proposal);
+        this.activeProposalId = proposal.proposal_id;
+        this.lastCommitResult = null;
+        this.emitStudioEvent("mutation_proposal", { proposal });
+
+        const summary = `Created GitHub issue #${created.number} (${created.url}) and staged graph proposal ${proposal.proposal_id} with ${proposal.mutations.length} mutation(s) for browser approval.`;
+
+        return {
+          content: [{ type: "text", text: summary }],
+          details: {
+            issue: created,
+            proposal,
+          },
         };
       },
     });
