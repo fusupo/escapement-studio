@@ -7,6 +7,7 @@ export type PlanningMemoryEditKind = "replace_text" | "insert_after_heading" | "
 export type SubAgentType = "code-crawler" | "scope-predictor";
 export type SubAgentRunStatus = "queued" | "running" | "completed" | "error";
 export type SubAgentConfidence = "low" | "medium" | "high";
+export type GitHubSyncOperationKind = "update_managed_body_block";
 
 export interface SendAgentMessageDto {
   message: string;
@@ -192,6 +193,116 @@ export interface SubAgentRunRecord {
   result?: SubAgentResultEnvelope;
 }
 
+export interface GitHubIssueLabel {
+  name: string;
+  description?: string;
+  color?: string;
+}
+
+export interface GitHubIssueAssignee {
+  login: string;
+  name?: string;
+}
+
+export interface GitHubIssueDetails {
+  repo: string;
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  state: string;
+  labels: GitHubIssueLabel[];
+  assignees: GitHubIssueAssignee[];
+  body_hash: string;
+  managed_block?: {
+    content: string;
+    start_marker: string;
+    end_marker: string;
+  } | null;
+}
+
+export interface GitHubSyncOperation {
+  id: string;
+  kind: GitHubSyncOperationKind;
+  summary: string;
+  rationale: string;
+  target: {
+    repo: string;
+    issue_number: number;
+    work_item_id: string;
+  };
+  preview: {
+    before: string;
+    after: string;
+  };
+}
+
+export interface GitHubSyncProposal {
+  sync_id: string;
+  created_at: string;
+  source: PlanningMutationProposalSource;
+  summary: string;
+  issue: {
+    repo: string;
+    issue_number: number;
+    issue_url: string;
+    title: string;
+  };
+  work_item_id: string;
+  based_on_body_hash: string;
+  operations: GitHubSyncOperation[];
+}
+
+export interface GitHubSyncApplySuccess {
+  status: "applied";
+  applied_operation_ids: string[];
+  previous_body_hash: string;
+  new_body_hash: string;
+}
+
+export interface GitHubSyncApplyValidationFailure {
+  status: "validation_failed";
+  errors: Array<{ operation_id: string; message: string }>;
+}
+
+export interface GitHubSyncApplyStale {
+  status: "stale";
+  previous_body_hash: string;
+  current_body_hash: string;
+  message: string;
+}
+
+export type GitHubSyncApplyResult =
+  | GitHubSyncApplySuccess
+  | GitHubSyncApplyValidationFailure
+  | GitHubSyncApplyStale;
+
+export interface GitHubSyncResult {
+  sync_id: string;
+  approved_operation_ids: string[];
+  result: GitHubSyncApplyResult;
+  active_github_sync: GitHubSyncProposal | null;
+  issue: GitHubIssueDetails | null;
+}
+
+export interface ApproveGitHubSyncDto {
+  sync_id: string;
+  approved_operation_ids: string[];
+}
+
+export interface GitHubReadToolInput {
+  repo: string;
+  issue_number: number;
+}
+
+export interface GitHubSyncToolInput {
+  sync_id?: string;
+  created_at?: string;
+  source?: Partial<PlanningMutationProposalSource>;
+  summary: string;
+  work_item_id: string;
+}
+
 export interface PlanningSessionSnapshot {
   session_id: string;
   session_file?: string;
@@ -201,6 +312,8 @@ export interface PlanningSessionSnapshot {
   last_commit_result: PlanningGraphCommitResult | null;
   active_memory_change: PlanningMemoryChange | null;
   last_memory_write_result: PlanningMemoryWriteResult | null;
+  active_github_sync: GitHubSyncProposal | null;
+  last_github_sync_result: GitHubSyncResult | null;
   memory: PlanningMemoryDocument;
   recent_subagent_runs: SubAgentRunRecord[];
 }

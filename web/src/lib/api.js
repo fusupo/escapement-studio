@@ -49,6 +49,19 @@ export function approveMemoryChange(payload) {
   });
 }
 
+export function approveGitHubSync(payload) {
+  return request("/api/agent/github/approve", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getGitHubIssueDetails({ repo, issue_number }) {
+  const query = new URLSearchParams({ repo, issue_number: String(issue_number) });
+  return request(`/api/github/issue?${query.toString()}`);
+}
+
 export function getGraph(filters = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {

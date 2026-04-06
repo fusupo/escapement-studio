@@ -27,6 +27,8 @@ export function connectPlannerStream({ onEvent, onOpen, onError } = {}) {
     "graph_commit_result",
     "memory_change_proposal",
     "memory_write_result",
+    "github_sync_proposal",
+    "github_sync_result",
     "subagent_status",
     "subagent_result",
   ].forEach(forward);

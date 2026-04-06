@@ -93,14 +93,18 @@ This runs the server TypeScript check plus the production frontend build.
 13. Approve the staged memory change and confirm `PLANNING_MEMORY.md` updates only after approval.
 14. Ask the planner to delegate a `code-crawler` or `scope-predictor` specialist and confirm a visible specialist run appears in the browser.
 15. Confirm the specialist run finishes with a structured summary/findings payload and an artifact directory under `/home/marc/escapement-studio-ctx/runs/`.
-16. Ask the planner to revise or reject the current graph or memory proposal from the browser and confirm the follow-up stays in the same planner conversation.
-17. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/commit results and recent specialist runs are restored.
-18. Verify the graph view still loads data from `/api/graph`.
-19. Select a node to edit it in the sidebar.
-20. Create a new work item in the sidebar and confirm it appears in the graph.
-21. Create an edge between two nodes and confirm it appears in the graph and edge list.
-22. Delete an edge from the sidebar.
-23. Change repo/state/track/phase filters and confirm the rendered graph updates.
+16. Select an issue-backed work item and confirm the sidebar loads GitHub issue details plus the issue link.
+17. Ask the planner to use `github_read` and confirm issue details appear in the transcript/tool output.
+18. Ask the planner to stage a `github_sync` proposal and confirm a reviewable GitHub sync card appears in the browser.
+19. Approve the staged GitHub sync and confirm only the managed `studio-sync` issue body block changes.
+20. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
+21. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results and recent specialist runs are restored.
+22. Verify the graph view still loads data from `/api/graph`.
+23. Select a node to edit it in the sidebar.
+24. Create a new work item in the sidebar and confirm it appears in the graph.
+25. Create an edge between two nodes and confirm it appears in the graph and edge list.
+26. Delete an edge from the sidebar.
+27. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -209,7 +213,7 @@ The server validates the full batch, applies it transactionally, and returns eit
 curl http://localhost:3000/api/agent/session
 ```
 
-The snapshot returns the recent planner transcript plus active proposal/memory state and recent specialist runs used by the browser to restore workspace state after refresh.
+The snapshot returns the recent planner transcript plus active proposal/memory/GitHub-sync state and recent specialist runs used by the browser to restore workspace state after refresh.
 
 ### Root planner message + stream
 
@@ -251,7 +255,15 @@ The assembled planner context includes:
 - a small recent conversation window
 
 The stream should emit SDK-native event names like `agent_start`, `turn_start`, `message_update`, and `agent_end` inside the Studio SSE envelope.
-It also emits Studio workflow events: `mutation_proposal`, `graph_commit_result`, `memory_change_proposal`, `memory_write_result`, `subagent_status`, and `subagent_result`.
+It also emits Studio workflow events: `mutation_proposal`, `graph_commit_result`, `memory_change_proposal`, `memory_write_result`, `github_sync_proposal`, `github_sync_result`, `subagent_status`, and `subagent_result`.
+
+### Read a GitHub issue linked to a work item
+
+```bash
+curl "http://localhost:3000/api/github/issue?repo=fusupo/escapement-studio&issue_number=10"
+```
+
+This returns issue details plus the current managed `studio-sync` block, if present.
 
 ### Delegate a specialist sub-agent
 
@@ -281,6 +293,45 @@ Each completed run should also persist artifacts under:
   summary.md
   outputs/
 ```
+
+### Stage and approve a GitHub sync
+
+First ensure the target issue body already contains a managed block bounded by:
+
+```md
+<!-- studio-sync:start -->
+...
+<!-- studio-sync:end -->
+```
+
+Then ask the planner to stage a GitHub sync for an issue-backed work item:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/message \
+  -H 'content-type: application/json' \
+  -d '{
+    "message":"Use github_sync for work_item_id `studio-10` and stage a managed-block sync proposal"
+  }'
+```
+
+Inspect the staged GitHub sync proposal in the planner session snapshot:
+
+```bash
+curl http://localhost:3000/api/agent/session
+```
+
+Approve selected GitHub sync operations:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/github/approve \
+  -H 'content-type: application/json' \
+  -d '{
+    "sync_id": "ghsync_123",
+    "approved_operation_ids": ["op1"]
+  }'
+```
+
+The result returns `applied`, `validation_failed`, or `stale`. If the issue body changed since staging, the sync is rejected as stale. If the managed block is missing or ambiguous, sync fails safely.
 
 ### Stage and approve a planning memory change
 

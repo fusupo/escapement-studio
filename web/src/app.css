@@ -355,6 +355,24 @@ h2 {
   color: #f8fafc;
 }
 
+.github-sync-panel {
+  border-top-style: double;
+}
+
+.github-sync-card pre,
+.issue-body-preview pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8rem;
+}
+
+.sync-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
 .subagent-panel {
   border-top-style: dotted;
 }
@@ -431,6 +449,40 @@ h2 {
   gap: 0.75rem;
 }
 
+.issue-details-card {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.issue-details-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.issue-details-header h3 {
+  margin: 0;
+}
+
+.issue-details-card a {
+  color: #93c5fd;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.issue-body-preview summary {
+  cursor: pointer;
+}
+
 .stack {
   display: grid;
   gap: 0.75rem;
@@ -472,7 +524,8 @@ h2 {
   }
 
   .planner-controls,
-  .toolbar {
+  .toolbar,
+  .sync-preview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -490,7 +543,8 @@ h2 {
 
   .planner-controls,
   .toolbar,
-  .planner-actions {
+  .planner-actions,
+  .sync-preview-grid {
     grid-template-columns: 1fr;
   }
 }

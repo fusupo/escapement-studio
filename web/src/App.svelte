@@ -6,10 +6,11 @@
   import {
     createEdge,
     createWorkItem,
+    deleteEdge,
+    getGitHubIssueDetails,
     getGraph,
     getHealth,
     listWorkItems,
-    deleteEdge,
     updateWorkItem,
   } from "./lib/api.js";
 
@@ -23,6 +24,7 @@
   let edgeSaving = false;
   let error = "";
   let health = null;
+  let selectedIssueDetails = null;
 
   $: selectedItem = graph.items.find((item) => item.id === selectedId) ?? null;
   $: filterOptions = {
@@ -58,6 +60,29 @@
 
   async function refresh() {
     await loadGraph();
+  }
+
+  let issueLookupToken = 0;
+  $: void loadSelectedIssueDetails(selectedItem);
+
+  async function loadSelectedIssueDetails(item) {
+    const token = ++issueLookupToken;
+
+    if (!item?.repo || !item?.issue_number) {
+      selectedIssueDetails = null;
+      return;
+    }
+
+    try {
+      const details = await getGitHubIssueDetails({ repo: item.repo, issue_number: item.issue_number });
+      if (token === issueLookupToken) {
+        selectedIssueDetails = details;
+      }
+    } catch (lookupError) {
+      if (token === issueLookupToken) {
+        selectedIssueDetails = { error: lookupError.message, repo: item.repo, number: item.issue_number, url: item.issue_url };
+      }
+    }
   }
 
   async function handleSaveItem(payload) {
@@ -175,6 +200,7 @@
 
     <Sidebar
       {selectedItem}
+      issueDetails={selectedIssueDetails}
       {graph}
       {saving}
       {edgeSaving}
