@@ -32,56 +32,39 @@
     cleanup();
     resizeObserver?.disconnect();
   });
-
-  const nodeLegend = [
-    { label: "Issue", color: "#60a5fa" },
-    { label: "Capability", color: "#34d399" },
-    { label: "Phase", color: "#f59e0b" },
-    { label: "Track", color: "#c084fc" },
-  ];
-
-  const edgeLegend = [
-    { label: "depends_on", color: "#f97316", dash: "7 5" },
-    { label: "implemented_by", color: "#22c55e", dash: "0" },
-    { label: "is_part_of", color: "#a78bfa", dash: "3 5" },
-  ];
 </script>
 
 {#if graph.items.length === 0}
   <div class="empty-state">No graph items match the current filters.</div>
 {:else}
   <div class="graph-shell">
+    <svg bind:this={svg} class="graph-canvas" aria-label="Dependency graph"></svg>
+
     <div class="graph-legend" aria-label="Graph legend">
       <div>
-        <strong>Node kinds</strong>
-        <div class="legend-list">
-          {#each nodeLegend as entry}
-            <span class="legend-chip">
-              <span class="legend-dot" style={`background:${entry.color}`}></span>
-              {entry.label}
-            </span>
-          {/each}
-        </div>
+        <h3>Node State</h3>
+        <div class="legend-row"><span class="legend-swatch" style="background:#238636"></span><code>done</code></div>
+        <div class="legend-row"><span class="legend-swatch" style="background:#d29922"></span><code>in_progress</code></div>
+        <div class="legend-row"><span class="legend-swatch" style="background:#58a6ff"></span><code>planned</code></div>
+        <div class="legend-row"><span class="legend-swatch" style="background:#8b949e"></span><code>deferred</code></div>
+        <div class="legend-row"><span class="legend-swatch" style="background:#f85149"></span><code>cancelled</code></div>
       </div>
-
       <div>
-        <strong>Relations</strong>
-        <div class="legend-list relation-list">
-          {#each edgeLegend as entry}
-            <span class="legend-chip relation-chip">
-              <svg viewBox="0 0 28 8" aria-hidden="true">
-                <line x1="1" y1="4" x2="27" y2="4" stroke={entry.color} stroke-width="2" stroke-dasharray={entry.dash}></line>
-              </svg>
-              {entry.label}
-            </span>
-          {/each}
+        <h3>Edge Type</h3>
+        <div class="legend-row">
+          <svg class="legend-line" viewBox="0 0 28 4"><line x1="1" y1="2" x2="27" y2="2" stroke="#58a6ff" stroke-width="2"></line></svg>
+          <code>depends_on</code>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-line" viewBox="0 0 28 4"><line x1="1" y1="2" x2="27" y2="2" stroke="#3fb950" stroke-width="2" stroke-dasharray="6,3"></line></svg>
+          <code>is_part_of</code>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-line" viewBox="0 0 28 4"><line x1="1" y1="2" x2="27" y2="2" stroke="#d29922" stroke-width="2" stroke-dasharray="2,3"></line></svg>
+          <code>implemented_by</code>
         </div>
       </div>
-
-      <p>Scroll to zoom. Drag the canvas to pan. Hover nodes and edges for details.</p>
     </div>
-
-    <svg bind:this={svg} class="graph-canvas" aria-label="Dependency graph"></svg>
   </div>
 {/if}
 
@@ -92,79 +75,50 @@
 
   .graph-legend {
     position: absolute;
-    top: 0.85rem;
-    right: 0.85rem;
+    bottom: 16px;
+    left: 16px;
     z-index: 2;
-    max-width: min(320px, calc(100% - 1.5rem));
     display: grid;
-    gap: 0.7rem;
-    padding: 0.8rem 0.9rem;
-    border-radius: 14px;
-    border: 1px solid rgba(148, 163, 184, 0.18);
-    background: rgba(15, 23, 42, 0.78);
-    backdrop-filter: blur(12px);
-    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.24);
-    color: #cbd5e1;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    border: 1px solid #30363d;
+    background: #161b22;
+    font-size: 12px;
+    color: #c9d1d9;
   }
 
-  .graph-legend strong {
-    display: block;
-    margin-bottom: 0.45rem;
-    color: #f8fafc;
-    font-size: 0.8rem;
+  .graph-legend h3 {
+    font-size: 13px;
+    margin: 0 0 8px 0;
+    color: #e6edf3;
   }
 
-  .graph-legend p {
-    margin: 0;
-    color: #94a3b8;
-    font-size: 0.76rem;
-    line-height: 1.45;
-  }
-
-  .legend-list {
+  .legend-row {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.45rem;
-  }
-
-  .legend-chip {
-    display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.3rem 0.5rem;
-    border-radius: 999px;
-    background: rgba(30, 41, 59, 0.8);
-    font-size: 0.72rem;
-    color: #cbd5e1;
+    gap: 8px;
+    margin: 4px 0;
   }
 
-  .legend-dot {
-    width: 0.7rem;
-    height: 0.7rem;
-    border-radius: 999px;
+  .legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
     display: inline-block;
   }
 
-  .relation-list {
-    display: grid;
-    gap: 0.35rem;
-  }
-
-  .relation-chip {
-    justify-content: flex-start;
-  }
-
-  .relation-chip svg {
-    width: 1.75rem;
-    height: 0.5rem;
+  .legend-line {
+    width: 24px;
+    height: 4px;
+    flex-shrink: 0;
     overflow: visible;
   }
 
-  @media (max-width: 960px) {
-    .graph-legend {
-      left: 0.85rem;
-      right: 0.85rem;
-      max-width: none;
-    }
+  .graph-legend code {
+    font-family: inherit;
+    font-size: 12px;
+    color: #c9d1d9;
   }
 </style>

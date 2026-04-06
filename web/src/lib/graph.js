@@ -1,491 +1,345 @@
 import * as d3 from "d3";
 
-const KIND_COLORS = {
-  issue: "#60a5fa",
-  capability: "#34d399",
-  phase: "#f59e0b",
-  track: "#c084fc",
+const STATE_COLORS = {
+  done: "#238636",
+  in_progress: "#d29922",
+  planned: "#58a6ff",
+  deferred: "#8b949e",
+  cancelled: "#f85149",
 };
 
-const RELATION_STYLES = {
-  depends_on: { color: "#f97316", dash: "7 5", width: 2, label: "depends on" },
-  implemented_by: { color: "#22c55e", dash: "0", width: 2.4, label: "implemented by" },
-  is_part_of: { color: "#a78bfa", dash: "3 5", width: 1.8, label: "part of" },
-  default: { color: "#64748b", dash: "0", width: 1.6, label: "related" },
+const EDGE_STYLES = {
+  depends_on: { color: "#58a6ff", dash: null, width: 1.5 },
+  is_part_of: { color: "#3fb950", dash: "6,3", width: 1.5 },
+  implemented_by: { color: "#d29922", dash: "2,3", width: 1.5 },
 };
 
-function relationStyle(rel) {
-  return RELATION_STYLES[rel] ?? RELATION_STYLES.default;
+const KIND_RADIUS = {
+  issue: 8,
+  capability: 12,
+  phase: 16,
+  track: 14,
+};
+
+function edgeStyle(rel) {
+  return EDGE_STYLES[rel] ?? { color: "#484f58", dash: null, width: 1.2 };
 }
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function summarize(text, max = 180) {
-  if (!text) return "No description available.";
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
+function computeLayers(nodes, edges) {
+  const ids = new Set(nodes.map((n) => n.id));
 
-function wrapText(value, max = 22) {
-  const words = `${value ?? ""}`.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return ["Untitled"];
+  // Build adjacency: upstream → downstream
+  // All edge types: "to" is upstream of "from"
+  const children = new Map();
+  const parentCount = new Map();
+  for (const id of ids) {
+    children.set(id, []);
+    parentCount.set(id, 0);
+  }
 
-  const lines = [];
-  let line = "";
+  for (const e of edges) {
+    if (!ids.has(e.from_id) || !ids.has(e.to_id)) continue;
+    children.get(e.to_id).push(e.from_id);
+    parentCount.set(e.from_id, parentCount.get(e.from_id) + 1);
+  }
 
-  for (const word of words) {
-    if (!line) {
-      line = word;
-      continue;
-    }
-
-    if (`${line} ${word}`.length <= max) {
-      line = `${line} ${word}`;
-    } else {
-      lines.push(line);
-      line = word;
+  // BFS longest-path layering
+  const depth = new Map();
+  const queue = [];
+  for (const id of ids) {
+    if (parentCount.get(id) === 0) {
+      depth.set(id, 0);
+      queue.push(id);
     }
   }
 
-  if (line) lines.push(line);
-  return lines.slice(0, 3).map((entry, index, all) => {
-    if (index === all.length - 1 && all.length === 3 && entry.length > max - 1) {
-      return `${entry.slice(0, max - 1)}…`;
-    }
-    return entry;
-  });
-}
-
-function buildLayeredLayout(nodes, links, width, height) {
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  const incoming = new Map(nodes.map((node) => [node.id, 0]));
-  const outgoing = new Map(nodes.map((node) => [node.id, []]));
-
-  for (const link of links) {
-    incoming.set(link.target.id, (incoming.get(link.target.id) ?? 0) + 1);
-    outgoing.get(link.source.id)?.push(link.target.id);
-  }
-
-  const queue = nodes
-    .filter((node) => (incoming.get(node.id) ?? 0) === 0)
-    .sort((a, b) => `${a.kind}:${a.name}`.localeCompare(`${b.kind}:${b.name}`))
-    .map((node) => node.id);
-
-  const depthById = new Map(nodes.map((node) => [node.id, 0]));
-  const visited = new Set();
-
-  while (queue.length > 0) {
-    const currentId = queue.shift();
-    visited.add(currentId);
-
-    for (const nextId of outgoing.get(currentId) ?? []) {
-      depthById.set(nextId, Math.max(depthById.get(nextId) ?? 0, (depthById.get(currentId) ?? 0) + 1));
-      incoming.set(nextId, (incoming.get(nextId) ?? 1) - 1);
-      if ((incoming.get(nextId) ?? 0) === 0) {
-        queue.push(nextId);
+  let head = 0;
+  while (head < queue.length) {
+    const u = queue[head++];
+    const d = depth.get(u);
+    for (const v of children.get(u)) {
+      const newD = d + 1;
+      if (!depth.has(v) || depth.get(v) < newD) {
+        depth.set(v, newD);
       }
+      parentCount.set(v, parentCount.get(v) - 1);
+      if (parentCount.get(v) === 0) queue.push(v);
     }
   }
 
-  for (const node of nodes) {
-    if (visited.has(node.id)) continue;
-    const fallbackDepth = Math.max(0, ...links.filter((link) => link.target.id === node.id).map((link) => (depthById.get(link.source.id) ?? 0) + 1));
-    depthById.set(node.id, fallbackDepth);
+  // Handle cycles or disconnected nodes
+  const maxDepth = Math.max(0, ...depth.values());
+  for (const id of ids) {
+    if (!depth.has(id)) depth.set(id, maxDepth + 1);
   }
 
-  const layers = d3.group(nodes, (node) => depthById.get(node.id) ?? 0);
-  const layerKeys = Array.from(layers.keys()).sort((a, b) => a - b);
-  const maxLayerSize = Math.max(...Array.from(layers.values(), (layer) => layer.length), 1);
-  const horizontalPadding = 110;
-  const verticalPadding = 90;
-  const layerSpacing = layerKeys.length > 1
-    ? (width - horizontalPadding * 2) / (layerKeys.length - 1)
-    : 0;
-  const bandHeight = Math.max(height - verticalPadding * 2, 240);
-
-  for (const layerKey of layerKeys) {
-    const layerNodes = [...(layers.get(layerKey) ?? [])].sort((a, b) => {
-      if (a.kind !== b.kind) return `${a.kind}`.localeCompare(`${b.kind}`);
-      return `${a.name}`.localeCompare(`${b.name}`);
-    });
-
-    const rowSpacing = layerNodes.length > 1
-      ? Math.max(92, Math.min(150, bandHeight / (layerNodes.length - 1)))
-      : 0;
-    const layerVisualHeight = rowSpacing * Math.max(layerNodes.length - 1, 0);
-    const startY = height / 2 - layerVisualHeight / 2;
-
-    layerNodes.forEach((node, index) => {
-      node.x = horizontalPadding + layerKey * layerSpacing;
-      node.y = layerNodes.length === 1 ? height / 2 : startY + index * rowSpacing;
-      node.layer = layerKey;
-      node.order = index;
-      nodeById.set(node.id, node);
-    });
-  }
-
-  for (const node of nodes) {
-    node.x = clamp(node.x ?? width / 2, 72, width - 72);
-    node.y = clamp(node.y ?? height / 2, 64, height - 64);
-  }
-
-  return {
-    layerKeys,
-    maxLayer: layerKeys[layerKeys.length - 1] ?? 0,
-    maxLayerSize,
-  };
+  return depth;
 }
 
-function ensureTooltip(svgElement) {
-  const host = svgElement.parentElement;
-  if (!host) return null;
-
-  const existing = host.querySelector(".graph-tooltip");
+function ensureTooltip() {
+  const existing = document.querySelector(".graph-tooltip");
   if (existing) existing.remove();
 
   const tooltip = document.createElement("div");
   tooltip.className = "graph-tooltip";
-  tooltip.style.position = "absolute";
-  tooltip.style.pointerEvents = "none";
-  tooltip.style.opacity = "0";
-  tooltip.style.minWidth = "220px";
-  tooltip.style.maxWidth = "320px";
-  tooltip.style.padding = "0.75rem 0.9rem";
-  tooltip.style.borderRadius = "14px";
-  tooltip.style.border = "1px solid rgba(148, 163, 184, 0.26)";
-  tooltip.style.background = "rgba(2, 6, 23, 0.94)";
-  tooltip.style.boxShadow = "0 18px 45px rgba(15, 23, 42, 0.45)";
-  tooltip.style.backdropFilter = "blur(10px)";
-  tooltip.style.color = "#e2e8f0";
-  tooltip.style.zIndex = "3";
-  host.appendChild(tooltip);
-
+  Object.assign(tooltip.style, {
+    position: "fixed",
+    pointerEvents: "none",
+    display: "none",
+    zIndex: "9999",
+    maxWidth: "360px",
+    padding: "10px 14px",
+    borderRadius: "8px",
+    border: "1px solid #30363d",
+    background: "#1c2128",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+    color: "#c9d1d9",
+    fontSize: "12px",
+    fontFamily: "inherit",
+  });
+  document.body.appendChild(tooltip);
   return tooltip;
 }
 
-function showTooltip(tooltip, hostRect, event, content) {
+function showTooltip(tooltip, event, content) {
   if (!tooltip) return;
   tooltip.innerHTML = content;
-  tooltip.style.opacity = "1";
-
-  const tooltipRect = tooltip.getBoundingClientRect();
-  const left = clamp(
-    event.clientX - hostRect.left + 18,
-    12,
-    Math.max(12, hostRect.width - tooltipRect.width - 12),
-  );
-  const top = clamp(
-    event.clientY - hostRect.top + 18,
-    12,
-    Math.max(12, hostRect.height - tooltipRect.height - 12),
-  );
-
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${top}px`;
+  tooltip.style.display = "block";
+  tooltip.style.left = (event.clientX + 14) + "px";
+  tooltip.style.top = (event.clientY + 14) + "px";
 }
 
 function hideTooltip(tooltip) {
   if (!tooltip) return;
-  tooltip.style.opacity = "0";
-}
-
-function edgePath(edge) {
-  const sourceX = edge.source.x;
-  const sourceY = edge.source.y;
-  const targetX = edge.target.x;
-  const targetY = edge.target.y;
-  const dx = targetX - sourceX;
-  const dy = targetY - sourceY;
-  const curve = Math.max(28, Math.min(96, Math.abs(dx) * 0.32 + Math.abs(dy) * 0.18));
-  const c1x = sourceX + curve;
-  const c1y = sourceY;
-  const c2x = targetX - curve;
-  const c2y = targetY;
-  return `M ${sourceX} ${sourceY} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${targetX} ${targetY}`;
-}
-
-function edgeMidpoint(edge) {
-  const sourceX = edge.source.x;
-  const sourceY = edge.source.y;
-  const targetX = edge.target.x;
-  const targetY = edge.target.y;
-  const midX = (sourceX + targetX) / 2;
-  const midY = (sourceY + targetY) / 2;
-  return [midX, midY - (Math.abs(targetX - sourceX) > 120 ? 14 : 10)];
+  tooltip.style.display = "none";
 }
 
 export function renderGraph(svgElement, graph, selectedId, onSelect) {
-  if (!svgElement) {
-    return () => {};
-  }
+  if (!svgElement) return () => {};
 
   const width = svgElement.clientWidth || 900;
   const height = svgElement.clientHeight || 640;
 
   const svg = d3.select(svgElement);
   svg.selectAll("*").remove();
-  svg.attr("viewBox", `0 0 ${width} ${height}`);
+  svg.attr("viewBox", [0, 0, width, height]);
 
-  const tooltip = ensureTooltip(svgElement);
-  const hostRect = () => svgElement.parentElement?.getBoundingClientRect() ?? svgElement.getBoundingClientRect();
+  const tooltip = ensureTooltip();
 
   const nodes = graph.items.map((item) => ({ ...item }));
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+
   const links = graph.edges
-    .map((edge) => ({
-      ...edge,
-      source: nodeById.get(edge.from_id),
-      target: nodeById.get(edge.to_id),
-      style: relationStyle(edge.rel),
-    }))
-    .filter((edge) => edge.source && edge.target);
+    .filter((e) => nodeById.has(e.from_id) && nodeById.has(e.to_id))
+    .map((e) => ({
+      source: e.from_id,
+      target: e.to_id,
+      rel: e.rel,
+      confidence: e.confidence,
+    }));
 
-  const { layerKeys } = buildLayeredLayout(nodes, links, width, height);
+  // Compute topological layers
+  const depthMap = computeLayers(nodes, graph.edges);
+  const maxLayer = Math.max(0, ...depthMap.values());
 
+  const MARGIN_X = 120;
+  const MARGIN_Y = 60;
+  const layerSpacing = maxLayer > 0
+    ? (width - MARGIN_X * 2) / maxLayer
+    : width / 2;
+
+  // Group nodes by layer
+  const layers = new Map();
+  for (const n of nodes) {
+    const d = depthMap.get(n.id) ?? 0;
+    if (!layers.has(d)) layers.set(d, []);
+    layers.get(d).push(n);
+  }
+
+  // Assign initial positions
+  for (const [layer, group] of layers) {
+    const x = MARGIN_X + layer * layerSpacing;
+    const ySpacing = Math.min(50, (height - MARGIN_Y * 2) / (group.length + 1));
+    const yStart = height / 2 - ((group.length - 1) * ySpacing) / 2;
+    group.forEach((n, i) => {
+      n.x = x;
+      n.y = yStart + i * ySpacing;
+      n._layerX = x;
+      n._layer = layer;
+    });
+  }
+
+  // Defs for arrow markers
   const defs = svg.append("defs");
-  Object.entries(RELATION_STYLES).forEach(([key, style]) => {
+  for (const [rel, style] of Object.entries(EDGE_STYLES)) {
     defs.append("marker")
-      .attr("id", `arrow-${key}`)
+      .attr("id", `arrow-${rel}`)
       .attr("viewBox", "0 -5 10 10")
-      .attr("refX", 28)
+      .attr("refX", 20)
       .attr("refY", 0)
-      .attr("markerWidth", 7)
-      .attr("markerHeight", 7)
+      .attr("markerWidth", 6)
+      .attr("markerHeight", 6)
       .attr("orient", "auto")
       .append("path")
-      .attr("fill", style.color)
-      .attr("d", "M0,-5L10,0L0,5");
-  });
+      .attr("d", "M0,-5L10,0L0,5")
+      .attr("fill", style.color);
+  }
 
-  const root = svg.append("g");
+  const g = svg.append("g");
 
-  const layerBackdrop = root.append("g").attr("opacity", 1);
-  layerKeys.forEach((layerKey) => {
-    const layerNodes = nodes.filter((node) => node.layer === layerKey);
-    if (layerNodes.length === 0) return;
-    const minY = d3.min(layerNodes, (node) => node.y) ?? height / 2;
-    const maxY = d3.max(layerNodes, (node) => node.y) ?? height / 2;
-    const x = layerNodes[0].x - 54;
-    const bandWidth = 108;
-    const bandHeight = Math.max(110, maxY - minY + 120);
-
-    layerBackdrop.append("rect")
-      .attr("x", x)
-      .attr("y", clamp(minY - 60, 18, height - bandHeight - 18))
-      .attr("width", bandWidth)
-      .attr("height", bandHeight)
-      .attr("rx", 28)
-      .attr("fill", "rgba(15, 23, 42, 0.28)")
-      .attr("stroke", "rgba(148, 163, 184, 0.08)");
-
-    layerBackdrop.append("text")
-      .attr("x", layerNodes[0].x)
-      .attr("y", clamp(minY - 24, 24, height - 24))
-      .attr("fill", "#64748b")
-      .attr("font-size", 11)
-      .attr("font-weight", 700)
-      .attr("text-anchor", "middle")
-      .attr("letter-spacing", "0.12em")
-      .text(`LAYER ${layerKey + 1}`);
-  });
-
-  const edgeLayer = root.append("g").attr("fill", "none");
-  const edge = edgeLayer.selectAll("g")
-    .data(links)
-    .join("g")
-    .style("cursor", "default");
-
-  edge.append("path")
-    .attr("class", "edge-hitbox")
-    .attr("stroke", "transparent")
-    .attr("stroke-width", 18)
-    .attr("d", edgePath);
-
-  edge.append("path")
-    .attr("class", "edge-line")
-    .attr("stroke", (datum) => datum.style.color)
-    .attr("stroke-width", (datum) => datum.style.width)
-    .attr("stroke-dasharray", (datum) => datum.style.dash)
-    .attr("stroke-opacity", 0.95)
-    .attr("marker-end", (datum) => `url(#arrow-${RELATION_STYLES[datum.rel] ? datum.rel : "default"})`)
-    .attr("d", edgePath);
-
-  const edgeLabel = edge.append("g").attr("class", "edge-label");
-  edgeLabel.append("rect")
-    .attr("width", 100)
-    .attr("height", 22)
-    .attr("x", -50)
-    .attr("y", -11)
-    .attr("rx", 11)
-    .attr("fill", "rgba(15, 23, 42, 0.92)")
-    .attr("stroke", "rgba(148, 163, 184, 0.18)");
-
-  edgeLabel.append("text")
-    .attr("fill", "#cbd5e1")
-    .attr("font-size", 10)
-    .attr("font-weight", 700)
-    .attr("text-anchor", "middle")
-    .attr("dominant-baseline", "central")
-    .text((datum) => datum.rel.replace(/_/g, " "));
-
-  edgeLabel.attr("transform", (datum) => {
-    const [x, y] = edgeMidpoint(datum);
-    return `translate(${x},${y})`;
-  });
-
-  const nodeLayer = root.append("g");
-  const node = nodeLayer.selectAll("g")
-    .data(nodes)
-    .join("g")
-    .attr("transform", (datum) => `translate(${datum.x},${datum.y})`)
-    .style("cursor", "pointer")
-    .on("click", (_, datum) => onSelect(datum));
-
-  node.append("circle")
-    .attr("r", 30)
-    .attr("fill", "rgba(15, 23, 42, 0.95)")
-    .attr("stroke", (datum) => datum.id === selectedId ? "#f8fafc" : "rgba(148, 163, 184, 0.26)")
-    .attr("stroke-width", (datum) => datum.id === selectedId ? 3.5 : 1.25);
-
-  node.append("circle")
-    .attr("r", 25)
-    .attr("fill", (datum) => KIND_COLORS[datum.kind] ?? "#64748b")
-    .attr("fill-opacity", 0.2)
-    .attr("stroke", (datum) => KIND_COLORS[datum.kind] ?? "#64748b")
-    .attr("stroke-width", 2.4);
-
-  node.append("circle")
-    .attr("r", 4)
-    .attr("cy", -16)
-    .attr("fill", (datum) => KIND_COLORS[datum.kind] ?? "#64748b");
-
-  node.selectAll("text.node-label")
-    .data((datum) => wrapText(datum.name).map((line, index) => ({ datum, line, index })))
-    .join("text")
-    .attr("class", "node-label")
-    .attr("fill", "#e2e8f0")
-    .attr("font-size", 10.5)
-    .attr("font-weight", 600)
-    .attr("text-anchor", "middle")
-    .attr("y", ({ index }) => index * 12 - 2)
-    .text(({ line }) => line);
-
-  node.append("text")
-    .attr("fill", "#94a3b8")
-    .attr("font-size", 9.5)
-    .attr("font-weight", 700)
-    .attr("letter-spacing", "0.08em")
-    .attr("text-anchor", "middle")
-    .attr("y", 21)
-    .text((datum) => datum.kind.toUpperCase());
-
-  const zoom = d3.zoom()
-    .scaleExtent([0.6, 1.8])
-    .on("zoom", (event) => {
-      root.attr("transform", event.transform);
-    });
-
-  svg.call(zoom);
-  svg.call(zoom.transform, d3.zoomIdentity.translate(36, 0));
-
-  node.on("mouseenter", (event, datum) => {
-    const inbound = links.filter((edge) => edge.target.id === datum.id).length;
-    const outbound = links.filter((edge) => edge.source.id === datum.id).length;
-    showTooltip(
-      tooltip,
-      hostRect(),
-      event,
-      `
-        <div style="display:grid;gap:0.45rem;">
-          <div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:center;">
-            <strong style="font-size:0.95rem;line-height:1.25;">${datum.name}</strong>
-            <span style="padding:0.18rem 0.45rem;border-radius:999px;background:${KIND_COLORS[datum.kind] ?? "#64748b"}22;color:${KIND_COLORS[datum.kind] ?? "#64748b"};font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">${datum.kind}</span>
-          </div>
-          <div style="font-size:0.78rem;color:#94a3b8;">${datum.id}</div>
-          <div style="font-size:0.82rem;line-height:1.45;color:#cbd5e1;">${summarize(datum.scope_hint || datum.name)}</div>
-          <div style="display:flex;gap:0.75rem;flex-wrap:wrap;font-size:0.76rem;color:#cbd5e1;">
-            <span>Layer ${datum.layer + 1}</span>
-            <span>${inbound} incoming</span>
-            <span>${outbound} outgoing</span>
-          </div>
-        </div>
-      `,
-    );
-  });
-
-  node.on("mousemove", (event, datum) => {
-    const inbound = links.filter((edge) => edge.target.id === datum.id).length;
-    const outbound = links.filter((edge) => edge.source.id === datum.id).length;
-    showTooltip(
-      tooltip,
-      hostRect(),
-      event,
-      `
-        <div style="display:grid;gap:0.45rem;">
-          <div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:center;">
-            <strong style="font-size:0.95rem;line-height:1.25;">${datum.name}</strong>
-            <span style="padding:0.18rem 0.45rem;border-radius:999px;background:${KIND_COLORS[datum.kind] ?? "#64748b"}22;color:${KIND_COLORS[datum.kind] ?? "#64748b"};font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">${datum.kind}</span>
-          </div>
-          <div style="font-size:0.78rem;color:#94a3b8;">${datum.id}</div>
-          <div style="font-size:0.82rem;line-height:1.45;color:#cbd5e1;">${summarize(datum.scope_hint || datum.name)}</div>
-          <div style="display:flex;gap:0.75rem;flex-wrap:wrap;font-size:0.76rem;color:#cbd5e1;">
-            <span>Layer ${datum.layer + 1}</span>
-            <span>${inbound} incoming</span>
-            <span>${outbound} outgoing</span>
-          </div>
-        </div>
-      `,
-    );
-  });
-
-  node.on("mouseleave", () => hideTooltip(tooltip));
-
-  edge.on("mouseenter", (event, datum) => {
-    showTooltip(
-      tooltip,
-      hostRect(),
-      event,
-      `
-        <div style="display:grid;gap:0.45rem;">
-          <div style="display:flex;align-items:center;gap:0.55rem;">
-            <span style="width:0.7rem;height:0.7rem;border-radius:999px;background:${datum.style.color};display:inline-block;"></span>
-            <strong style="font-size:0.9rem;text-transform:capitalize;">${datum.rel.replace(/_/g, " ")}</strong>
-          </div>
-          <div style="font-size:0.82rem;color:#cbd5e1;line-height:1.4;">
-            <strong>${datum.source.name}</strong> → <strong>${datum.target.name}</strong>
-          </div>
-          <div style="font-size:0.76rem;color:#94a3b8;">${datum.source.id} → ${datum.target.id}</div>
-        </div>
-      `,
-    );
-  });
-
-  edge.on("mousemove", (event, datum) => {
-    showTooltip(
-      tooltip,
-      hostRect(),
-      event,
-      `
-        <div style="display:grid;gap:0.45rem;">
-          <div style="display:flex;align-items:center;gap:0.55rem;">
-            <span style="width:0.7rem;height:0.7rem;border-radius:999px;background:${datum.style.color};display:inline-block;"></span>
-            <strong style="font-size:0.9rem;text-transform:capitalize;">${datum.rel.replace(/_/g, " ")}</strong>
-          </div>
-          <div style="font-size:0.82rem;color:#cbd5e1;line-height:1.4;">
-            <strong>${datum.source.name}</strong> → <strong>${datum.target.name}</strong>
-          </div>
-          <div style="font-size:0.76rem;color:#94a3b8;">${datum.source.id} → ${datum.target.id}</div>
-        </div>
-      `,
-    );
-  });
-
-  edge.on("mouseleave", () => hideTooltip(tooltip));
-
+  // Zoom
+  svg.call(d3.zoom()
+    .scaleExtent([0.1, 6])
+    .on("zoom", (event) => g.attr("transform", event.transform))
+  );
   svg.on("dblclick.zoom", null);
 
+  // Force simulation
+  const simulation = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id((d) => d.id).distance(layerSpacing * 0.8).strength(0.1))
+    .force("x", d3.forceX((d) => d._layerX).strength(0.8))
+    .force("y", d3.forceY(height / 2).strength(0.02))
+    .force("charge", d3.forceManyBody().strength(-150))
+    .force("collision", d3.forceCollide().radius(25))
+    .alphaDecay(0.03);
+
+  // Edges
+  const link = g.append("g")
+    .attr("fill", "none")
+    .selectAll("path")
+    .data(links)
+    .join("path")
+    .attr("stroke", (d) => edgeStyle(d.rel).color)
+    .attr("stroke-width", (d) => d.confidence === "ambiguous" ? 1 : edgeStyle(d.rel).width)
+    .attr("stroke-dasharray", (d) => edgeStyle(d.rel).dash)
+    .attr("stroke-opacity", 0.5)
+    .attr("marker-end", (d) => `url(#arrow-${d.rel})`);
+
+  // Edge hover — invisible wider hitbox
+  const linkHitbox = g.append("g")
+    .attr("fill", "none")
+    .selectAll("path")
+    .data(links)
+    .join("path")
+    .attr("stroke", "transparent")
+    .attr("stroke-width", 16)
+    .style("cursor", "default");
+
+  // Nodes
+  const node = g.append("g")
+    .selectAll("g")
+    .data(nodes)
+    .join("g")
+    .style("cursor", "pointer")
+    .call(d3.drag()
+      .on("start", (event) => {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        event.subject.fx = event.subject.x;
+        event.subject.fy = event.subject.y;
+      })
+      .on("drag", (event) => {
+        event.subject.fx = event.x;
+        event.subject.fy = event.y;
+      })
+      .on("end", (event) => {
+        if (!event.active) simulation.alphaTarget(0);
+        event.subject.fx = null;
+        event.subject.fy = null;
+      })
+    );
+
+  // Node circles — colored by state
+  node.append("circle")
+    .attr("r", (d) => KIND_RADIUS[d.kind] ?? 8)
+    .attr("fill", (d) => STATE_COLORS[d.state] ?? "#484f58")
+    .attr("stroke", (d) => d.id === selectedId ? "#e6edf3" : "#0d1117")
+    .attr("stroke-width", (d) => d.id === selectedId ? 2.5 : 1.5);
+
+  // Labels — beside the node
+  node.append("text")
+    .text((d) => d.id)
+    .attr("dx", (d) => (KIND_RADIUS[d.kind] ?? 8) + 5)
+    .attr("dy", "0.35em")
+    .attr("fill", "#8b949e")
+    .attr("font-size", "11px")
+    .attr("font-family", "inherit")
+    .attr("pointer-events", "none");
+
+  // Click to select
+  node.on("click", (_, d) => onSelect(d));
+
+  // Node hover
+  node.on("mouseenter", (event, d) => {
+    d3.select(event.currentTarget).select("circle")
+      .attr("stroke", "#e6edf3").attr("stroke-width", 2.5);
+
+    const inbound = links.filter((l) => l.target === d.id || l.target.id === d.id).length;
+    const outbound = links.filter((l) => l.source === d.id || l.source.id === d.id).length;
+
+    let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.id}: ${d.name}</div>`;
+    body += `<div style="color:#8b949e;margin:2px 0;">Kind: <span style="color:#c9d1d9">${d.kind}</span></div>`;
+    body += `<div style="color:#8b949e;margin:2px 0;">State: <span style="color:#c9d1d9">${d.state}</span></div>`;
+    body += `<div style="color:#8b949e;margin:2px 0;">Layer: <span style="color:#c9d1d9">${depthMap.get(d.id) ?? "?"}</span></div>`;
+    body += `<div style="color:#8b949e;margin:2px 0;">Edges: <span style="color:#c9d1d9">${inbound} in / ${outbound} out</span></div>`;
+    if (d.issue_number) body += `<div style="color:#8b949e;margin:2px 0;">Issue: <span style="color:#c9d1d9">#${d.issue_number}</span></div>`;
+    if (d.repo) body += `<div style="color:#8b949e;margin:2px 0;">Repo: <span style="color:#c9d1d9">${d.repo}</span></div>`;
+    if (d.scope_hint) body += `<div style="color:#8b949e;margin:2px 0;">Scope: <span style="color:#c9d1d9">${d.scope_hint}</span></div>`;
+
+    showTooltip(tooltip, event, body);
+  })
+  .on("mousemove", (event) => {
+    if (!tooltip) return;
+    tooltip.style.left = (event.clientX + 14) + "px";
+    tooltip.style.top = (event.clientY + 14) + "px";
+  })
+  .on("mouseleave", (event) => {
+    const d = d3.select(event.currentTarget).datum();
+    d3.select(event.currentTarget).select("circle")
+      .attr("stroke", d.id === selectedId ? "#e6edf3" : "#0d1117")
+      .attr("stroke-width", d.id === selectedId ? 2.5 : 1.5);
+    hideTooltip(tooltip);
+  });
+
+  // Edge hover
+  linkHitbox.on("mouseenter", (event, d) => {
+    const src = typeof d.source === "object" ? d.source : nodeById.get(d.source);
+    const tgt = typeof d.target === "object" ? d.target : nodeById.get(d.target);
+    const style = edgeStyle(d.rel);
+
+    let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.rel.replace(/_/g, " ")}</div>`;
+    body += `<div style="color:#c9d1d9;">${src?.name ?? d.source} → ${tgt?.name ?? d.target}</div>`;
+    body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${src?.id ?? d.source} → ${tgt?.id ?? d.target}</div>`;
+
+    showTooltip(tooltip, event, body);
+  })
+  .on("mousemove", (event) => {
+    if (!tooltip) return;
+    tooltip.style.left = (event.clientX + 14) + "px";
+    tooltip.style.top = (event.clientY + 14) + "px";
+  })
+  .on("mouseleave", () => hideTooltip(tooltip));
+
+  // Tick
+  simulation.on("tick", () => {
+    const curvePath = (d) => {
+      const sx = d.source.x, sy = d.source.y;
+      const tx = d.target.x, ty = d.target.y;
+      const dx = tx - sx;
+      const cp = dx * 0.4;
+      return `M${sx},${sy} C${sx + cp},${sy} ${tx - cp},${ty} ${tx},${ty}`;
+    };
+
+    link.attr("d", curvePath);
+    linkHitbox.attr("d", curvePath);
+    node.attr("transform", (d) => `translate(${d.x},${d.y})`);
+  });
+
   return () => {
+    simulation.stop();
     hideTooltip(tooltip);
     tooltip?.remove();
   };
