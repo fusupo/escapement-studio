@@ -14,6 +14,7 @@ export interface ExecutionDispatchNodePreview {
   branch: string;
   issue_url?: string;
   scope_hint?: string | null;
+  default_base_ref: string;
   files_owned: string[];
   files_shared: Array<{
     path: string;

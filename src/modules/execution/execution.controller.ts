@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Inject, Post, Query, Sse } from "@nestjs/common";
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
-import { ExecutionService } from "./execution.service.js";
+import { ExecutionService } from "./configured-execution.service.js";
 import type { LaunchExecutionRunDto } from "./types.js";
 
 @Controller("api/execution")
