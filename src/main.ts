@@ -14,8 +14,23 @@ async function bootstrap() {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
 
-  await app.listen(port);
-  console.log(`Escapement Studio server listening on http://localhost:${port}`);
+  // Retry listen to survive restart races (nodemon, --watch, git pull)
+  const maxRetries = 8;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await app.listen(port);
+      console.log(`Escapement Studio server listening on http://localhost:${port}`);
+      return;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === "EADDRINUSE" && attempt < maxRetries) {
+        const delay = attempt * 500;
+        console.log(`Port ${port} in use, retrying in ${delay}ms... (${attempt}/${maxRetries})`);
+        await new Promise((r) => setTimeout(r, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
 }
 
 bootstrap().catch((error) => {
