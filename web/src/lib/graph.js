@@ -14,6 +14,9 @@ const EDGE_STYLES = {
   implemented_by: { color: "#d29922", dash: "2,3", width: 1.5 },
 };
 
+const PR_RING_COLOR = "#a371f7"; // purple ring for open PRs
+const PR_MERGED_RING_COLOR = "#238636"; // green ring for merged PRs
+
 const KIND_RADIUS = {
   issue: 8,
   capability: 12,
@@ -27,6 +30,35 @@ function edgeStyle(rel) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Extract pull request info from a work item, checking multiple locations:
+ * - item.pull_request (backend-enriched)
+ * - item.meta.pull_request (direct meta)
+ * - item.meta.studio_post_merge_sync.pull_request (post-merge sync)
+ * Returns { number, url, title, state, merged_at, is_draft, head_ref, base_ref } or null.
+ */
+function extractPullRequest(item) {
+  const pr =
+    item.pull_request ??
+    item.meta?.pull_request ??
+    item.meta?.studio_post_merge_sync?.pull_request ??
+    null;
+  if (!pr || !pr.number) return null;
+  return pr;
+}
+
+/**
+ * Classify PR status for visual rendering.
+ * Returns "merged" | "open" | "draft" | "closed" | null
+ */
+function classifyPrStatus(pr) {
+  if (!pr) return null;
+  if (pr.merged_at) return "merged";
+  if (pr.is_draft) return "draft";
+  if (pr.state === "closed") return "closed";
+  return "open";
 }
 
 function computeLayers(nodes, edges) {
@@ -118,7 +150,16 @@ function hideTooltip(tooltip) {
   tooltip.style.display = "none";
 }
 
-export function renderGraph(svgElement, graph, selectedId, onSelect) {
+/**
+ * Render the dependency graph.
+ * @param {SVGElement} svgElement
+ * @param {{ items: Array, edges: Array }} graph
+ * @param {string|null} selectedId
+ * @param {function} onSelect
+ * @param {{ executionRuns?: Array }} options - Optional. executionRuns: array of
+ *   execution run records keyed by work_item_id, used to enrich nodes with open PR data.
+ */
+export function renderGraph(svgElement, graph, selectedId, onSelect, options = {}) {
   if (!svgElement) return () => {};
 
   const width = svgElement.clientWidth || 900;
@@ -130,7 +171,27 @@ export function renderGraph(svgElement, graph, selectedId, onSelect) {
 
   const tooltip = ensureTooltip();
 
-  const nodes = graph.items.map((item) => ({ ...item }));
+  // Build a map of work_item_id → PR from execution runs (for open PRs)
+  const runPrByWorkItem = new Map();
+  if (options.executionRuns) {
+    for (const run of options.executionRuns) {
+      if (run.pull_request && run.work_item_id) {
+        runPrByWorkItem.set(run.work_item_id, run.pull_request);
+      }
+    }
+  }
+
+  const nodes = graph.items.map((item) => {
+    const node = { ...item };
+    // Enrich with PR data from execution runs if not already present
+    if (!extractPullRequest(node) && runPrByWorkItem.has(node.id)) {
+      node.pull_request = runPrByWorkItem.get(node.id);
+    }
+    // Cache extracted PR info
+    node._pr = extractPullRequest(node);
+    node._prStatus = classifyPrStatus(node._pr);
+    return node;
+  });
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
 
   const links = graph.edges
@@ -252,12 +313,48 @@ export function renderGraph(svgElement, graph, selectedId, onSelect) {
       })
     );
 
+  // PR ring — outer ring indicating pull request status
+  node.filter((d) => d._prStatus === "open" || d._prStatus === "draft")
+    .append("circle")
+    .attr("class", "pr-ring")
+    .attr("r", (d) => (KIND_RADIUS[d.kind] ?? 8) + 4)
+    .attr("fill", "none")
+    .attr("stroke", (d) => d._prStatus === "draft" ? "#8b949e" : PR_RING_COLOR)
+    .attr("stroke-width", 2)
+    .attr("stroke-dasharray", (d) => d._prStatus === "draft" ? "3,2" : null)
+    .attr("opacity", 0.85);
+
+  node.filter((d) => d._prStatus === "merged")
+    .append("circle")
+    .attr("class", "pr-ring")
+    .attr("r", (d) => (KIND_RADIUS[d.kind] ?? 8) + 4)
+    .attr("fill", "none")
+    .attr("stroke", PR_MERGED_RING_COLOR)
+    .attr("stroke-width", 2)
+    .attr("opacity", 0.85);
+
   // Node circles — colored by state
   node.append("circle")
     .attr("r", (d) => KIND_RADIUS[d.kind] ?? 8)
     .attr("fill", (d) => STATE_COLORS[d.state] ?? "#484f58")
     .attr("stroke", (d) => d.id === selectedId ? "#e6edf3" : "#0d1117")
     .attr("stroke-width", (d) => d.id === selectedId ? 2.5 : 1.5);
+
+  // PR badge — small "PR" label below nodes with pull requests
+  node.filter((d) => d._prStatus != null)
+    .append("text")
+    .text((d) => d._prStatus === "merged" ? "✓PR" : d._prStatus === "draft" ? "dPR" : "PR")
+    .attr("dy", (d) => (KIND_RADIUS[d.kind] ?? 8) + 13)
+    .attr("text-anchor", "middle")
+    .attr("fill", (d) => {
+      if (d._prStatus === "merged") return PR_MERGED_RING_COLOR;
+      if (d._prStatus === "draft") return "#8b949e";
+      return PR_RING_COLOR;
+    })
+    .attr("font-size", "9px")
+    .attr("font-weight", "600")
+    .attr("font-family", "inherit")
+    .attr("pointer-events", "none");
 
   // Labels — beside the node
   node.append("text")
@@ -274,7 +371,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect) {
 
   // Node hover
   node.on("mouseenter", (event, d) => {
-    d3.select(event.currentTarget).select("circle")
+    d3.select(event.currentTarget).select("circle:not(.pr-ring)")
       .attr("stroke", "#e6edf3").attr("stroke-width", 2.5);
 
     const inbound = links.filter((l) => l.target === d.id || l.target.id === d.id).length;
@@ -288,6 +385,21 @@ export function renderGraph(svgElement, graph, selectedId, onSelect) {
     if (d.issue_number) body += `<div style="color:#8b949e;margin:2px 0;">Issue: <span style="color:#c9d1d9">#${d.issue_number}</span></div>`;
     if (d.repo) body += `<div style="color:#8b949e;margin:2px 0;">Repo: <span style="color:#c9d1d9">${d.repo}</span></div>`;
     if (d.scope_hint) body += `<div style="color:#8b949e;margin:2px 0;">Scope: <span style="color:#c9d1d9">${d.scope_hint}</span></div>`;
+    if (d._pr) {
+      const prColor = d._prStatus === "merged" ? PR_MERGED_RING_COLOR
+        : d._prStatus === "draft" ? "#8b949e"
+        : PR_RING_COLOR;
+      const statusLabel = d._prStatus === "merged" ? "Merged"
+        : d._prStatus === "draft" ? "Draft"
+        : d._prStatus === "closed" ? "Closed"
+        : "Open";
+      body += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #30363d;">`;
+      body += `<div style="color:${prColor};font-weight:600;margin-bottom:2px;">PR #${d._pr.number} · ${statusLabel}</div>`;
+      if (d._pr.title) body += `<div style="color:#c9d1d9;font-size:11px;">${d._pr.title}</div>`;
+      if (d._pr.url) body += `<div style="color:#58a6ff;font-size:11px;margin-top:2px;">${d._pr.url}</div>`;
+      if (d._pr.head_ref) body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${d._pr.head_ref} → ${d._pr.base_ref ?? "?"}</div>`;
+      body += `</div>`;
+    }
 
     showTooltip(tooltip, event, body);
   })
@@ -298,7 +410,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect) {
   })
   .on("mouseleave", (event) => {
     const d = d3.select(event.currentTarget).datum();
-    d3.select(event.currentTarget).select("circle")
+    d3.select(event.currentTarget).select("circle:not(.pr-ring)")
       .attr("stroke", d.id === selectedId ? "#e6edf3" : "#0d1117")
       .attr("stroke-width", d.id === selectedId ? 2.5 : 1.5);
     hideTooltip(tooltip);
