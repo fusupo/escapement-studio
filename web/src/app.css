@@ -232,7 +232,7 @@ h1, h2, h3 {
 /* ── Planner chat (left sidebar) ── */
 .planner-chat {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   height: 100%;
   padding: 0.75rem;
   gap: 0.5rem;
@@ -282,6 +282,33 @@ h1, h2, h3 {
 .planner-body {
   display: grid;
   gap: 0.5rem;
+  min-height: 0;
+}
+
+.chat-subtabs {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.chat-subtab {
+  padding: 0.3rem 0.7rem;
+  background: transparent;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  transition: background 120ms, color 120ms;
+}
+
+.chat-subtab:hover {
+  background: rgba(148, 163, 184, 0.1);
+  color: #94a3b8;
+}
+
+.chat-subtab.active {
+  background: rgba(37, 99, 235, 0.2);
+  color: #bfdbfe;
 }
 
 .planner-transcript,
@@ -292,14 +319,10 @@ h1, h2, h3 {
 }
 
 .planner-transcript {
-  max-height: 320px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   padding-right: 0.2rem;
 }
 
 .planner-tools {
-  max-height: 220px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }

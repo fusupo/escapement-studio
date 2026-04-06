@@ -38,6 +38,7 @@
   let recentSubagentRuns = [];
   let hasLoadedSnapshot = false;
   let stream;
+  let chatSubTab = "transcript";
 
   function syncMutationSelection(proposal, preserve = false) {
     if (!proposal) {
@@ -508,6 +509,15 @@
       </label>
     </div>
 
+    <div class="chat-subtabs">
+      <button class="chat-subtab" class:active={chatSubTab === 'transcript'} on:click={() => chatSubTab = 'transcript'}>
+        Chat {messages.length > 0 ? `(${messages.length})` : ''}
+      </button>
+      <button class="chat-subtab" class:active={chatSubTab === 'tools'} on:click={() => chatSubTab = 'tools'}>
+        Tools {toolEvents.length > 0 ? `(${toolEvents.length})` : ''}
+      </button>
+    </div>
+
     <div class="planner-scroll-region">
       {#if error}<div class="banner error inline-banner">{error}</div>{/if}
 
@@ -547,7 +557,7 @@
       </div>
       {/if}
 
-      <div class="planner-body">
+    {#if chatSubTab === 'transcript'}
     <div class="planner-transcript">
       {#if loading}
         <div class="empty-state compact">Loading planner transcript…</div>
@@ -565,12 +575,8 @@
         {/each}
       {/if}
     </div>
-
-    <aside class="planner-tools">
-      <div>
-        <h3>Tool activity</h3>
-        <p class="muted">Live SDK-native tool execution events.</p>
-      </div>
+    {:else}
+    <div class="planner-tools">
       {#if toolEvents.length === 0}
         <p class="muted">Tool activity will appear here during planner turns.</p>
       {:else}
@@ -587,8 +593,8 @@
           {/each}
         </ul>
       {/if}
-    </aside>
     </div>
+    {/if}
 
     <section class="proposal-panel">
     <div class="proposal-header">
