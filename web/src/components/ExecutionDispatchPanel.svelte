@@ -170,7 +170,7 @@
                   </button>
                 </div>
 
-                <div class="muted small-text">{node.branch} · {node.worktree_path}</div>
+                <div class="muted small-text">{node.branch} from {node.default_base_ref} · {node.worktree_path}</div>
                 {#if node.scope_hint}
                   <p>{node.scope_hint}</p>
                 {/if}
@@ -236,7 +236,7 @@
                 </div>
                 <span class="proposal-type">{run.status}</span>
               </div>
-              <div class="muted small-text">{run.branch} · {run.worktree_path}</div>
+              <div class="muted small-text">{run.branch} from {run.base_ref} · {run.worktree_path}</div>
               <div class="muted small-text">Artifacts: {run.artifact_dir}</div>
               {#if run.progress_message}
                 <p>{run.progress_message}</p>
