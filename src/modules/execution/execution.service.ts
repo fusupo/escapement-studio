@@ -11,6 +11,8 @@ import { GraphService } from "../graph/graph.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord } from "../graph/types.js";
 import type {
+  ActivityLogEntry,
+  ActivityLogEntryKind,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
   ExecutionDispatchGroupPreview,
@@ -37,6 +39,7 @@ export class ExecutionService {
   private readonly worktreeRoot = join(this.artifactRoot, "worktrees");
   private readonly recentRuns: ExecutionRunRecord[] = [];
   private readonly recentRunLimit = 16;
+  private readonly activityLogLimit = 50;
   private eventCounter = 0;
 
   constructor(
@@ -157,7 +160,9 @@ export class ExecutionService {
     });
 
     this.persistRun(run);
+    this.pushActivity(run.run_id, "status_change", "Execution run queued.");
     void this.executeRun(run, node).catch((error) => {
+      this.pushActivity(run.run_id, "error", `Execution failed: ${this.getErrorMessage(error)}`);
       const failedRun = this.updateRun(run.run_id, {
         status: "error",
         completed_at: this.now(),
@@ -409,6 +414,7 @@ export class ExecutionService {
     this.appendEvent(run, { type: "run_preparing" });
 
     this.runGit(["worktree", "add", run.worktree_path, "-b", run.branch, run.base_ref]);
+    this.pushActivity(run.run_id, "status_change", `Worktree created at ${run.worktree_path}`, `Branch: ${run.branch}, Base: ${run.base_ref}`);
     this.appendEvent(run, { type: "worktree_created", worktree_path: run.worktree_path, branch: run.branch, base_ref: run.base_ref });
 
     const { session, modelFallbackMessage } = await createAgentSession({
@@ -427,6 +433,7 @@ export class ExecutionService {
       session_id: session.sessionId,
       progress_message: "Execution agent running in isolated worktree.",
     })!;
+    this.pushActivity(run.run_id, "status_change", "Agent session started.");
     this.appendEvent(run, { type: "session_started", session_id: session.sessionId });
 
     const runId = run.run_id;
@@ -442,11 +449,17 @@ export class ExecutionService {
     }
 
     const assistantText = session.getLastAssistantText()?.trim() ?? "Execution run completed without a terminal summary.";
+    // Extract a short reasoning summary from the assistant's final text
+    const reasoningSummary = this.extractReasoningSummary(assistantText);
+    if (reasoningSummary) {
+      this.pushActivity(run.run_id, "reasoning", reasoningSummary);
+    }
     const changedFiles = this.listChangedFiles(run.worktree_path);
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
     writeFileSync(join(run.artifact_dir, "outputs", "response.json"), JSON.stringify({ assistant_text: assistantText, changed_files: changedFiles, actual_files_sync: actualFilesSync }, null, 2), "utf8");
 
+    this.pushActivity(run.run_id, "status_change", `Execution completed. ${changedFiles.length} file(s) changed.`);
     run = this.updateRun(initialRun.run_id, {
       status: "completed",
       completed_at: this.now(),
@@ -459,6 +472,11 @@ export class ExecutionService {
     this.emitRun("execution_result", run);
   }
 
+  getRunActivityLog(runId: string): ActivityLogEntry[] {
+    const run = this.getRun(runId);
+    return run?.activity_log ?? [];
+  }
+
   private handleSessionEvent(runId: string, event: AgentSessionEvent) {
     const run = this.getRun(runId);
     if (!run) {
@@ -468,12 +486,14 @@ export class ExecutionService {
     const toolName = "toolName" in event ? event.toolName ?? null : null;
     if (event.type === "tool_execution_start") {
       this.appendEvent(run, { type: event.type, tool_name: toolName });
+      this.pushActivity(runId, "tool_start", `Tool started: ${toolName ?? "unknown"}`);
       this.updateRun(runId, { progress_message: `${toolName ?? "tool"} running…` });
       return;
     }
 
     if (event.type === "tool_execution_end") {
       this.appendEvent(run, { type: event.type, tool_name: toolName });
+      this.pushActivity(runId, "tool_end", `Tool finished: ${toolName ?? "unknown"}`);
       this.updateRun(runId, { progress_message: `${toolName ?? "tool"} finished.` });
       return;
     }
@@ -485,13 +505,27 @@ export class ExecutionService {
 
     if (event.type === "agent_start" || event.type === "turn_start") {
       this.appendEvent(run, { type: event.type });
+      this.pushActivity(runId, "turn_start", "Execution turn started.");
       this.updateRun(runId, { progress_message: "Execution turn started." });
       return;
     }
 
     if (event.type === "agent_end" || event.type === "turn_end") {
       this.appendEvent(run, { type: event.type });
+      this.pushActivity(runId, "turn_end", "Execution turn completed.");
       this.updateRun(runId, { progress_message: "Execution turn completed." });
+    }
+  }
+
+  private pushActivity(runId: string, kind: ActivityLogEntryKind, message: string, detail?: string) {
+    const run = this.getRun(runId);
+    if (!run) {
+      return;
+    }
+    const entry: ActivityLogEntry = { timestamp: this.now(), kind, message, ...(detail ? { detail } : {}) };
+    run.activity_log.push(entry);
+    if (run.activity_log.length > this.activityLogLimit) {
+      run.activity_log = run.activity_log.slice(-this.activityLogLimit);
     }
   }
 
@@ -604,6 +638,7 @@ export class ExecutionService {
       prompt: input.prompt,
       progress_message: input.resultSummary ?? (input.status === "queued" ? "Execution run queued." : undefined),
       result_summary: input.resultSummary,
+      activity_log: [],
       safety_checks: input.safetyChecks,
       errors: input.errors,
     };
@@ -1008,6 +1043,19 @@ export class ExecutionService {
 
   private uniqueSorted(values: string[]): string[] {
     return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
+  }
+
+  private extractReasoningSummary(assistantText: string): string | null {
+    if (!assistantText || assistantText.length < 20) {
+      return null;
+    }
+    // Take the first meaningful paragraph (up to ~300 chars) as the reasoning summary
+    const lines = assistantText.split("\n").filter((l) => l.trim().length > 0);
+    const summary = lines.slice(0, 4).join(" ").trim();
+    if (summary.length <= 300) {
+      return summary;
+    }
+    return summary.slice(0, 297) + "...";
   }
 
   private getWorktreePath(branch: string): string {
