@@ -496,9 +496,23 @@ export class ExecutionService {
     const output = execFileSync("git", ["status", "--short"], { cwd: worktreePath, encoding: "utf8" });
     return output
       .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => line.slice(3).trim());
+      .map((line) => this.parseChangedFilePath(line))
+      .filter((path): path is string => Boolean(path));
+  }
+
+  private parseChangedFilePath(line: string): string | null {
+    if (!line.trim()) {
+      return null;
+    }
+
+    const path = line.length > 3 ? line.slice(3) : line;
+    const renameSeparator = " -> ";
+    const renamedIndex = path.indexOf(renameSeparator);
+    if (renamedIndex >= 0) {
+      return path.slice(renamedIndex + renameSeparator.length).trim();
+    }
+
+    return path.trim();
   }
 
   private syncActualFiles(workItemId: string, changedFiles: string[]): { ok: true; actual_files: string[] } | { ok: false; message: string } {
