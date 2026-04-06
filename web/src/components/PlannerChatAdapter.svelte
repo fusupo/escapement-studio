@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher, onMount, tick } from "svelte";
+  import { createEventDispatcher, onMount, afterUpdate } from "svelte";
   import {
     approveGitHubSync,
     approveMemoryChange,
@@ -435,12 +435,12 @@
 
   $: waitingForInitialSnapshot = loading && !hasLoadedSnapshot;
 
-  // Auto-scroll chat to bottom when messages change
-  $: if (chatSubTab === 'transcript' && messages.length && chatScrollEl) {
-    tick().then(() => {
-      if (chatScrollEl) chatScrollEl.scrollTop = chatScrollEl.scrollHeight;
-    });
-  }
+  // Auto-scroll chat to bottom after DOM updates
+  afterUpdate(() => {
+    if (chatSubTab === 'transcript' && chatScrollEl) {
+      chatScrollEl.scrollTop = chatScrollEl.scrollHeight;
+    }
+  });
 
   onMount(() => {
     loadSnapshot();
