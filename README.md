@@ -102,14 +102,17 @@ This runs the server TypeScript check plus the production frontend build.
 22. Launch a dispatchable execution run and confirm status updates stream into the browser from `GET /api/execution/stream`.
 23. Confirm the launched run creates an isolated worktree under `/home/marc/escapement-studio-ctx/worktrees/` and artifacts under `/home/marc/escapement-studio-ctx/runs/`.
 24. Trigger a blocked launch condition (for example, reuse an existing branch/worktree) and confirm the browser shows a blocked execution run with clear safety errors.
-25. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
-26. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results, recent specialist runs, and recent execution runs are restored.
-27. Verify the graph view still loads data from `/api/graph`.
-28. Select a node to edit it in the sidebar.
-29. Create a new work item in the sidebar and confirm it appears in the graph.
-30. Create an edge between two nodes and confirm it appears in the graph and edge list.
-31. Delete an edge from the sidebar.
-32. Change repo/state/track/phase filters and confirm the rendered graph updates.
+25. Confirm the completed execution run auto-populates the related work item `actual_files` from the recorded `changed_files`.
+26. Open the reconciliation panel and confirm `GET /api/reconciliation/reports` shows matches, missed predicted files, unpredicted actual files, and drift summaries for reconciled work items.
+27. Ask the planner to delegate a `reconciliation-analyst` or call `reconciliation_query`, then stage a planning-memory update based on the reported drift and approve it through the existing memory approval flow.
+28. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
+29. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results, recent specialist runs, recent execution runs, and reconciliation reports are restored.
+30. Verify the graph view still loads data from `/api/graph`.
+31. Select a node to edit it in the sidebar.
+32. Create a new work item in the sidebar and confirm it appears in the graph.
+33. Create an edge between two nodes and confirm it appears in the graph and edge list.
+34. Delete an edge from the sidebar.
+35. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -220,6 +223,7 @@ curl http://localhost:3000/api/agent/session
 
 The snapshot returns the recent planner transcript plus active proposal/memory/GitHub-sync state and recent specialist runs used by the browser to restore workspace state after refresh.
 Execution runs are restored separately from `GET /api/execution/runs`.
+Reconciliation reports are restored from `GET /api/reconciliation/reports`.
 
 ### Root planner message + stream
 
@@ -308,6 +312,15 @@ Execution artifacts are persisted under:
 ```
 
 Blocked launches return `accepted: false` plus a run record with `status: "blocked"` and explicit safety check failures.
+
+### Read reconciliation reports
+
+```bash
+curl http://localhost:3000/api/reconciliation/reports
+curl http://localhost:3000/api/reconciliation/reports?work_item_id=studio-10
+```
+
+Each report compares `predicted_files` to the work item's recorded `actual_files`, links back to recent completed execution runs when available, and summarizes drift/overlap patterns that can be fed back into planning memory.
 
 ### Read a GitHub issue linked to a work item
 

@@ -201,6 +201,12 @@ export class SubAgentService {
           "Prioritize findings of kinds: predicted_file, predicted_module, likely_dependency, uncertainty.",
           "Focus on bounded predicted impact, not exhaustive dumps.",
         ].join(" ");
+      case "reconciliation-analyst":
+        return [
+          "Your job is to compare predicted scope to actual execution results and explain planning drift clearly.",
+          "Prioritize findings of kinds: prediction_match, prediction_miss, overprediction, drift_pattern, recommendation.",
+          "Focus on concise reconciliation learnings that can improve future planning and memory.",
+        ].join(" ");
     }
   }
 

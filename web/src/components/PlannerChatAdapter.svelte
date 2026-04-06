@@ -707,7 +707,7 @@
     <div class="proposal-header">
       <div>
         <h3>Recent specialist runs</h3>
-        <p class="muted">Ephemeral code-crawler and scope-predictor runs delegated by the planner.</p>
+        <p class="muted">Ephemeral code-crawler, scope-predictor, and reconciliation-analyst runs delegated by the planner.</p>
       </div>
     </div>
 
@@ -751,7 +751,7 @@
   <div class="planner-composer">
     <label>
       Message
-      <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, delegate specialists, propose memory updates, or explain blockers."></textarea>
+      <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, delegate specialists, review reconciliation drift, propose memory updates, or explain blockers."></textarea>
     </label>
     <div class="planner-actions">
       <button class="secondary" on:click={loadSnapshot} disabled={loading}>Refresh transcript</button>

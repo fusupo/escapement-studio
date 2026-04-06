@@ -205,18 +205,19 @@ export class ExecutionService {
 
     const assistantText = session.getLastAssistantText()?.trim() ?? "Execution run completed without a terminal summary.";
     const changedFiles = this.listChangedFiles(run.worktree_path);
+    const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
-    writeFileSync(join(run.artifact_dir, "outputs", "response.json"), JSON.stringify({ assistant_text: assistantText, changed_files: changedFiles }, null, 2), "utf8");
+    writeFileSync(join(run.artifact_dir, "outputs", "response.json"), JSON.stringify({ assistant_text: assistantText, changed_files: changedFiles, actual_files_sync: actualFilesSync }, null, 2), "utf8");
 
     run = this.updateRun(initialRun.run_id, {
       status: "completed",
       completed_at: this.now(),
-      progress_message: "Execution run completed.",
-      result_summary: assistantText,
+      progress_message: actualFilesSync.ok ? "Execution run completed. actual_files updated on the work item." : "Execution run completed.",
+      result_summary: actualFilesSync.ok ? `${assistantText}\n\nactual_files synced: ${changedFiles.length} file(s).` : assistantText,
       changed_files: changedFiles,
     })!;
     this.writeSummary(run, node);
-    this.appendEvent(run, { type: "run_completed", changed_files: changedFiles });
+    this.appendEvent(run, { type: "run_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
     this.emitRun("execution_result", run);
   }
 
@@ -498,6 +499,17 @@ export class ExecutionService {
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line) => line.slice(3).trim());
+  }
+
+  private syncActualFiles(workItemId: string, changedFiles: string[]): { ok: true; actual_files: string[] } | { ok: false; message: string } {
+    try {
+      const actualFiles = [...new Set(changedFiles.filter(Boolean))].sort();
+      this.workItemsService.update(workItemId, { actual_files: actualFiles });
+      return { ok: true, actual_files: actualFiles };
+    } catch (error) {
+      this.logger.warn(`Failed to sync actual_files for ${workItemId}: ${this.getErrorMessage(error)}`);
+      return { ok: false, message: this.getErrorMessage(error) };
+    }
   }
 
   private getWorktreePath(branch: string): string {

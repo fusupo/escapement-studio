@@ -20,6 +20,7 @@ import type {
 import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
+import { ReconciliationService } from "../reconciliation/reconciliation.service.js";
 import type {
   ApproveGitHubSyncDto,
   ApproveMutationProposalDto,
@@ -46,6 +47,7 @@ import type {
   SendAgentMessageResult,
   StudioSseEnvelope,
   UpdateWorkItemPayload,
+  ReconciliationQueryToolInput,
 } from "./types.js";
 
 @Injectable()
@@ -78,6 +80,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     @Inject(MemoryService) private readonly memoryService: MemoryService,
     @Inject(SubAgentService) private readonly subAgentService: SubAgentService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
+    @Inject(ReconciliationService) private readonly reconciliationService: ReconciliationService,
   ) {}
 
   async onModuleInit() {
@@ -297,6 +300,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         this.createDelegateSubAgentTool(),
         this.createGitHubReadTool(),
         this.createGitHubSyncTool(),
+        this.createReconciliationQueryTool(),
       ],
     });
 
@@ -544,7 +548,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         "Keep the delegated task narrow and include focus paths or work item ids when useful.",
       ],
       parameters: Type.Object({
-        agent_type: Type.Union([Type.Literal("code-crawler"), Type.Literal("scope-predictor")]),
+        agent_type: Type.Union([Type.Literal("code-crawler"), Type.Literal("scope-predictor"), Type.Literal("reconciliation-analyst")]),
         task: Type.String(),
         repo: Type.Optional(Type.String()),
         focus_paths: Type.Optional(Type.Array(Type.String())),
@@ -621,6 +625,32 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         return {
           content: [{ type: "text", text: `Staged GitHub sync ${sync.sync_id} with ${sync.operations.length} operation(s).` }],
           details: { sync },
+        };
+      },
+    });
+  }
+
+  private createReconciliationQueryTool() {
+    return defineTool({
+      name: "reconciliation_query",
+      label: "Reconciliation Query",
+      description: "Read deterministic predicted-vs-actual reconciliation reports for recent or specific work items.",
+      promptSnippet: "reconciliation_query: inspect reconciliation reports before explaining drift or proposing planning memory learnings.",
+      promptGuidelines: [
+        "Use reconciliation_query when you need deterministic predicted-vs-actual comparison data.",
+        "Prefer a specific work_item_id when discussing one execution run or one work item's drift.",
+      ],
+      parameters: Type.Object({
+        work_item_id: Type.Optional(Type.String()),
+      }),
+      execute: async (_toolCallId, params: ReconciliationQueryToolInput) => {
+        const result = params.work_item_id
+          ? this.reconciliationService.getReport(params.work_item_id)
+          : this.reconciliationService.listReports();
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: result,
         };
       },
     });
