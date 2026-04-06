@@ -165,8 +165,8 @@
 <section class="card execution-panel">
   <div class="panel-header execution-header">
     <div>
-      <h2>Execute workspace</h2>
-      <p class="muted">Launch dispatchable work, track live runs, inspect worktree and branch context, and prep PR or sync follow-up without leaving this view.</p>
+      <h2>Dispatch execution work</h2>
+      <p class="muted">Launch dispatchable work, track live runs, inspect worktree and branch context, and prep PR or sync follow-up without leaving the Execute tab.</p>
     </div>
     <div class="status-cluster execution-toolbar">
       <span class:healthy={connected} class="status-pill">{connected ? "Execution stream connected" : "Execution stream reconnecting"}</span>
