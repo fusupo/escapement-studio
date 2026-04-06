@@ -97,14 +97,19 @@ This runs the server TypeScript check plus the production frontend build.
 17. Ask the planner to use `github_read` and confirm issue details appear in the transcript/tool output.
 18. Ask the planner to stage a `github_sync` proposal and confirm a reviewable GitHub sync card appears in the browser.
 19. Approve the staged GitHub sync and confirm only the managed `studio-sync` issue body block changes.
-20. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
-21. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results and recent specialist runs are restored.
-22. Verify the graph view still loads data from `/api/graph`.
-23. Select a node to edit it in the sidebar.
-24. Create a new work item in the sidebar and confirm it appears in the graph.
-25. Create an edge between two nodes and confirm it appears in the graph and edge list.
-26. Delete an edge from the sidebar.
-27. Change repo/state/track/phase filters and confirm the rendered graph updates.
+20. Review the execution dispatch panel and confirm it loads a dispatch preview from `GET /api/execution/preview`.
+21. Confirm each dispatchable node shows worktree/branch safety checks before launch.
+22. Launch a dispatchable execution run and confirm status updates stream into the browser from `GET /api/execution/stream`.
+23. Confirm the launched run creates an isolated worktree under `/home/marc/escapement-studio-ctx/worktrees/` and artifacts under `/home/marc/escapement-studio-ctx/runs/`.
+24. Trigger a blocked launch condition (for example, reuse an existing branch/worktree) and confirm the browser shows a blocked execution run with clear safety errors.
+25. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
+26. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results, recent specialist runs, and recent execution runs are restored.
+27. Verify the graph view still loads data from `/api/graph`.
+28. Select a node to edit it in the sidebar.
+29. Create a new work item in the sidebar and confirm it appears in the graph.
+30. Create an edge between two nodes and confirm it appears in the graph and edge list.
+31. Delete an edge from the sidebar.
+32. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -214,6 +219,7 @@ curl http://localhost:3000/api/agent/session
 ```
 
 The snapshot returns the recent planner transcript plus active proposal/memory/GitHub-sync state and recent specialist runs used by the browser to restore workspace state after refresh.
+Execution runs are restored separately from `GET /api/execution/runs`.
 
 ### Root planner message + stream
 
@@ -256,6 +262,52 @@ The assembled planner context includes:
 
 The stream should emit SDK-native event names like `agent_start`, `turn_start`, `message_update`, and `agent_end` inside the Studio SSE envelope.
 It also emits Studio workflow events: `mutation_proposal`, `graph_commit_result`, `memory_change_proposal`, `memory_write_result`, `github_sync_proposal`, `github_sync_result`, `subagent_status`, and `subagent_result`.
+
+Execution runs use a separate SSE channel:
+
+```bash
+curl -N http://localhost:3000/api/execution/stream
+```
+
+That stream emits `execution_status` and `execution_result` envelopes as runs move through safety checks, worktree preparation, active execution, and terminal states.
+
+### Preview execution dispatch
+
+```bash
+curl http://localhost:3000/api/execution/preview
+curl http://localhost:3000/api/execution/runs
+```
+
+The preview returns dispatchable frontier groups, per-node safety checks, and launch metadata such as the target branch and isolated worktree path.
+
+### Launch an execution run
+
+```bash
+curl -X POST http://localhost:3000/api/execution/launch \
+  -H 'content-type: application/json' \
+  -d '{
+    "work_item_id": "studio-10"
+  }'
+```
+
+A successful launch returns an accepted execution run record and starts work in an isolated git worktree under:
+
+```text
+/home/marc/escapement-studio-ctx/worktrees/<branch>/
+```
+
+Execution artifacts are persisted under:
+
+```text
+/home/marc/escapement-studio-ctx/runs/<run_id>/
+  metadata.json
+  status.json
+  events.jsonl
+  summary.md
+  outputs/
+```
+
+Blocked launches return `accepted: false` plus a run record with `status: "blocked"` and explicit safety check failures.
 
 ### Read a GitHub issue linked to a work item
 

@@ -1,5 +1,6 @@
 <script>
   import PlannerChatAdapter from "./components/PlannerChatAdapter.svelte";
+  import ExecutionDispatchPanel from "./components/ExecutionDispatchPanel.svelte";
   import GraphView from "./components/GraphView.svelte";
   import FiltersToolbar from "./components/FiltersToolbar.svelte";
   import Sidebar from "./components/Sidebar.svelte";
@@ -175,6 +176,7 @@
   </header>
 
   <PlannerChatAdapter on:graphChanged={refresh} />
+  <ExecutionDispatchPanel />
 
   <FiltersToolbar {filters} options={filterOptions} onChange={handleFilterChange} onReset={resetFilters} />
 
