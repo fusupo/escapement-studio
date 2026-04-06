@@ -2,6 +2,7 @@ export interface AppConfig {
   port: number;
   manifestPath: string;
   planningSessionDir: string;
+  artifactRoot: string;
 }
 
 export function getConfig(): AppConfig {
@@ -9,5 +10,6 @@ export function getConfig(): AppConfig {
     port: Number(process.env.PORT ?? 3000),
     manifestPath: process.env.MANIFEST_PATH ?? ".manifest",
     planningSessionDir: process.env.PLANNING_SESSION_DIR ?? ".studio/planning/sessions",
+    artifactRoot: process.env.ARTIFACT_ROOT ?? "/home/marc/escapement-studio-ctx",
   };
 }

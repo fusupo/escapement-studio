@@ -27,6 +27,8 @@ export function connectPlannerStream({ onEvent, onOpen, onError } = {}) {
     "graph_commit_result",
     "memory_change_proposal",
     "memory_write_result",
+    "subagent_status",
+    "subagent_result",
   ].forEach(forward);
 
   stream.onopen = () => onOpen?.();

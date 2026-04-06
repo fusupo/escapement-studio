@@ -18,11 +18,13 @@ import type {
 } from "../graph/types.js";
 import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
+import { SubAgentService } from "./sub-agent.service.js";
 import type {
   ApproveMutationProposalDto,
   ApprovePlanningMemoryChangeDto,
   CreateEdgePayload,
   CreateWorkItemPayload,
+  DelegateSubAgentToolInput,
   GraphQueryToolInput,
   PlanningGraphCommitResult,
   PlanningMemoryChange,
@@ -65,6 +67,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     @Inject(GraphService) private readonly graphService: GraphService,
     @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
     @Inject(MemoryService) private readonly memoryService: MemoryService,
+    @Inject(SubAgentService) private readonly subAgentService: SubAgentService,
   ) {}
 
   async onModuleInit() {
@@ -99,6 +102,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       active_memory_change: this.getActiveMemoryChange(),
       last_memory_write_result: this.lastMemoryWriteResult,
       memory: this.memoryService.read(),
+      recent_subagent_runs: this.subAgentService.listRecentRuns(),
     };
   }
 
@@ -244,6 +248,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         this.createGraphMutateTool(),
         this.createMemoryReadTool(),
         this.createMemoryWriteTool(),
+        this.createDelegateSubAgentTool(),
       ],
     });
 
@@ -474,6 +479,39 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         return {
           content: [{ type: "text", text: `Staged planning memory change ${change.change_id} with ${change.edits.length} edit(s).` }],
           details: { change },
+        };
+      },
+    });
+  }
+
+  private createDelegateSubAgentTool() {
+    return defineTool({
+      name: "delegate_subagent",
+      label: "Delegate Sub-agent",
+      description: "Launch a bounded specialist run for repo research and return a structured result.",
+      promptSnippet: "delegate_subagent: delegate bounded code research to a structured specialist when the planner needs grounded repo evidence.",
+      promptGuidelines: [
+        "Use delegate_subagent when you need grounded repository evidence beyond quick direct reasoning.",
+        "Pick code-crawler for concrete implementation tracing and scope-predictor for bounded impact prediction.",
+        "Keep the delegated task narrow and include focus paths or work item ids when useful.",
+      ],
+      parameters: Type.Object({
+        agent_type: Type.Union([Type.Literal("code-crawler"), Type.Literal("scope-predictor")]),
+        task: Type.String(),
+        repo: Type.Optional(Type.String()),
+        focus_paths: Type.Optional(Type.Array(Type.String())),
+        work_item_ids: Type.Optional(Type.Array(Type.String())),
+        notes: Type.Optional(Type.String()),
+      }),
+      execute: async (_toolCallId, params: DelegateSubAgentToolInput) => {
+        const run = await this.subAgentService.runDelegation(params, {
+          onStatus: (nextRun) => this.emitStudioEvent("subagent_status", { run: nextRun }),
+          onResult: (nextRun) => this.emitStudioEvent("subagent_result", { run: nextRun }),
+        });
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(run.result ?? run, null, 2) }],
+          details: { run },
         };
       },
     });
