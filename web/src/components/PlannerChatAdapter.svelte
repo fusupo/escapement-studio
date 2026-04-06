@@ -655,7 +655,7 @@
     <div class="planner-composer">
       <label>
         Message
-        <textarea bind:value={draft} rows="2" placeholder="Ask the planner to inspect the graph, delegate specialists, review reconciliation drift, propose memory updates, or explain blockers."></textarea>
+        <textarea bind:value={draft} rows="2" placeholder="Ask the planner to inspect the graph, delegate specialists, review reconciliation drift, propose memory updates, or explain blockers." on:keydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (draft.trim() && !sending) submitMessage(); } }}></textarea>
       </label>
       <div class="planner-actions">
         <button class="secondary" on:click={loadSnapshot} disabled={loading}>Refresh transcript</button>
