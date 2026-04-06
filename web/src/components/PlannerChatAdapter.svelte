@@ -1,5 +1,5 @@
 <script>
-  import { createEventDispatcher, onMount } from "svelte";
+  import { createEventDispatcher, onMount, tick } from "svelte";
   import {
     approveGitHubSync,
     approveMemoryChange,
@@ -39,6 +39,7 @@
   let hasLoadedSnapshot = false;
   let stream;
   let chatSubTab = "transcript";
+  let chatScrollEl;
 
   function syncMutationSelection(proposal, preserve = false) {
     if (!proposal) {
@@ -434,6 +435,13 @@
 
   $: waitingForInitialSnapshot = loading && !hasLoadedSnapshot;
 
+  // Auto-scroll chat to bottom when messages change
+  $: if (chatSubTab === 'transcript' && messages.length && chatScrollEl) {
+    tick().then(() => {
+      if (chatScrollEl) chatScrollEl.scrollTop = chatScrollEl.scrollHeight;
+    });
+  }
+
   onMount(() => {
     loadSnapshot();
     stream = connectPlannerStream({
@@ -518,130 +526,131 @@
       </button>
     </div>
 
-    <div class="planner-scroll-region">
-      {#if error}<div class="banner error inline-banner">{error}</div>{/if}
+    {#if error}<div class="banner error inline-banner">{error}</div>{/if}
 
-      {#if lastCommitResult}
-      <div class="banner {lastCommitResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-        {#if lastCommitResult.result.status === 'applied'}
-          Applied {lastCommitResult.approved_mutation_ids.length} mutation(s) from {lastCommitResult.proposal_id}. Graph version {lastCommitResult.result.previous_graph_version} → {lastCommitResult.result.new_graph_version}.
-        {:else if lastCommitResult.result.status === 'stale'}
-          Proposal {lastCommitResult.proposal_id} is stale. Current graph version: {lastCommitResult.result.current_graph_version}.
-        {:else}
-          Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((item) => item.message).join('; ')}
-        {/if}
-      </div>
+    {#if lastCommitResult}
+    <div class="banner {lastCommitResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+      {#if lastCommitResult.result.status === 'applied'}
+        Applied {lastCommitResult.approved_mutation_ids.length} mutation(s) from {lastCommitResult.proposal_id}. Graph version {lastCommitResult.result.previous_graph_version} → {lastCommitResult.result.new_graph_version}.
+      {:else if lastCommitResult.result.status === 'stale'}
+        Proposal {lastCommitResult.proposal_id} is stale. Current graph version: {lastCommitResult.result.current_graph_version}.
+      {:else}
+        Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((item) => item.message).join('; ')}
       {/if}
+    </div>
+    {/if}
 
-      {#if lastMemoryWriteResult}
-      <div class="banner {lastMemoryWriteResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-        {#if lastMemoryWriteResult.result.status === 'applied'}
-          Applied {lastMemoryWriteResult.approved_edit_ids.length} planning memory edit(s). Memory hash {lastMemoryWriteResult.result.previous_content_hash.slice(0, 8)} → {lastMemoryWriteResult.result.new_content_hash.slice(0, 8)}.
-        {:else if lastMemoryWriteResult.result.status === 'stale'}
-          Memory change {lastMemoryWriteResult.change_id} is stale. Current memory hash: {lastMemoryWriteResult.result.current_content_hash.slice(0, 8)}.
-        {:else}
-          Memory write failed: {lastMemoryWriteResult.result.errors.map((item) => item.message).join('; ')}
-        {/if}
-      </div>
+    {#if lastMemoryWriteResult}
+    <div class="banner {lastMemoryWriteResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+      {#if lastMemoryWriteResult.result.status === 'applied'}
+        Applied {lastMemoryWriteResult.approved_edit_ids.length} planning memory edit(s). Memory hash {lastMemoryWriteResult.result.previous_content_hash.slice(0, 8)} → {lastMemoryWriteResult.result.new_content_hash.slice(0, 8)}.
+      {:else if lastMemoryWriteResult.result.status === 'stale'}
+        Memory change {lastMemoryWriteResult.change_id} is stale. Current memory hash: {lastMemoryWriteResult.result.current_content_hash.slice(0, 8)}.
+      {:else}
+        Memory write failed: {lastMemoryWriteResult.result.errors.map((item) => item.message).join('; ')}
       {/if}
+    </div>
+    {/if}
 
-      {#if lastGitHubSyncResult}
-      <div class="banner {lastGitHubSyncResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-        {#if lastGitHubSyncResult.result.status === 'applied'}
-          Applied {lastGitHubSyncResult.approved_operation_ids.length} GitHub sync operation(s). Body hash {lastGitHubSyncResult.result.previous_body_hash.slice(0, 8)} → {lastGitHubSyncResult.result.new_body_hash.slice(0, 8)}.
-        {:else if lastGitHubSyncResult.result.status === 'stale'}
-          GitHub sync {lastGitHubSyncResult.sync_id} is stale. Current body hash: {lastGitHubSyncResult.result.current_body_hash.slice(0, 8)}.
-        {:else}
-          GitHub sync failed: {lastGitHubSyncResult.result.errors.map((item) => item.message).join('; ')}
-        {/if}
-      </div>
+    {#if lastGitHubSyncResult}
+    <div class="banner {lastGitHubSyncResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+      {#if lastGitHubSyncResult.result.status === 'applied'}
+        Applied {lastGitHubSyncResult.approved_operation_ids.length} GitHub sync operation(s). Body hash {lastGitHubSyncResult.result.previous_body_hash.slice(0, 8)} → {lastGitHubSyncResult.result.new_body_hash.slice(0, 8)}.
+      {:else if lastGitHubSyncResult.result.status === 'stale'}
+        GitHub sync {lastGitHubSyncResult.sync_id} is stale. Current body hash: {lastGitHubSyncResult.result.current_body_hash.slice(0, 8)}.
+      {:else}
+        GitHub sync failed: {lastGitHubSyncResult.result.errors.map((item) => item.message).join('; ')}
       {/if}
+    </div>
+    {/if}
 
     {#if chatSubTab === 'transcript'}
-    <div class="planner-transcript">
-      {#if loading}
-        <div class="empty-state compact">Loading planner transcript…</div>
-      {:else if messages.length === 0}
-        <div class="empty-state compact">No planner messages yet. Send the first prompt from the browser.</div>
-      {:else}
-        {#each messages as message}
-          <article class="chat-entry {message.role}">
-            <div class="chat-entry-meta">
-              <strong>{message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Planner' : message.tool_name || 'Tool'}</strong>
-              <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
-            </div>
-            <pre>{message.content || (message.role === 'assistant' && isStreaming ? '…' : '')}</pre>
-          </article>
-        {/each}
-      {/if}
-    </div>
-    {:else}
-    <div class="planner-tools">
-      {#if toolEvents.length === 0}
-        <p class="muted">Tool activity will appear here during planner turns.</p>
-      {:else}
-        <ul class="tool-activity-list">
-          {#each toolEvents as toolEvent}
-            <li>
+    <div class="planner-scroll-region" bind:this={chatScrollEl}>
+      <div class="planner-transcript">
+        {#if loading}
+          <div class="empty-state compact">Loading planner transcript…</div>
+        {:else if messages.length === 0}
+          <div class="empty-state compact">No planner messages yet. Send the first prompt from the browser.</div>
+        {:else}
+          {#each messages as message}
+            <article class="chat-entry {message.role}">
               <div class="chat-entry-meta">
-                <strong>{toolEvent.tool_name}</strong>
-                <span>{new Date(toolEvent.timestamp).toLocaleTimeString()}</span>
+                <strong>{message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Planner' : message.tool_name || 'Tool'}</strong>
+                <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
               </div>
-              <p>{toolEvent.status}</p>
-              {#if toolEvent.content}<pre>{toolEvent.content}</pre>{/if}
-            </li>
+              <pre>{message.content || (message.role === 'assistant' && isStreaming ? '…' : '')}</pre>
+            </article>
           {/each}
-        </ul>
-      {/if}
-    </div>
-    {/if}
-
-    <section class="proposal-panel subagent-panel">
-    <div class="proposal-header">
-      <div>
-        <h3>Recent specialist runs</h3>
-        <p class="muted">Ephemeral code-crawler, scope-predictor, and reconciliation-analyst runs delegated by the planner.</p>
+        {/if}
       </div>
     </div>
-
-    {#if recentSubagentRuns.length === 0}
-      <p class="muted">No specialist runs yet.</p>
     {:else}
-      <div class="proposal-list">
-        {#each recentSubagentRuns as run}
-          <article class="proposal-card subagent-card">
-            <div class="proposal-card-header">
-              <div>
-                <strong>{run.agent_type}</strong>
-                <span class="proposal-type">{run.status}</span>
-                <code>{run.run_id}</code>
-              </div>
-            </div>
-            <p>{run.task}</p>
-            {#if run.progress_message}<p class="muted">{run.progress_message}</p>{/if}
-            {#if run.result}
-              <p><strong>{run.result.summary}</strong></p>
-              <p class="muted">Confidence: {run.result.confidence}</p>
-              {#if run.result.findings?.length}
-                <ul class="subagent-findings">
-                  {#each run.result.findings.slice(0, 4) as finding}
-                    <li>
-                      <strong>{finding.kind}</strong>
-                      {#if finding.file}<code>{finding.file}{finding.lines ? `:${finding.lines}` : ''}</code>{/if}
-                      <div>{finding.summary || '(no summary)'}</div>
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-            {/if}
-            <p class="muted">Artifacts: <code>{run.artifact_dir}</code></p>
-          </article>
-        {/each}
+    <div class="planner-scroll-region">
+      <div class="planner-tools">
+        {#if toolEvents.length === 0}
+          <p class="muted">Tool activity will appear here during planner turns.</p>
+        {:else}
+          <ul class="tool-activity-list">
+            {#each toolEvents as toolEvent}
+              <li>
+                <div class="chat-entry-meta">
+                  <strong>{toolEvent.tool_name}</strong>
+                  <span>{new Date(toolEvent.timestamp).toLocaleTimeString()}</span>
+                </div>
+                <p>{toolEvent.status}</p>
+                {#if toolEvent.content}<pre>{toolEvent.content}</pre>{/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </div>
-    {/if}
-    </section>
 
+      <section class="proposal-panel subagent-panel">
+        <div class="proposal-header">
+          <div>
+            <h3>Recent specialist runs</h3>
+            <p class="muted">Ephemeral code-crawler, scope-predictor, and reconciliation-analyst runs delegated by the planner.</p>
+          </div>
+        </div>
+
+        {#if recentSubagentRuns.length === 0}
+          <p class="muted">No specialist runs yet.</p>
+        {:else}
+          <div class="proposal-list">
+            {#each recentSubagentRuns as run}
+              <article class="proposal-card subagent-card">
+                <div class="proposal-card-header">
+                  <div>
+                    <strong>{run.agent_type}</strong>
+                    <span class="proposal-type">{run.status}</span>
+                    <code>{run.run_id}</code>
+                  </div>
+                </div>
+                <p>{run.task}</p>
+                {#if run.progress_message}<p class="muted">{run.progress_message}</p>{/if}
+                {#if run.result}
+                  <p><strong>{run.result.summary}</strong></p>
+                  <p class="muted">Confidence: {run.result.confidence}</p>
+                  {#if run.result.findings?.length}
+                    <ul class="subagent-findings">
+                      {#each run.result.findings.slice(0, 4) as finding}
+                        <li>
+                          <strong>{finding.kind}</strong>
+                          {#if finding.file}<code>{finding.file}{finding.lines ? `:${finding.lines}` : ''}</code>{/if}
+                          <div>{finding.summary || '(no summary)'}</div>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                {/if}
+                <p class="muted">Artifacts: <code>{run.artifact_dir}</code></p>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
     </div>
+    {/if}
 
     <div class="planner-composer">
       <label>
