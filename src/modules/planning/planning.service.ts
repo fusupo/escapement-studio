@@ -5,6 +5,7 @@ import { Observable, Subject } from "rxjs";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
+import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { GraphWriterService } from "../graph/graph-writer.service.js";
 import type {
@@ -20,11 +21,16 @@ import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
 import type {
+  ApproveGitHubSyncDto,
   ApproveMutationProposalDto,
   ApprovePlanningMemoryChangeDto,
   CreateEdgePayload,
   CreateWorkItemPayload,
   DelegateSubAgentToolInput,
+  GitHubReadToolInput,
+  GitHubSyncProposal,
+  GitHubSyncResult,
+  GitHubSyncToolInput,
   GraphQueryToolInput,
   PlanningGraphCommitResult,
   PlanningMemoryChange,
@@ -50,6 +56,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private readonly sessionDir = resolve(process.cwd(), getConfig().planningSessionDir);
   private readonly proposals = new Map<string, PlanningMutationProposal>();
   private readonly memoryChanges = new Map<string, PlanningMemoryChange>();
+  private readonly githubSyncs = new Map<string, GitHubSyncProposal>();
 
   private session?: AgentSession;
   private sessionPromise?: Promise<AgentSession>;
@@ -61,6 +68,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private lastCommitResult: PlanningGraphCommitResult | null = null;
   private activeMemoryChangeId: string | null = null;
   private lastMemoryWriteResult: PlanningMemoryWriteResult | null = null;
+  private activeGitHubSyncId: string | null = null;
+  private lastGitHubSyncResult: GitHubSyncResult | null = null;
 
   constructor(
     @Inject(ContextService) private readonly contextService: ContextService,
@@ -68,6 +77,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
     @Inject(MemoryService) private readonly memoryService: MemoryService,
     @Inject(SubAgentService) private readonly subAgentService: SubAgentService,
+    @Inject(GitHubService) private readonly githubService: GitHubService,
   ) {}
 
   async onModuleInit() {
@@ -101,6 +111,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       last_commit_result: this.lastCommitResult,
       active_memory_change: this.getActiveMemoryChange(),
       last_memory_write_result: this.lastMemoryWriteResult,
+      active_github_sync: this.getActiveGitHubSync(),
+      last_github_sync_result: this.lastGitHubSyncResult,
       memory: this.memoryService.read(),
       recent_subagent_runs: this.subAgentService.listRecentRuns(),
     };
@@ -220,6 +232,40 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     return writeResult;
   }
 
+  async approveGitHubSync(input: ApproveGitHubSyncDto): Promise<GitHubSyncResult> {
+    const syncId = input.sync_id?.trim();
+    if (!syncId) {
+      throw new BadRequestException("sync_id is required");
+    }
+
+    const approvedOperationIds = Array.from(new Set((input.approved_operation_ids ?? []).filter((id) => typeof id === "string" && id.trim())));
+    if (approvedOperationIds.length === 0) {
+      throw new BadRequestException("approved_operation_ids must contain at least one operation id");
+    }
+
+    const proposal = this.githubSyncs.get(syncId);
+    if (!proposal) {
+      throw new BadRequestException(`Unknown GitHub sync proposal: ${syncId}`);
+    }
+
+    const { result, issue } = await this.githubService.applySyncProposal(proposal, approvedOperationIds);
+    const activeGitHubSync = result.status === "applied"
+      ? this.updateActiveGitHubSyncAfterApply(proposal, approvedOperationIds)
+      : this.getActiveGitHubSync();
+
+    const syncResult: GitHubSyncResult = {
+      sync_id: proposal.sync_id,
+      approved_operation_ids: approvedOperationIds,
+      result,
+      active_github_sync: activeGitHubSync,
+      issue,
+    };
+
+    this.lastGitHubSyncResult = syncResult;
+    this.emitStudioEvent("github_sync_result", syncResult);
+    return syncResult;
+  }
+
   private async ensureSession(): Promise<AgentSession> {
     if (this.session) {
       return this.session;
@@ -249,6 +295,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         this.createMemoryReadTool(),
         this.createMemoryWriteTool(),
         this.createDelegateSubAgentTool(),
+        this.createGitHubReadTool(),
+        this.createGitHubSyncTool(),
       ],
     });
 
@@ -517,6 +565,67 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private createGitHubReadTool() {
+    return defineTool({
+      name: "github_read",
+      label: "GitHub Read",
+      description: "Read GitHub issue details for an issue-backed work item or repo issue.",
+      promptSnippet: "github_read: inspect GitHub issue details before making GitHub sync recommendations.",
+      promptGuidelines: [
+        "Use github_read when you need grounded issue details from GitHub rather than relying only on graph metadata.",
+        "Prefer the work item's repo + issue_number when available.",
+      ],
+      parameters: Type.Object({
+        repo: Type.String(),
+        issue_number: Type.Number(),
+      }),
+      execute: async (_toolCallId, params: GitHubReadToolInput) => {
+        const issue = await this.githubService.readIssue(params.repo, params.issue_number);
+        return {
+          content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
+          details: issue,
+        };
+      },
+    });
+  }
+
+  private createGitHubSyncTool() {
+    return defineTool({
+      name: "github_sync",
+      label: "GitHub Sync",
+      description: "Stage an approval-gated GitHub sync proposal for a GitHub-backed work item.",
+      promptSnippet: "github_sync: stage a structured GitHub sync proposal for browser approval instead of mutating GitHub directly.",
+      promptGuidelines: [
+        "Use github_sync only for narrow, non-destructive GitHub updates.",
+        "V1 sync supports only the machine-managed issue body block bounded by studio-sync markers.",
+        "Do not attempt direct GitHub mutation outside the approval flow.",
+      ],
+      parameters: Type.Object({
+        sync_id: Type.Optional(Type.String()),
+        created_at: Type.Optional(Type.String()),
+        source: Type.Optional(Type.Object({
+          agent: Type.Optional(Type.String()),
+          turn_id: Type.Optional(Type.String()),
+          session_id: Type.Optional(Type.String()),
+        })),
+        summary: Type.String(),
+        work_item_id: Type.String(),
+      }),
+      execute: async (_toolCallId, params: GitHubSyncToolInput) => {
+        const sync = await this.normalizeGitHubSync(params);
+        this.githubSyncs.set(sync.sync_id, sync);
+        this.activeGitHubSyncId = sync.sync_id;
+        this.lastGitHubSyncResult = null;
+        this.emitStudioEvent("github_sync_proposal", { sync });
+
+        return {
+          content: [{ type: "text", text: `Staged GitHub sync ${sync.sync_id} with ${sync.operations.length} operation(s).` }],
+          details: { sync },
+        };
+      },
+    });
+  }
+
   private normalizeProposal(input: ProposeMutationsToolInput): PlanningMutationProposal {
     const graphVersion = input.context?.based_on_graph_version ?? this.graphService.getGraph().graph_version;
     const proposalId = input.proposal_id?.trim() || `prop_${Date.now()}`;
@@ -581,6 +690,29 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       summary: input.summary.trim(),
       based_on_content_hash: memory.content_hash,
       edits: input.edits.map((edit, index) => this.normalizeMemoryEdit(edit, index)),
+    };
+  }
+
+  private async normalizeGitHubSync(input: GitHubSyncToolInput): Promise<GitHubSyncProposal> {
+    const staged = await this.githubService.stageManagedBlockSync(input.work_item_id);
+    return {
+      sync_id: input.sync_id?.trim() || `ghsync_${Date.now()}`,
+      created_at: input.created_at?.trim() || this.now(),
+      source: {
+        agent: input.source?.agent?.trim() || "root-planner",
+        turn_id: input.source?.turn_id?.trim() || this.currentTurnId,
+        session_id: input.source?.session_id?.trim() || this.session?.sessionId || "planning-root",
+      },
+      summary: input.summary.trim(),
+      issue: {
+        repo: staged.issue.repo,
+        issue_number: staged.issue.number,
+        issue_url: staged.issue.url,
+        title: staged.issue.title,
+      },
+      work_item_id: staged.work_item_id,
+      based_on_body_hash: staged.based_on_body_hash,
+      operations: staged.operations,
     };
   }
 
@@ -732,12 +864,40 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     return nextChange;
   }
 
+  private updateActiveGitHubSyncAfterApply(
+    proposal: GitHubSyncProposal,
+    approvedOperationIds: string[],
+  ): GitHubSyncProposal | null {
+    const remainingOperations = proposal.operations.filter((operation) => !approvedOperationIds.includes(operation.id));
+
+    if (remainingOperations.length === 0) {
+      this.githubSyncs.delete(proposal.sync_id);
+      if (this.activeGitHubSyncId === proposal.sync_id) {
+        this.activeGitHubSyncId = null;
+      }
+      return null;
+    }
+
+    const nextProposal: GitHubSyncProposal = {
+      ...proposal,
+      summary: `${proposal.summary} (${remainingOperations.length} operation(s) remaining)`,
+      operations: remainingOperations,
+    };
+    this.githubSyncs.set(nextProposal.sync_id, nextProposal);
+    this.activeGitHubSyncId = nextProposal.sync_id;
+    return nextProposal;
+  }
+
   private getActiveProposal(): PlanningMutationProposal | null {
     return this.activeProposalId ? this.proposals.get(this.activeProposalId) ?? null : null;
   }
 
   private getActiveMemoryChange(): PlanningMemoryChange | null {
     return this.activeMemoryChangeId ? this.memoryChanges.get(this.activeMemoryChangeId) ?? null : null;
+  }
+
+  private getActiveGitHubSync(): GitHubSyncProposal | null {
+    return this.activeGitHubSyncId ? this.githubSyncs.get(this.activeGitHubSyncId) ?? null : null;
   }
 
   private emitStudioEvent(eventType: string, payload: unknown) {

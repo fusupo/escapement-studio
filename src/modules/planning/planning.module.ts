@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
 import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
@@ -7,7 +8,7 @@ import { PlanningService } from "./planning.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
 
 @Module({
-  imports: [GraphModule],
+  imports: [GraphModule, GitHubModule],
   controllers: [PlanningController],
   providers: [PlanningService, ContextService, MemoryService, SubAgentService],
   exports: [PlanningService, ContextService, MemoryService, SubAgentService],
