@@ -125,9 +125,20 @@
     sessionId = event.session_id || sessionId;
 
     if (event.event_type === "mutation_proposal") {
-      activeProposal = event.payload?.proposal ?? null;
+      const nextProposal = event.payload?.proposal ?? null;
+      // When the same proposal is updated (e.g. multi-issue accumulation),
+      // preserve existing selections and auto-select only the new mutations.
+      const isSameProposal = nextProposal && activeProposal && nextProposal.proposal_id === activeProposal.proposal_id;
       lastCommitResult = null;
-      syncMutationSelection(activeProposal);
+      if (isSameProposal) {
+        const existingIds = new Set((activeProposal.mutations ?? []).map((m) => m.id));
+        const newIds = (nextProposal.mutations ?? []).filter((m) => !existingIds.has(m.id)).map((m) => m.id);
+        activeProposal = nextProposal;
+        selectedMutationIds = [...selectedMutationIds.filter((id) => nextProposal.mutations.some((m) => m.id === id)), ...newIds];
+      } else {
+        activeProposal = nextProposal;
+        syncMutationSelection(activeProposal);
+      }
       return;
     }
 

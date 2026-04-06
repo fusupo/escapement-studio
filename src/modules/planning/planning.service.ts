@@ -68,6 +68,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private turnCounter = 0;
   private currentTurnId: string | null = null;
   private activeProposalId: string | null = null;
+  private proposalCounter = 0;
   private lastCommitResult: PlanningGraphCommitResult | null = null;
   private activeMemoryChangeId: string | null = null;
   private lastMemoryWriteResult: PlanningMemoryWriteResult | null = null;
@@ -628,12 +629,13 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         });
 
         const workItemId = params.work_item_id?.trim() || `studio-${created.number}`;
+        const groupId = `issue-${created.number}`;
 
         const mutations: ProposeMutationsToolInput["mutations"] = [
           {
-            id: "m1",
             type: "create_work_item",
             entity_id: workItemId,
+            group_id: groupId,
             payload: {
               id: workItemId,
               name: created.title,
@@ -649,11 +651,10 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
           },
         ];
 
-        let edgeIndex = 2;
         if (params.parent_id?.trim()) {
           mutations.push({
-            id: `m${edgeIndex++}`,
             type: "create_edge",
+            group_id: groupId,
             payload: {
               from_id: workItemId,
               rel: "is_part_of",
@@ -667,8 +668,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
           for (const depId of params.depends_on_ids) {
             if (depId?.trim()) {
               mutations.push({
-                id: `m${edgeIndex++}`,
                 type: "create_edge",
+                group_id: groupId,
                 payload: {
                   from_id: workItemId,
                   rel: "depends_on",
@@ -680,10 +681,24 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
-        const proposal = this.normalizeProposal({
-          summary: `Graph work item for GitHub issue #${created.number}: ${created.title}`,
-          mutations,
-        });
+        // Accumulate into existing active proposal from the same turn,
+        // so multi-issue creation produces one reviewable proposal.
+        const existingProposal = this.getActiveProposalForAccumulation();
+        let proposal: PlanningMutationProposal;
+
+        if (existingProposal) {
+          proposal = this.accumulateMutations(
+            existingProposal,
+            mutations,
+            `+ GitHub issue #${created.number}: ${created.title}`,
+          );
+        } else {
+          proposal = this.normalizeProposal({
+            summary: `Graph work item for GitHub issue #${created.number}: ${created.title}`,
+            mutations,
+          });
+        }
+
         this.proposals.set(proposal.proposal_id, proposal);
         this.activeProposalId = proposal.proposal_id;
         this.lastCommitResult = null;
@@ -767,7 +782,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
 
   private normalizeProposal(input: ProposeMutationsToolInput): PlanningMutationProposal {
     const graphVersion = input.context?.based_on_graph_version ?? this.graphService.getGraph().graph_version;
-    const proposalId = input.proposal_id?.trim() || `prop_${Date.now()}`;
+    const proposalId = input.proposal_id?.trim() || `prop_${Date.now()}_${++this.proposalCounter}`;
     const createdAt = input.created_at?.trim() || this.now();
 
     return {
@@ -1029,6 +1044,53 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
 
   private getActiveProposal(): PlanningMutationProposal | null {
     return this.activeProposalId ? this.proposals.get(this.activeProposalId) ?? null : null;
+  }
+
+  /**
+   * Return the active proposal only if it was created in the current turn
+   * and has not yet been committed — suitable for accumulating additional
+   * mutations from a second github_create_issue call in the same flow.
+   */
+  private getActiveProposalForAccumulation(): PlanningMutationProposal | null {
+    const proposal = this.getActiveProposal();
+    if (!proposal || !this.currentTurnId) {
+      return null;
+    }
+    // Only accumulate when the existing proposal belongs to this turn
+    if (proposal.source.turn_id !== this.currentTurnId) {
+      return null;
+    }
+    return proposal;
+  }
+
+  /**
+   * Append new mutations to an existing proposal, re-numbering their IDs
+   * to avoid collisions. Returns the updated (same-ID) proposal.
+   */
+  private accumulateMutations(
+    existing: PlanningMutationProposal,
+    newMutations: ProposeMutationsToolInput["mutations"],
+    summaryAppendix: string,
+  ): PlanningMutationProposal {
+    // Find the highest existing numeric suffix to avoid ID collisions
+    const maxExistingIndex = existing.mutations.reduce((max, mutation) => {
+      const match = mutation.id.match(/^m(\d+)$/);
+      return match ? Math.max(max, Number(match[1])) : max;
+    }, 0);
+
+    let nextIndex = maxExistingIndex + 1;
+    const normalized = newMutations.map((mutation) =>
+      this.normalizeProposalMutation(
+        { ...mutation, id: `m${nextIndex++}` },
+        0, // index param unused when id is pre-set
+      ),
+    );
+
+    return {
+      ...existing,
+      summary: `${existing.summary} ${summaryAppendix}`,
+      mutations: [...existing.mutations, ...normalized],
+    };
   }
 
   private getActiveMemoryChange(): PlanningMemoryChange | null {
