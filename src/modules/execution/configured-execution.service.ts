@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
+import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord } from "../graph/types.js";
@@ -21,6 +22,8 @@ import type {
   ExecutionStatusEvent,
   LaunchExecutionRunDto,
   LaunchExecutionRunResult,
+  SyncMergedExecutionDto,
+  SyncMergedExecutionResult,
 } from "./types.js";
 
 @Injectable()
@@ -37,6 +40,7 @@ export class ExecutionService {
   constructor(
     @Inject(GraphService) private readonly graphService: GraphService,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
+    @Inject(GitHubService) private readonly githubService: GitHubService,
   ) {}
 
   stream(): Observable<MessageEvent> {
@@ -218,6 +222,85 @@ export class ExecutionService {
     this.writeSummary(nextRun);
 
     return { run: nextRun, pull_request: pullRequest };
+  }
+
+  async syncMergedPullRequest(input: SyncMergedExecutionDto): Promise<SyncMergedExecutionResult> {
+    const workItemId = input.work_item_id?.trim();
+    if (!workItemId) {
+      throw new BadRequestException("work_item_id is required");
+    }
+
+    const workItem = this.workItemsService.get(workItemId);
+    if (!workItem.repo) {
+      throw new BadRequestException(`Work item ${workItemId} is missing repo metadata required for PR sync`);
+    }
+
+    const pullRequest = input.pull_request_number
+      ? await this.githubService.readPullRequest(workItem.repo, input.pull_request_number)
+      : await this.resolvePullRequestFromWorkItem(workItem);
+
+    if (!pullRequest.merged_at) {
+      throw new BadRequestException(`Pull request #${pullRequest.number} has not been merged yet`);
+    }
+
+    const matchedRun = this.findRecentRunForSync(workItem, pullRequest.number);
+    const actualFilesSelection = this.selectActualFilesForMergeSync(input, workItem, matchedRun);
+    const nextBranch = this.normalizeNullableString(input.branch) ?? workItem.branch ?? (pullRequest.head_ref || null);
+    const nextArchivePath = this.hasOwn(input, "archive_path") ? (input.archive_path ?? null) : workItem.archive_path;
+    const nextMeta = this.buildMergedWorkItemMeta(workItem, pullRequest, matchedRun?.run_id ?? null, actualFilesSelection.source);
+
+    this.workItemsService.update(workItem.id, {
+      state: "done",
+      actual_files: actualFilesSelection.files,
+      branch: nextBranch,
+      archive_path: nextArchivePath,
+      meta: nextMeta,
+    });
+
+    const updatedWorkItem = this.workItemsService.get(workItem.id);
+    const managedBlockSync = input.stage_github_sync ? await this.safeStageManagedBlockSync(updatedWorkItem.id) : undefined;
+
+    if (matchedRun) {
+      const nextPullRequest: ExecutionPullRequestRecord = {
+        ...(matchedRun.pull_request ?? this.toExecutionPullRequestRecord(pullRequest)),
+        number: pullRequest.number,
+        url: pullRequest.url,
+        title: pullRequest.title,
+        body: pullRequest.body,
+        base_ref: pullRequest.base_ref,
+        head_ref: pullRequest.head_ref,
+        is_draft: pullRequest.is_draft,
+        state: pullRequest.state,
+        merged_at: pullRequest.merged_at,
+        merge_commit_sha: pullRequest.merge_commit_sha,
+      };
+      const syncedRun = this.updateRun(matchedRun.run_id, { pull_request: nextPullRequest }) ?? matchedRun;
+      this.appendEvent(syncedRun, {
+        type: "post_merge_sync_completed",
+        work_item_id: updatedWorkItem.id,
+        pull_request: nextPullRequest,
+        actual_files: actualFilesSelection.files,
+      });
+      this.writeSummary(syncedRun);
+    }
+
+    return {
+      synced: true,
+      work_item: {
+        id: updatedWorkItem.id,
+        state: updatedWorkItem.state,
+        branch: updatedWorkItem.branch,
+        archive_path: updatedWorkItem.archive_path,
+        actual_files: updatedWorkItem.actual_files,
+        meta: updatedWorkItem.meta,
+        updated_at: updatedWorkItem.updated_at,
+      },
+      pull_request: this.toExecutionPullRequestRecord(pullRequest),
+      matched_run_id: matchedRun?.run_id ?? null,
+      actual_files_source: actualFilesSelection.source,
+      dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
+      managed_block_sync: managedBlockSync,
+    };
   }
 
   private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview) {
@@ -679,6 +762,144 @@ export class ExecutionService {
       this.logger.warn(`Failed to sync actual_files for ${workItemId}: ${this.getErrorMessage(error)}`);
       return { ok: false, message: this.getErrorMessage(error) };
     }
+  }
+
+  private async resolvePullRequestFromWorkItem(workItem: WorkItemRecord) {
+    const branch = workItem.branch?.trim();
+    if (!branch) {
+      throw new BadRequestException(`Work item ${workItem.id} is missing branch metadata required to resolve its pull request`);
+    }
+
+    const pullRequest = await this.githubService.findPullRequestForBranch(workItem.repo ?? "", branch);
+    if (!pullRequest) {
+      throw new BadRequestException(`No pull request was found for branch ${branch}`);
+    }
+
+    return pullRequest;
+  }
+
+  private findRecentRunForSync(workItem: WorkItemRecord, pullRequestNumber: number): ExecutionRunRecord | null {
+    return this.listRecentRuns().find((run) => {
+      if (run.work_item_id !== workItem.id) {
+        return false;
+      }
+      if (run.pull_request?.number === pullRequestNumber) {
+        return true;
+      }
+      return run.branch === workItem.branch;
+    }) ?? null;
+  }
+
+  private selectActualFilesForMergeSync(
+    input: SyncMergedExecutionDto,
+    workItem: WorkItemRecord,
+    matchedRun: ExecutionRunRecord | null,
+  ): { files: string[]; source: "input" | "work_item" | "run" } {
+    if (Array.isArray(input.actual_files) && input.actual_files.length > 0) {
+      return { files: this.uniqueSorted(input.actual_files), source: "input" };
+    }
+    if (workItem.actual_files.length > 0) {
+      return { files: this.uniqueSorted(workItem.actual_files), source: "work_item" };
+    }
+    if (matchedRun?.changed_files?.length) {
+      return { files: this.uniqueSorted(matchedRun.changed_files), source: "run" };
+    }
+    return { files: [], source: "work_item" };
+  }
+
+  private buildMergedWorkItemMeta(
+    workItem: WorkItemRecord,
+    pullRequest: {
+      number: number;
+      url: string;
+      title: string;
+      state: string;
+      base_ref: string;
+      head_ref: string;
+      merged_at: string | null;
+      merge_commit_sha: string | null;
+    },
+    runId: string | null,
+    actualFilesSource: "input" | "work_item" | "run",
+  ): Record<string, unknown> {
+    return {
+      ...workItem.meta,
+      studio_post_merge_sync: {
+        synced_at: this.now(),
+        run_id: runId,
+        actual_files_source: actualFilesSource,
+        pull_request: {
+          number: pullRequest.number,
+          url: pullRequest.url,
+          title: pullRequest.title,
+          state: pullRequest.state,
+          base_ref: pullRequest.base_ref,
+          head_ref: pullRequest.head_ref,
+          merged_at: pullRequest.merged_at,
+          merge_commit_sha: pullRequest.merge_commit_sha,
+        },
+      },
+    };
+  }
+
+  private async safeStageManagedBlockSync(workItemId: string) {
+    try {
+      const staged = await this.githubService.stageManagedBlockSync(workItemId);
+      return {
+        work_item_id: staged.work_item_id,
+        based_on_body_hash: staged.based_on_body_hash,
+        operations: staged.operations,
+      };
+    } catch (error) {
+      this.logger.warn(`Failed to stage managed block sync for ${workItemId}: ${this.getErrorMessage(error)}`);
+      return null;
+    }
+  }
+
+  private toExecutionPullRequestRecord(pullRequest: {
+    number: number;
+    url: string;
+    title: string;
+    body: string;
+    base_ref: string;
+    head_ref: string;
+    is_draft: boolean;
+    state: string;
+    merged_at: string | null;
+    merge_commit_sha: string | null;
+  }): ExecutionPullRequestRecord {
+    return {
+      number: pullRequest.number,
+      url: pullRequest.url,
+      title: pullRequest.title,
+      body: pullRequest.body,
+      base_ref: pullRequest.base_ref,
+      head_ref: pullRequest.head_ref,
+      is_draft: pullRequest.is_draft,
+      created_at: this.now(),
+      state: pullRequest.state,
+      merged_at: pullRequest.merged_at,
+      merge_commit_sha: pullRequest.merge_commit_sha,
+    };
+  }
+
+  private normalizeNullableString(value?: string | null): string | null | undefined {
+    if (typeof value === "undefined") {
+      return undefined;
+    }
+    if (value === null) {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private hasOwn<T extends object>(value: T, key: PropertyKey): boolean {
+    return Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  private uniqueSorted(values: string[]): string[] {
+    return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
   }
 
   private getWorktreePath(branch: string): string {

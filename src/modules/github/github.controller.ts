@@ -12,4 +12,17 @@ export class GitHubController {
   ) {
     return this.githubService.readIssue(repo ?? "", Number(issueNumber));
   }
+
+  @Get("pull-request")
+  getPullRequest(
+    @Query("repo") repo?: string,
+    @Query("pull_request_number") pullRequestNumber?: string,
+    @Query("branch") branch?: string,
+  ) {
+    if (pullRequestNumber) {
+      return this.githubService.readPullRequest(repo ?? "", Number(pullRequestNumber));
+    }
+
+    return this.githubService.findPullRequestForBranch(repo ?? "", branch ?? "");
+  }
 }

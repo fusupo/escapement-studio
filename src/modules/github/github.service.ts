@@ -26,6 +26,33 @@ interface RawIssueResponse {
   assignees?: Array<{ login?: string; name?: string }>;
 }
 
+interface RawPullRequestResponse {
+  number: number;
+  url: string;
+  title: string;
+  body: string | null;
+  state: string;
+  isDraft?: boolean;
+  baseRefName?: string;
+  headRefName?: string;
+  mergedAt?: string | null;
+  mergeCommit?: { oid?: string | null } | null;
+}
+
+export interface GitHubPullRequestDetails {
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  body: string;
+  state: string;
+  is_draft: boolean;
+  base_ref: string;
+  head_ref: string;
+  merged_at: string | null;
+  merge_commit_sha: string | null;
+}
+
 @Injectable()
 export class GitHubService {
   constructor(
@@ -77,6 +104,56 @@ export class GitHubService {
       body_hash: this.hash(body),
       managed_block: managedBlock,
     };
+  }
+
+  async readPullRequest(repo: string, pullRequestNumber: number): Promise<GitHubPullRequestDetails> {
+    if (!repo?.trim()) {
+      throw new BadRequestException("repo is required");
+    }
+    if (!Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) {
+      throw new BadRequestException("pull_request_number must be a positive integer");
+    }
+
+    const raw = await this.runGhJson<RawPullRequestResponse>([
+      "pr",
+      "view",
+      String(pullRequestNumber),
+      "--repo",
+      repo,
+      "--json",
+      "number,url,title,body,state,isDraft,baseRefName,headRefName,mergedAt,mergeCommit",
+    ]);
+
+    return this.toPullRequestDetails(repo, raw);
+  }
+
+  async findPullRequestForBranch(repo: string, branch: string): Promise<GitHubPullRequestDetails | null> {
+    if (!repo?.trim()) {
+      throw new BadRequestException("repo is required");
+    }
+    if (!branch?.trim()) {
+      throw new BadRequestException("branch is required");
+    }
+
+    const pulls = await this.runGhJson<RawPullRequestResponse[]>([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--head",
+      branch,
+      "--state",
+      "all",
+      "--json",
+      "number,url,title,body,state,isDraft,baseRefName,headRefName,mergedAt,mergeCommit",
+    ]);
+
+    const exactMatches = pulls
+      .map((pull) => this.toPullRequestDetails(repo, pull))
+      .filter((pull) => pull.head_ref === branch)
+      .sort((left, right) => (right.merged_at ?? "").localeCompare(left.merged_at ?? "") || right.number - left.number);
+
+    return exactMatches[0] ?? null;
   }
 
   async stageManagedBlockSync(workItemId: string) {
@@ -280,6 +357,22 @@ export class GitHubService {
       body: body.replace(currentBlock, nextBlock),
       currentBlock,
       nextBlock,
+    };
+  }
+
+  private toPullRequestDetails(repo: string, raw: RawPullRequestResponse): GitHubPullRequestDetails {
+    return {
+      repo,
+      number: raw.number,
+      url: raw.url,
+      title: raw.title,
+      body: raw.body ?? "",
+      state: raw.state,
+      is_draft: Boolean(raw.isDraft),
+      base_ref: raw.baseRefName?.trim() || "",
+      head_ref: raw.headRefName?.trim() || "",
+      merged_at: raw.mergedAt ?? null,
+      merge_commit_sha: raw.mergeCommit?.oid ?? null,
     };
   }
 
