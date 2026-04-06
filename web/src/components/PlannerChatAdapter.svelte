@@ -449,7 +449,7 @@
   });
 </script>
 
-<section class="card planner-chat" class:planner-chat-loading={waitingForInitialSnapshot} aria-busy={waitingForInitialSnapshot}>
+<section class="card planner-chat planner-chat-shell" class:planner-chat-loading={waitingForInitialSnapshot} aria-busy={waitingForInitialSnapshot}>
   <div class="planner-header">
     <div>
       <h2>Planner chat</h2>
@@ -462,7 +462,7 @@
   </div>
 
   {#if waitingForInitialSnapshot}
-    <div class="planner-loading-state" role="status" aria-live="polite">
+    <div class="planner-loading-state planner-scroll-region" role="status" aria-live="polite">
       <div>
         <h3>Loading planner workspace…</h3>
         <p class="muted">Waiting for the initial planner session snapshot.</p>
@@ -508,45 +508,46 @@
       </label>
     </div>
 
-    {#if error}<div class="banner error inline-banner">{error}</div>{/if}
+    <div class="planner-scroll-region">
+      {#if error}<div class="banner error inline-banner">{error}</div>{/if}
 
-    {#if lastCommitResult}
-    <div class="banner {lastCommitResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-      {#if lastCommitResult.result.status === 'applied'}
-        Applied {lastCommitResult.approved_mutation_ids.length} mutation(s) from {lastCommitResult.proposal_id}. Graph version {lastCommitResult.result.previous_graph_version} → {lastCommitResult.result.new_graph_version}.
-      {:else if lastCommitResult.result.status === 'stale'}
-        Proposal {lastCommitResult.proposal_id} is stale. Current graph version: {lastCommitResult.result.current_graph_version}.
-      {:else}
-        Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((item) => item.message).join('; ')}
+      {#if lastCommitResult}
+      <div class="banner {lastCommitResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+        {#if lastCommitResult.result.status === 'applied'}
+          Applied {lastCommitResult.approved_mutation_ids.length} mutation(s) from {lastCommitResult.proposal_id}. Graph version {lastCommitResult.result.previous_graph_version} → {lastCommitResult.result.new_graph_version}.
+        {:else if lastCommitResult.result.status === 'stale'}
+          Proposal {lastCommitResult.proposal_id} is stale. Current graph version: {lastCommitResult.result.current_graph_version}.
+        {:else}
+          Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((item) => item.message).join('; ')}
+        {/if}
+      </div>
       {/if}
-    </div>
-    {/if}
 
-    {#if lastMemoryWriteResult}
-    <div class="banner {lastMemoryWriteResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-      {#if lastMemoryWriteResult.result.status === 'applied'}
-        Applied {lastMemoryWriteResult.approved_edit_ids.length} planning memory edit(s). Memory hash {lastMemoryWriteResult.result.previous_content_hash.slice(0, 8)} → {lastMemoryWriteResult.result.new_content_hash.slice(0, 8)}.
-      {:else if lastMemoryWriteResult.result.status === 'stale'}
-        Memory change {lastMemoryWriteResult.change_id} is stale. Current memory hash: {lastMemoryWriteResult.result.current_content_hash.slice(0, 8)}.
-      {:else}
-        Memory write failed: {lastMemoryWriteResult.result.errors.map((item) => item.message).join('; ')}
+      {#if lastMemoryWriteResult}
+      <div class="banner {lastMemoryWriteResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+        {#if lastMemoryWriteResult.result.status === 'applied'}
+          Applied {lastMemoryWriteResult.approved_edit_ids.length} planning memory edit(s). Memory hash {lastMemoryWriteResult.result.previous_content_hash.slice(0, 8)} → {lastMemoryWriteResult.result.new_content_hash.slice(0, 8)}.
+        {:else if lastMemoryWriteResult.result.status === 'stale'}
+          Memory change {lastMemoryWriteResult.change_id} is stale. Current memory hash: {lastMemoryWriteResult.result.current_content_hash.slice(0, 8)}.
+        {:else}
+          Memory write failed: {lastMemoryWriteResult.result.errors.map((item) => item.message).join('; ')}
+        {/if}
+      </div>
       {/if}
-    </div>
-    {/if}
 
-    {#if lastGitHubSyncResult}
-    <div class="banner {lastGitHubSyncResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-      {#if lastGitHubSyncResult.result.status === 'applied'}
-        Applied {lastGitHubSyncResult.approved_operation_ids.length} GitHub sync operation(s). Body hash {lastGitHubSyncResult.result.previous_body_hash.slice(0, 8)} → {lastGitHubSyncResult.result.new_body_hash.slice(0, 8)}.
-      {:else if lastGitHubSyncResult.result.status === 'stale'}
-        GitHub sync {lastGitHubSyncResult.sync_id} is stale. Current body hash: {lastGitHubSyncResult.result.current_body_hash.slice(0, 8)}.
-      {:else}
-        GitHub sync failed: {lastGitHubSyncResult.result.errors.map((item) => item.message).join('; ')}
+      {#if lastGitHubSyncResult}
+      <div class="banner {lastGitHubSyncResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+        {#if lastGitHubSyncResult.result.status === 'applied'}
+          Applied {lastGitHubSyncResult.approved_operation_ids.length} GitHub sync operation(s). Body hash {lastGitHubSyncResult.result.previous_body_hash.slice(0, 8)} → {lastGitHubSyncResult.result.new_body_hash.slice(0, 8)}.
+        {:else if lastGitHubSyncResult.result.status === 'stale'}
+          GitHub sync {lastGitHubSyncResult.sync_id} is stale. Current body hash: {lastGitHubSyncResult.result.current_body_hash.slice(0, 8)}.
+        {:else}
+          GitHub sync failed: {lastGitHubSyncResult.result.errors.map((item) => item.message).join('; ')}
+        {/if}
+      </div>
       {/if}
-    </div>
-    {/if}
 
-    <div class="planner-body">
+      <div class="planner-body">
     <div class="planner-transcript">
       {#if loading}
         <div class="empty-state compact">Loading planner transcript…</div>
@@ -782,15 +783,76 @@
     {/if}
     </section>
 
-    <div class="planner-composer">
-    <label>
-      Message
-      <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, delegate specialists, review reconciliation drift, propose memory updates, or explain blockers."></textarea>
-    </label>
-    <div class="planner-actions">
-      <button class="secondary" on:click={loadSnapshot} disabled={loading}>Refresh transcript</button>
-      <button on:click={submitMessage} disabled={sending || !draft.trim()}>{sending ? 'Sending...' : isStreaming ? 'Queue follow-up' : 'Send to planner'}</button>
     </div>
+
+    <div class="planner-composer planner-composer-shell">
+      <label>
+        Message
+        <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, delegate specialists, review reconciliation drift, propose memory updates, or explain blockers."></textarea>
+      </label>
+      <div class="planner-actions">
+        <button class="secondary" on:click={loadSnapshot} disabled={loading}>Refresh transcript</button>
+        <button on:click={submitMessage} disabled={sending || !draft.trim()}>{sending ? 'Sending...' : isStreaming ? 'Queue follow-up' : 'Send to planner'}</button>
+      </div>
     </div>
   {/if}
 </section>
+
+<style>
+  .planner-chat-shell {
+    height: min(100dvh - 13rem, 1120px);
+    min-height: 0;
+    overflow: hidden;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  .planner-scroll-region {
+    min-height: 0;
+    overflow: auto;
+    padding-right: 0.35rem;
+    overscroll-behavior: contain;
+  }
+
+  .planner-body {
+    min-height: min(52dvh, 540px);
+  }
+
+  .planner-transcript,
+  .planner-tools,
+  .proposal-list,
+  .memory-preview {
+    min-height: 0;
+  }
+
+  .planner-tools,
+  .proposal-list,
+  .memory-preview {
+    max-height: min(36dvh, 420px);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .planner-composer-shell {
+    border-top: 1px solid rgba(148, 163, 184, 0.16);
+    padding-top: 1rem;
+  }
+
+  @media (max-width: 1200px) {
+    .planner-chat-shell {
+      height: auto;
+      max-height: none;
+    }
+
+    .planner-scroll-region,
+    .planner-tools,
+    .proposal-list,
+    .memory-preview {
+      overflow: visible;
+      max-height: none;
+    }
+
+    .planner-body {
+      min-height: 0;
+    }
+  }
+</style>
