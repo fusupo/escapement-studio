@@ -6,6 +6,7 @@
   import FiltersToolbar from "./components/FiltersToolbar.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import {
+    closeGitHubIssue,
     createEdge,
     createWorkItem,
     deleteEdge,
@@ -28,6 +29,7 @@
   let health = null;
   let selectedIssueDetails = null;
   let activeTab = "planning";
+  let closingIssue = false;
 
   const workspaceTabs = [
     { id: "planning", label: "Planning" },
@@ -141,6 +143,21 @@
     }
   }
 
+  async function handleCloseIssue(item) {
+    if (!item?.repo || !item?.issue_number) return;
+    closingIssue = true;
+    error = "";
+    try {
+      await closeGitHubIssue({ repo: item.repo, issue_number: item.issue_number });
+      await updateWorkItem(item.id, { state: "done" });
+      await loadGraph();
+    } catch (closeError) {
+      error = closeError.message;
+    } finally {
+      closingIssue = false;
+    }
+  }
+
   function handleFilterChange(nextFilters) {
     filters = nextFilters;
     loadGraph();
@@ -225,6 +242,8 @@
             onCreateItem={handleCreateItem}
             onCreateEdge={handleCreateEdge}
             onDeleteEdge={handleDeleteEdge}
+            onCloseIssue={handleCloseIssue}
+            {closingIssue}
           />
         </div>
       </div>

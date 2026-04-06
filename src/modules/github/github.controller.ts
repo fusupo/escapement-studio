@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, Query } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Post, Query } from "@nestjs/common";
 import { GitHubService } from "./github.service.js";
 
 @Controller("api/github")
@@ -11,6 +11,14 @@ export class GitHubController {
     @Query("issue_number") issueNumber?: string,
   ) {
     return this.githubService.readIssue(repo ?? "", Number(issueNumber));
+  }
+
+  @Post("issue/close")
+  closeIssue(
+    @Body("repo") repo: string,
+    @Body("issue_number") issueNumber: number,
+  ) {
+    return this.githubService.closeIssue(repo, Number(issueNumber));
   }
 
   @Get("pull-request")
