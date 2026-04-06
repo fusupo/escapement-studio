@@ -4,8 +4,9 @@ import { GitHubModule } from "./modules/github/github.module.js";
 import { GraphModule } from "./modules/graph/graph.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { PlanningModule } from "./modules/planning/planning.module.js";
+import { ReconciliationModule } from "./modules/reconciliation/reconciliation.module.js";
 
 @Module({
-  imports: [ExecutionModule, GraphModule, HealthModule, GitHubModule, PlanningModule],
+  imports: [ExecutionModule, GraphModule, HealthModule, GitHubModule, PlanningModule, ReconciliationModule],
 })
 export class AppModule {}

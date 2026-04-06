@@ -86,6 +86,18 @@ export function launchExecutionRun(payload) {
   });
 }
 
+export function getReconciliationReports(params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) {
+      query.set(key, value);
+    }
+  }
+
+  const search = query.toString();
+  return request(`/api/reconciliation/reports${search ? `?${search}` : ""}`);
+}
+
 export function getGraph(filters = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {

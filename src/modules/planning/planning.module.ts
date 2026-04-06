@@ -6,9 +6,10 @@ import { MemoryService } from "./memory.service.js";
 import { PlanningController } from "./planning.controller.js";
 import { PlanningService } from "./planning.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
+import { ReconciliationModule } from "../reconciliation/reconciliation.module.js";
 
 @Module({
-  imports: [GraphModule, GitHubModule],
+  imports: [GraphModule, GitHubModule, ReconciliationModule],
   controllers: [PlanningController],
   providers: [PlanningService, ContextService, MemoryService, SubAgentService],
   exports: [PlanningService, ContextService, MemoryService, SubAgentService],

@@ -4,7 +4,7 @@ import type { ApplyGraphMutationsResult, EdgeRel, WorkItemKind, WorkItemState } 
 export type PlanningContextGraphMode = "default" | "focused" | "full";
 export type PlanningMutationType = "create_work_item" | "update_work_item" | "create_edge" | "delete_edge" | "delete_work_item";
 export type PlanningMemoryEditKind = "replace_text" | "insert_after_heading" | "delete_text";
-export type SubAgentType = "code-crawler" | "scope-predictor";
+export type SubAgentType = "code-crawler" | "scope-predictor" | "reconciliation-analyst";
 export type SubAgentRunStatus = "queued" | "running" | "completed" | "error";
 export type SubAgentConfidence = "low" | "medium" | "high";
 export type GitHubSyncOperationKind = "update_managed_body_block";
@@ -413,6 +413,10 @@ export interface GraphQueryToolInput {
   state?: WorkItemState;
   track?: string;
   phase?: string;
+}
+
+export interface ReconciliationQueryToolInput {
+  work_item_id?: string;
 }
 
 export interface CreateWorkItemPayload {
