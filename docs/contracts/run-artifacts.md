@@ -57,6 +57,11 @@ Human-readable completion summary where practical.
 ### `outputs/`
 Optional extra outputs and attachments.
 
+Common execution outputs may include:
+
+- `response.json` — captured execution-agent terminal response and changed-file sync result
+- `pull-request.json` — created PR metadata when Studio opens a PR from completed work
+
 ## Run types
 
 Suggested V1 types:
@@ -71,3 +76,4 @@ Suggested V1 types:
 - `status.json` and SSE serve different purposes: current durable snapshot vs live browser transport
 - artifacts should be retained by default in V1
 - failed runs should still write terminal status, terminal event, and best-effort summary
+- when a PR is opened from a completed execution run, the run summary/status may also include the created PR URL for later browser refreshes

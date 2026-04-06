@@ -31,7 +31,7 @@
   });
 </script>
 
-<section class="card reconciliation-panel">
+<section id="reconciliation-panel" class="card reconciliation-panel">
   <div class="panel-header execution-header">
     <div>
       <h2>Reconciliation</h2>
