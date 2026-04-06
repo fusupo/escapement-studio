@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { getExecutionPreview, launchExecutionRun, listExecutionRuns } from "../lib/api.js";
+  import { getExecutionPreview, launchExecutionRun, listExecutionRuns, openPullRequest } from "../lib/api.js";
 
   let preview = null;
   let runs = [];
@@ -12,6 +12,8 @@
   let copyTimer;
   let stream;
   let launchingIds = [];
+  let openingPrRunIds = [];
+  let prResults = {};
 
   $: activeRuns = runs.filter((run) => ["queued", "preparing", "running"].includes(run.status));
   $: completedRuns = runs.filter((run) => run.status === "completed");
@@ -114,6 +116,20 @@
     } finally {
       loading = false;
       refreshing = false;
+    }
+  }
+
+  async function handleOpenPR(run) {
+    openingPrRunIds = [...openingPrRunIds, run.run_id];
+    error = "";
+    try {
+      const result = await openPullRequest({ run_id: run.run_id, auto_commit: true });
+      mergeRun(result.run);
+      prResults = { ...prResults, [run.run_id]: result.pull_request };
+    } catch (prError) {
+      error = prError.message;
+    } finally {
+      openingPrRunIds = openingPrRunIds.filter((id) => id !== run.run_id);
     }
   }
 
@@ -423,7 +439,15 @@
                     <button class="secondary small" on:click={() => copyValue(run.branch, `Copied branch ${run.branch}`)}>Copy branch</button>
                     <button class="secondary small" on:click={() => copyValue(run.worktree_path, `Copied worktree for ${run.work_item_id}`)}>Copy worktree</button>
                     {#if run.status === "completed"}
-                      <button class="secondary small" on:click={() => copyValue(buildPrCommand(run), `Copied PR command for ${run.work_item_id}`)}>Copy PR command</button>
+                      {#if run.pull_request}
+                        <a class="ghost-link small" href={run.pull_request.url} target="_blank" rel="noreferrer">PR #{run.pull_request.number}</a>
+                      {:else if prResults[run.run_id]}
+                        <a class="ghost-link small" href={prResults[run.run_id].url} target="_blank" rel="noreferrer">PR #{prResults[run.run_id].number}</a>
+                      {:else}
+                        <button on:click={() => handleOpenPR(run)} disabled={openingPrRunIds.includes(run.run_id)}>
+                          {openingPrRunIds.includes(run.run_id) ? 'Opening PR…' : 'Open PR'}
+                        </button>
+                      {/if}
                       <a class="ghost-link small" href="#reconciliation-panel">Review reconciliation</a>
                     {/if}
                   </div>

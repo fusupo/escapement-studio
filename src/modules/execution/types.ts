@@ -114,6 +114,8 @@ export interface CreateExecutionPullRequestDto {
   body?: string;
   base_ref?: string;
   draft?: boolean;
+  auto_commit?: boolean;
+  commit_message?: string;
 }
 
 export interface CreateExecutionPullRequestResult {

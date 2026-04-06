@@ -86,6 +86,14 @@ export function launchExecutionRun(payload) {
   });
 }
 
+export function openPullRequest(payload) {
+  return request("/api/execution/pull-request", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getReconciliationReports(params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
