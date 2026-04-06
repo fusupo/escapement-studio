@@ -62,6 +62,30 @@ export function getGitHubIssueDetails({ repo, issue_number }) {
   return request(`/api/github/issue?${query.toString()}`);
 }
 
+export function getExecutionPreview(params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) {
+      query.set(key, value);
+    }
+  }
+
+  const search = query.toString();
+  return request(`/api/execution/preview${search ? `?${search}` : ""}`);
+}
+
+export function listExecutionRuns() {
+  return request("/api/execution/runs");
+}
+
+export function launchExecutionRun(payload) {
+  return request("/api/execution/launch", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getGraph(filters = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {

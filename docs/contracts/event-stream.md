@@ -52,6 +52,12 @@ data: {"event_id":"evt_000123","stream_id":"planning-root","timestamp":"2026-04-
 - `mutation_proposal`
 - `subagent_status`
 - `graph_commit_result`
+- `memory_change_proposal`
+- `memory_write_result`
+- `github_sync_proposal`
+- `github_sync_result`
+- `execution_status`
+- `execution_result`
 
 ## V1 reconnect policy
 
