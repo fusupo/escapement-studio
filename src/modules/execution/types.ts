@@ -84,6 +84,7 @@ export interface ExecutionRunRecord {
   progress_message?: string;
   result_summary?: string;
   changed_files?: string[];
+  pull_request?: ExecutionPullRequestRecord;
   safety_checks: ExecutionSafetyCheck[];
   errors?: Array<{ code: string; message: string }>;
 }
@@ -91,6 +92,30 @@ export interface ExecutionRunRecord {
 export interface LaunchExecutionRunResult {
   accepted: boolean;
   run: ExecutionRunRecord;
+}
+
+export interface ExecutionPullRequestRecord {
+  number: number;
+  url: string;
+  title: string;
+  body: string;
+  base_ref: string;
+  head_ref: string;
+  is_draft: boolean;
+  created_at: string;
+}
+
+export interface CreateExecutionPullRequestDto {
+  run_id: string;
+  title?: string;
+  body?: string;
+  base_ref?: string;
+  draft?: boolean;
+}
+
+export interface CreateExecutionPullRequestResult {
+  run: ExecutionRunRecord;
+  pull_request: ExecutionPullRequestRecord;
 }
 
 export interface ExecutionStatusEvent {
