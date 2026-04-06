@@ -39,6 +39,20 @@ interface RawPullRequestResponse {
   mergeCommit?: { oid?: string | null } | null;
 }
 
+export interface GitHubCreateIssueInput {
+  repo: string;
+  title: string;
+  body?: string;
+  labels?: string[];
+}
+
+export interface GitHubCreatedIssue {
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+}
+
 export interface GitHubPullRequestDetails {
   repo: string;
   number: number;
@@ -62,6 +76,49 @@ export class GitHubService {
 
   private get db(): DatabaseType {
     return this.sqlite.getDb();
+  }
+
+  async createIssue(input: GitHubCreateIssueInput): Promise<GitHubCreatedIssue> {
+    const { repo, title, body, labels } = input;
+    if (!repo?.trim()) {
+      throw new BadRequestException("repo is required");
+    }
+    if (!title?.trim()) {
+      throw new BadRequestException("title is required");
+    }
+
+    const args = [
+      "issue",
+      "create",
+      "--repo",
+      repo,
+      "--title",
+      title,
+    ];
+
+    if (body) {
+      args.push("--body", body);
+    }
+
+    if (labels && labels.length > 0) {
+      args.push("--label", labels.join(","));
+    }
+
+    const stdout = this.runGh(args).trim();
+
+    // gh issue create outputs the issue URL, e.g. https://github.com/owner/repo/issues/42
+    const issueNumberMatch = stdout.match(/\/issues\/(\d+)\s*$/);
+    if (!issueNumberMatch) {
+      throw new BadRequestException(`Could not parse issue number from gh output: ${stdout}`);
+    }
+
+    const issueNumber = Number(issueNumberMatch[1]);
+    return {
+      repo,
+      number: issueNumber,
+      url: stdout,
+      title,
+    };
   }
 
   async readIssue(repo: string, issueNumber: number): Promise<GitHubIssueDetails> {
