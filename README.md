@@ -50,6 +50,14 @@ By default, the server stores the dedicated root planner session under `.studio/
 PLANNING_SESSION_DIR=/path/to/planning-sessions npm run start
 ```
 
+### Configure run artifact storage
+
+By default, specialist/execution run artifacts are written under the external context root `/home/marc/escapement-studio-ctx/runs/`. Override with:
+
+```bash
+ARTIFACT_ROOT=/path/to/context-root npm run start
+```
+
 ### Build checks
 
 ```bash
@@ -83,14 +91,16 @@ This runs the server TypeScript check plus the production frontend build.
 11. Confirm the graph refreshes and the D3 view reflects the approved changes.
 12. Ask the planner to propose a planning memory update and confirm a staged memory change appears in the browser.
 13. Approve the staged memory change and confirm `PLANNING_MEMORY.md` updates only after approval.
-14. Ask the planner to revise or reject the current graph or memory proposal from the browser and confirm the follow-up stays in the same planner conversation.
-15. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/commit results are restored.
-16. Verify the graph view still loads data from `/api/graph`.
-17. Select a node to edit it in the sidebar.
-18. Create a new work item in the sidebar and confirm it appears in the graph.
-19. Create an edge between two nodes and confirm it appears in the graph and edge list.
-20. Delete an edge from the sidebar.
-21. Change repo/state/track/phase filters and confirm the rendered graph updates.
+14. Ask the planner to delegate a `code-crawler` or `scope-predictor` specialist and confirm a visible specialist run appears in the browser.
+15. Confirm the specialist run finishes with a structured summary/findings payload and an artifact directory under `/home/marc/escapement-studio-ctx/runs/`.
+16. Ask the planner to revise or reject the current graph or memory proposal from the browser and confirm the follow-up stays in the same planner conversation.
+17. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/commit results and recent specialist runs are restored.
+18. Verify the graph view still loads data from `/api/graph`.
+19. Select a node to edit it in the sidebar.
+20. Create a new work item in the sidebar and confirm it appears in the graph.
+21. Create an edge between two nodes and confirm it appears in the graph and edge list.
+22. Delete an edge from the sidebar.
+23. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -199,7 +209,7 @@ The server validates the full batch, applies it transactionally, and returns eit
 curl http://localhost:3000/api/agent/session
 ```
 
-The snapshot returns the recent planner transcript used by the browser to restore chat state after refresh.
+The snapshot returns the recent planner transcript plus active proposal/memory state and recent specialist runs used by the browser to restore workspace state after refresh.
 
 ### Root planner message + stream
 
@@ -241,7 +251,36 @@ The assembled planner context includes:
 - a small recent conversation window
 
 The stream should emit SDK-native event names like `agent_start`, `turn_start`, `message_update`, and `agent_end` inside the Studio SSE envelope.
-It also emits Studio workflow events: `mutation_proposal`, `graph_commit_result`, `memory_change_proposal`, and `memory_write_result`.
+It also emits Studio workflow events: `mutation_proposal`, `graph_commit_result`, `memory_change_proposal`, `memory_write_result`, `subagent_status`, and `subagent_result`.
+
+### Delegate a specialist sub-agent
+
+Ask the planner to run a specialist, or directly ask it to call `delegate_subagent`:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/message \
+  -H 'content-type: application/json' \
+  -d '{
+    "message":"Use delegate_subagent with agent_type `code-crawler` to inspect likely files for the planning service browser workflow"
+  }'
+```
+
+Then inspect recent specialist runs in the session snapshot:
+
+```bash
+curl http://localhost:3000/api/agent/session
+```
+
+Each completed run should also persist artifacts under:
+
+```text
+/home/marc/escapement-studio-ctx/runs/<run_id>/
+  metadata.json
+  status.json
+  events.jsonl
+  summary.md
+  outputs/
+```
 
 ### Stage and approve a planning memory change
 

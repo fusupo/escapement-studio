@@ -31,6 +31,7 @@
   let selectedMemoryEditIds = [];
   let lastMemoryWriteResult = null;
   let memoryDocument = null;
+  let recentSubagentRuns = [];
   let stream;
 
   function syncMutationSelection(proposal, preserve = false) {
@@ -60,6 +61,7 @@
     lastCommitResult = snapshot.last_commit_result ?? null;
     lastMemoryWriteResult = snapshot.last_memory_write_result ?? null;
     memoryDocument = snapshot.memory ?? null;
+    recentSubagentRuns = snapshot.recent_subagent_runs ?? [];
 
     const nextProposal = snapshot.active_proposal ?? null;
     const proposalChanged = nextProposal?.proposal_id !== activeProposal?.proposal_id;
@@ -127,6 +129,16 @@
       activeMemoryChange = event.payload?.active_memory_change ?? null;
       memoryDocument = event.payload?.memory ?? memoryDocument;
       syncMemorySelection(activeMemoryChange);
+      return;
+    }
+
+    if (event.event_type === "subagent_status" || event.event_type === "subagent_result") {
+      const nextRun = event.payload?.run;
+      if (!nextRun) {
+        return;
+      }
+
+      recentSubagentRuns = [nextRun, ...recentSubagentRuns.filter((run) => run.run_id !== nextRun.run_id)].slice(0, 12);
       return;
     }
 
@@ -542,10 +554,55 @@
     {/if}
   </section>
 
+  <section class="proposal-panel subagent-panel">
+    <div class="proposal-header">
+      <div>
+        <h3>Recent specialist runs</h3>
+        <p class="muted">Ephemeral code-crawler and scope-predictor runs delegated by the planner.</p>
+      </div>
+    </div>
+
+    {#if recentSubagentRuns.length === 0}
+      <p class="muted">No specialist runs yet.</p>
+    {:else}
+      <div class="proposal-list">
+        {#each recentSubagentRuns as run}
+          <article class="proposal-card subagent-card">
+            <div class="proposal-card-header">
+              <div>
+                <strong>{run.agent_type}</strong>
+                <span class="proposal-type">{run.status}</span>
+                <code>{run.run_id}</code>
+              </div>
+            </div>
+            <p>{run.task}</p>
+            {#if run.progress_message}<p class="muted">{run.progress_message}</p>{/if}
+            {#if run.result}
+              <p><strong>{run.result.summary}</strong></p>
+              <p class="muted">Confidence: {run.result.confidence}</p>
+              {#if run.result.findings?.length}
+                <ul class="subagent-findings">
+                  {#each run.result.findings.slice(0, 4) as finding}
+                    <li>
+                      <strong>{finding.kind}</strong>
+                      {#if finding.file}<code>{finding.file}{finding.lines ? `:${finding.lines}` : ''}</code>{/if}
+                      <div>{finding.summary || '(no summary)'}</div>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            {/if}
+            <p class="muted">Artifacts: <code>{run.artifact_dir}</code></p>
+          </article>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
   <div class="planner-composer">
     <label>
       Message
-      <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, propose memory updates, or explain blockers."></textarea>
+      <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, delegate specialists, propose memory updates, or explain blockers."></textarea>
     </label>
     <div class="planner-actions">
       <button class="secondary" on:click={loadSnapshot} disabled={loading}>Refresh transcript</button>

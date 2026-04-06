@@ -355,6 +355,29 @@ h2 {
   color: #f8fafc;
 }
 
+.subagent-panel {
+  border-top-style: dotted;
+}
+
+.subagent-card {
+  gap: 0.6rem;
+}
+
+.subagent-findings {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.subagent-findings li {
+  color: #cbd5e1;
+}
+
+.subagent-findings code {
+  margin-left: 0.35rem;
+}
+
 .inline-banner {
   width: 100%;
   margin: 0;

@@ -4,6 +4,9 @@ import type { ApplyGraphMutationsResult, EdgeRel, WorkItemKind, WorkItemState } 
 export type PlanningContextGraphMode = "default" | "focused" | "full";
 export type PlanningMutationType = "create_work_item" | "update_work_item" | "create_edge" | "delete_edge" | "delete_work_item";
 export type PlanningMemoryEditKind = "replace_text" | "insert_after_heading" | "delete_text";
+export type SubAgentType = "code-crawler" | "scope-predictor";
+export type SubAgentRunStatus = "queued" | "running" | "completed" | "error";
+export type SubAgentConfidence = "low" | "medium" | "high";
 
 export interface SendAgentMessageDto {
   message: string;
@@ -136,6 +139,59 @@ export interface PlanningMemoryWriteResult {
   memory: PlanningMemoryDocument;
 }
 
+export interface SubAgentFinding {
+  kind: string;
+  file?: string;
+  lines?: string;
+  summary?: string;
+  snippet?: string;
+  [key: string]: unknown;
+}
+
+export interface SubAgentError {
+  code: string;
+  message: string;
+}
+
+export interface SubAgentResultEnvelope {
+  run_id: string;
+  agent_type: SubAgentType;
+  status: "completed" | "error";
+  summary: string;
+  confidence: SubAgentConfidence;
+  findings: SubAgentFinding[];
+  open_questions?: string[];
+  errors?: SubAgentError[];
+}
+
+export interface DelegateSubAgentToolInput {
+  agent_type: SubAgentType;
+  task: string;
+  repo?: string;
+  focus_paths?: string[];
+  work_item_ids?: string[];
+  notes?: string;
+}
+
+export interface SubAgentRunRecord {
+  run_id: string;
+  agent_type: SubAgentType;
+  task: string;
+  status: SubAgentRunStatus;
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  completed_at?: string;
+  session_id?: string;
+  repo?: string;
+  focus_paths?: string[];
+  work_item_ids?: string[];
+  notes?: string;
+  artifact_dir: string;
+  progress_message?: string;
+  result?: SubAgentResultEnvelope;
+}
+
 export interface PlanningSessionSnapshot {
   session_id: string;
   session_file?: string;
@@ -146,6 +202,7 @@ export interface PlanningSessionSnapshot {
   active_memory_change: PlanningMemoryChange | null;
   last_memory_write_result: PlanningMemoryWriteResult | null;
   memory: PlanningMemoryDocument;
+  recent_subagent_runs: SubAgentRunRecord[];
 }
 
 export interface StudioSseEnvelope {
