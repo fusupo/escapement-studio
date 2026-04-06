@@ -596,154 +596,6 @@
     </div>
     {/if}
 
-    <section class="proposal-panel">
-    <div class="proposal-header">
-      <div>
-        <h3>Active mutation proposal</h3>
-        <p class="muted">Latest structured graph proposal emitted by the planner.</p>
-      </div>
-      {#if activeProposal?.context?.based_on_graph_version}<span class="status-pill healthy">graph v{activeProposal.context.based_on_graph_version}</span>{/if}
-    </div>
-
-    {#if !activeProposal}
-      <p class="muted">No active graph proposal yet.</p>
-    {:else}
-      <div class="proposal-summary">
-        <strong>{activeProposal.proposal_id}</strong>
-        <p>{activeProposal.summary}</p>
-      </div>
-      <div class="proposal-list">
-        {#each activeProposal.mutations as mutation}
-          <label class="proposal-card">
-            <div class="proposal-card-header">
-              <input type="checkbox" checked={selectedMutationIds.includes(mutation.id)} on:change={(event) => toggleMutationSelection(mutation.id, event.currentTarget.checked)} />
-              <div>
-                <strong>{mutation.id}</strong>
-                <span class="proposal-type">{mutation.type}</span>
-                {#if mutation.entity_id}<code>{mutation.entity_id}</code>{/if}
-              </div>
-            </div>
-            <p>{mutation.rationale}</p>
-            {#if mutation.payload}<pre>{JSON.stringify(mutation.payload, null, 2)}</pre>{/if}
-          </label>
-        {/each}
-      </div>
-      <div class="planner-actions proposal-actions">
-        <button on:click={approveSelectedMutations} disabled={approving || selectedMutationIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMutationIds.length} selected`}</button>
-        <button class="secondary" on:click={rejectProposal} disabled={sending}>Reject via follow-up</button>
-        <button class="secondary" on:click={reviseProposal} disabled={sending}>Revise via follow-up</button>
-      </div>
-    {/if}
-    </section>
-
-    <section class="proposal-panel memory-panel">
-    <div class="proposal-header">
-      <div>
-        <h3>Planning memory</h3>
-        <p class="muted">Curated durable memory from <code>PLANNING_MEMORY.md</code>.</p>
-      </div>
-      {#if memoryDocument}<span class="status-pill">{memoryDocument.content_hash.slice(0, 8)}</span>{/if}
-    </div>
-
-    {#if memoryDocument}
-      <details class="memory-preview">
-        <summary>Current planning memory</summary>
-        <pre>{memoryDocument.content}</pre>
-      </details>
-    {/if}
-
-    {#if !activeMemoryChange}
-      <p class="muted">No staged planning memory change yet.</p>
-    {:else}
-      <div class="proposal-summary">
-        <strong>{activeMemoryChange.change_id}</strong>
-        <p>{activeMemoryChange.summary}</p>
-      </div>
-      <div class="proposal-list">
-        {#each activeMemoryChange.edits as edit}
-          <label class="proposal-card memory-edit-card">
-            <div class="proposal-card-header">
-              <input type="checkbox" checked={selectedMemoryEditIds.includes(edit.id)} on:change={(event) => toggleMemorySelection(edit.id, event.currentTarget.checked)} />
-              <div>
-                <strong>{edit.id}</strong>
-                <span class="proposal-type">{edit.kind}</span>
-                {#if edit.target_heading}<code>{edit.target_heading}</code>{/if}
-              </div>
-            </div>
-            <strong>{edit.summary}</strong>
-            <p>{edit.rationale}</p>
-            {#if edit.old_text}
-              <div>
-                <div class="muted">Old text</div>
-                <pre>{edit.old_text}</pre>
-              </div>
-            {/if}
-            {#if edit.new_text}
-              <div>
-                <div class="muted">New text</div>
-                <pre>{edit.new_text}</pre>
-              </div>
-            {/if}
-          </label>
-        {/each}
-      </div>
-      <div class="planner-actions proposal-actions">
-        <button on:click={approveSelectedMemoryEdits} disabled={approving || selectedMemoryEditIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMemoryEditIds.length} memory edit(s)`}</button>
-        <button class="secondary" on:click={rejectMemoryChange} disabled={sending}>Reject via follow-up</button>
-        <button class="secondary" on:click={reviseMemoryChange} disabled={sending}>Revise via follow-up</button>
-      </div>
-    {/if}
-    </section>
-
-    <section class="proposal-panel github-sync-panel">
-    <div class="proposal-header">
-      <div>
-        <h3>GitHub sync</h3>
-        <p class="muted">Approval-gated issue sync proposals for the managed <code>studio-sync</code> block.</p>
-      </div>
-      {#if activeGitHubSync}<span class="status-pill">{activeGitHubSync.issue.repo} #{activeGitHubSync.issue.issue_number}</span>{/if}
-    </div>
-
-    {#if !activeGitHubSync}
-      <p class="muted">No staged GitHub sync proposal yet.</p>
-    {:else}
-      <div class="proposal-summary">
-        <strong>{activeGitHubSync.sync_id}</strong>
-        <p>{activeGitHubSync.summary}</p>
-      </div>
-      <div class="proposal-list">
-        {#each activeGitHubSync.operations as operation}
-          <label class="proposal-card github-sync-card">
-            <div class="proposal-card-header">
-              <input type="checkbox" checked={selectedGitHubOperationIds.includes(operation.id)} on:change={(event) => toggleGitHubSelection(operation.id, event.currentTarget.checked)} />
-              <div>
-                <strong>{operation.id}</strong>
-                <span class="proposal-type">{operation.kind}</span>
-              </div>
-            </div>
-            <strong>{operation.summary}</strong>
-            <p>{operation.rationale}</p>
-            <div class="sync-preview-grid">
-              <div>
-                <div class="muted">Current block</div>
-                <pre>{operation.preview.before}</pre>
-              </div>
-              <div>
-                <div class="muted">Proposed block</div>
-                <pre>{operation.preview.after}</pre>
-              </div>
-            </div>
-          </label>
-        {/each}
-      </div>
-      <div class="planner-actions proposal-actions">
-        <button on:click={approveSelectedGitHubOperations} disabled={approving || selectedGitHubOperationIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedGitHubOperationIds.length} sync operation(s)`}</button>
-        <button class="secondary" on:click={rejectGitHubSync} disabled={sending}>Reject via follow-up</button>
-        <button class="secondary" on:click={reviseGitHubSync} disabled={sending}>Revise via follow-up</button>
-      </div>
-    {/if}
-    </section>
-
     <section class="proposal-panel subagent-panel">
     <div class="proposal-header">
       <div>
@@ -804,6 +656,166 @@
   {/if}
 </section>
 
+{#if activeProposal || activeMemoryChange || activeGitHubSync}
+<div class="approval-overlay" on:click|self={() => {}}>
+  <div class="approval-modal">
+    {#if activeProposal}
+    <div class="approval-section">
+      <div class="approval-header">
+        <h3>Graph mutation proposal</h3>
+        {#if activeProposal.context?.based_on_graph_version}<span class="status-pill healthy">graph v{activeProposal.context.based_on_graph_version}</span>{/if}
+      </div>
+      <div class="proposal-summary">
+        <strong>{activeProposal.proposal_id}</strong>
+        <p>{activeProposal.summary}</p>
+      </div>
+      <div class="proposal-list">
+        {#each activeProposal.mutations as mutation}
+          <label class="proposal-card">
+            <div class="proposal-card-header">
+              <input type="checkbox" checked={selectedMutationIds.includes(mutation.id)} on:change={(event) => toggleMutationSelection(mutation.id, event.currentTarget.checked)} />
+              <div>
+                <strong>{mutation.id}</strong>
+                <span class="proposal-type">{mutation.type}</span>
+                {#if mutation.entity_id}<code>{mutation.entity_id}</code>{/if}
+              </div>
+            </div>
+            <p>{mutation.rationale}</p>
+            {#if mutation.payload}<pre>{JSON.stringify(mutation.payload, null, 2)}</pre>{/if}
+          </label>
+        {/each}
+      </div>
+      <div class="approval-actions">
+        <button on:click={approveSelectedMutations} disabled={approving || selectedMutationIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMutationIds.length} selected`}</button>
+        <button class="secondary" on:click={rejectProposal} disabled={sending}>Reject</button>
+        <button class="secondary" on:click={reviseProposal} disabled={sending}>Revise</button>
+      </div>
+    </div>
+    {/if}
+
+    {#if activeMemoryChange}
+    <div class="approval-section">
+      <div class="approval-header">
+        <h3>Planning memory change</h3>
+        {#if memoryDocument}<span class="status-pill">{memoryDocument.content_hash.slice(0, 8)}</span>{/if}
+      </div>
+      <div class="proposal-summary">
+        <strong>{activeMemoryChange.change_id}</strong>
+        <p>{activeMemoryChange.summary}</p>
+      </div>
+      <div class="proposal-list">
+        {#each activeMemoryChange.edits as edit}
+          <label class="proposal-card memory-edit-card">
+            <div class="proposal-card-header">
+              <input type="checkbox" checked={selectedMemoryEditIds.includes(edit.id)} on:change={(event) => toggleMemorySelection(edit.id, event.currentTarget.checked)} />
+              <div>
+                <strong>{edit.id}</strong>
+                <span class="proposal-type">{edit.kind}</span>
+                {#if edit.target_heading}<code>{edit.target_heading}</code>{/if}
+              </div>
+            </div>
+            <strong>{edit.summary}</strong>
+            <p>{edit.rationale}</p>
+            {#if edit.old_text}<div><div class="muted">Old text</div><pre>{edit.old_text}</pre></div>{/if}
+            {#if edit.new_text}<div><div class="muted">New text</div><pre>{edit.new_text}</pre></div>{/if}
+          </label>
+        {/each}
+      </div>
+      <div class="approval-actions">
+        <button on:click={approveSelectedMemoryEdits} disabled={approving || selectedMemoryEditIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMemoryEditIds.length} memory edit(s)`}</button>
+        <button class="secondary" on:click={rejectMemoryChange} disabled={sending}>Reject</button>
+        <button class="secondary" on:click={reviseMemoryChange} disabled={sending}>Revise</button>
+      </div>
+    </div>
+    {/if}
+
+    {#if activeGitHubSync}
+    <div class="approval-section">
+      <div class="approval-header">
+        <h3>GitHub sync</h3>
+        <span class="status-pill">{activeGitHubSync.issue.repo} #{activeGitHubSync.issue.issue_number}</span>
+      </div>
+      <div class="proposal-summary">
+        <strong>{activeGitHubSync.sync_id}</strong>
+        <p>{activeGitHubSync.summary}</p>
+      </div>
+      <div class="proposal-list">
+        {#each activeGitHubSync.operations as operation}
+          <label class="proposal-card github-sync-card">
+            <div class="proposal-card-header">
+              <input type="checkbox" checked={selectedGitHubOperationIds.includes(operation.id)} on:change={(event) => toggleGitHubSelection(operation.id, event.currentTarget.checked)} />
+              <div>
+                <strong>{operation.id}</strong>
+                <span class="proposal-type">{operation.kind}</span>
+              </div>
+            </div>
+            <strong>{operation.summary}</strong>
+            <p>{operation.rationale}</p>
+            <div class="sync-preview-grid">
+              <div><div class="muted">Current block</div><pre>{operation.preview.before}</pre></div>
+              <div><div class="muted">Proposed block</div><pre>{operation.preview.after}</pre></div>
+            </div>
+          </label>
+        {/each}
+      </div>
+      <div class="approval-actions">
+        <button on:click={approveSelectedGitHubOperations} disabled={approving || selectedGitHubOperationIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedGitHubOperationIds.length} sync operation(s)`}</button>
+        <button class="secondary" on:click={rejectGitHubSync} disabled={sending}>Reject</button>
+        <button class="secondary" on:click={reviseGitHubSync} disabled={sending}>Revise</button>
+      </div>
+    </div>
+    {/if}
+  </div>
+</div>
+{/if}
+
 <style>
-  /* Parent (.col-chat) controls height; we just fill it */
+  .approval-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+  }
+
+  .approval-modal {
+    width: min(680px, calc(100vw - 2rem));
+    max-height: calc(100vh - 4rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: #0f172a;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 14px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+    padding: 1.25rem;
+    display: grid;
+    gap: 1.25rem;
+  }
+
+  .approval-section {
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .approval-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .approval-header h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .approval-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    padding-top: 0.35rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.12);
+  }
 </style>
