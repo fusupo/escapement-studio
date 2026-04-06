@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Param, Post, Query, Sse } from "@nestjs/
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./execution.service.js";
-import type { CleanupWorktreeDto, CreateExecutionPullRequestDto, LaunchExecutionRunDto, SyncMergedExecutionDto } from "./types.js";
+import type { CleanupWorktreeDto, CreateExecutionPullRequestDto, FollowUpMessageDto, LaunchExecutionRunDto, SyncMergedExecutionDto } from "./types.js";
 
 @Controller("api/execution")
 export class ExecutionController {
@@ -46,6 +46,16 @@ export class ExecutionController {
   @Post("cleanup-all")
   cleanupAllStale() {
     return this.executionService.cleanupAllStale();
+  }
+
+  @Post("follow-up")
+  sendFollowUp(@Body() body: FollowUpMessageDto) {
+    return this.executionService.sendFollowUp(body);
+  }
+
+  @Get("runs/:runId/chat")
+  getRunChat(@Param("runId") runId: string) {
+    return this.executionService.getRunChatHistory(runId);
   }
 
   @Sse("stream")

@@ -22,10 +22,14 @@ import type {
   ExecutionRunRecord,
   ExecutionSafetyCheck,
   ExecutionStatusEvent,
+  FollowUpMessageDto,
+  FollowUpMessageResult,
   LaunchExecutionRunDto,
   LaunchExecutionRunResult,
   CleanupWorktreeDto,
   CleanupWorktreeResult,
+  RunChatHistory,
+  RunChatMessage,
   SyncMergedExecutionDto,
   SyncMergedExecutionResult,
 } from "./types.js";
@@ -41,6 +45,10 @@ export class ExecutionService {
   private readonly recentRunLimit = 16;
   private readonly activityLogLimit = 50;
   private eventCounter = 0;
+  /** Active agent sessions keyed by run_id — kept alive while run is active */
+  private readonly activeSessions = new Map<string, import("@mariozechner/pi-coding-agent").AgentSession>();
+  /** Chat history per run (user follow-ups + assistant replies) */
+  private readonly chatHistories = new Map<string, RunChatMessage[]>();
 
   constructor(
     @Inject(GraphService) private readonly graphService: GraphService,
@@ -459,6 +467,9 @@ export class ExecutionService {
     this.pushActivity(run.run_id, "status_change", "Agent session started.");
     this.appendEvent(run, { type: "session_started", session_id: session.sessionId });
 
+    // Store session so follow-up messages can reach it while the run is active
+    this.activeSessions.set(run.run_id, session);
+
     const runId = run.run_id;
     const unsubscribe = session.subscribe((event) => {
       this.handleSessionEvent(runId, event);
@@ -468,10 +479,13 @@ export class ExecutionService {
       await session.prompt(run.prompt);
     } finally {
       unsubscribe();
+      this.activeSessions.delete(run.run_id);
       session.dispose();
     }
 
     const assistantText = session.getLastAssistantText()?.trim() ?? "Execution run completed without a terminal summary.";
+    // Record the initial run response in chat history so follow-up has context
+    this.pushChatMessage(run.run_id, { timestamp: this.now(), role: "assistant", text: assistantText });
     // Extract a short reasoning summary from the assistant's final text
     const reasoningSummary = this.extractReasoningSummary(assistantText);
     if (reasoningSummary) {
@@ -498,6 +512,140 @@ export class ExecutionService {
   getRunActivityLog(runId: string): ActivityLogEntry[] {
     const run = this.getRun(runId);
     return run?.activity_log ?? [];
+  }
+
+  getRunChatHistory(runId: string): RunChatHistory {
+    return {
+      run_id: runId,
+      messages: this.chatHistories.get(runId) ?? [],
+    };
+  }
+
+  async sendFollowUp(input: FollowUpMessageDto): Promise<FollowUpMessageResult> {
+    const runId = input.run_id?.trim();
+    if (!runId) {
+      throw new BadRequestException("run_id is required");
+    }
+    const message = input.message?.trim();
+    if (!message) {
+      throw new BadRequestException("message is required");
+    }
+
+    const run = this.getRun(runId);
+    if (!run) {
+      throw new BadRequestException(`Unknown execution run: ${runId}`);
+    }
+
+    // Record the user message in chat history
+    this.pushChatMessage(runId, { timestamp: this.now(), role: "user", text: message });
+
+    const session = this.activeSessions.get(runId);
+
+    // Active session: steer or follow-up into the live run
+    if (session && (run.status === "running" || run.status === "preparing")) {
+      const delivery = input.delivery ?? "followUp";
+      try {
+        if (delivery === "steer") {
+          await session.steer(message);
+        } else {
+          await session.followUp(message);
+        }
+        this.pushActivity(runId, "follow_up", `Follow-up (${delivery}): ${message.length > 120 ? message.slice(0, 117) + "..." : message}`);
+        this.appendEvent(run, { type: "follow_up_sent", delivery, message_length: message.length });
+        return { accepted: true, run_id: runId, delivery, message };
+      } catch (error) {
+        const errorMessage = this.getErrorMessage(error);
+        this.pushActivity(runId, "error", `Follow-up delivery failed: ${errorMessage}`);
+        return { accepted: false, run_id: runId, delivery, message, error: errorMessage };
+      }
+    }
+
+    // Completed run: spin up a new session in the worktree for a continuation turn
+    if (run.status === "completed" && existsSync(run.worktree_path)) {
+      try {
+        this.pushActivity(runId, "follow_up", `Starting follow-up turn: ${message.length > 120 ? message.slice(0, 117) + "..." : message}`);
+        const updatedRun = this.updateRun(runId, {
+          status: "running",
+          progress_message: "Follow-up turn running.",
+        });
+        if (!updatedRun) {
+          return { accepted: false, run_id: runId, delivery: "new_turn", message, error: "Failed to update run status" };
+        }
+
+        // Fire-and-forget the follow-up turn
+        void this.executeFollowUpTurn(updatedRun, message).catch((error) => {
+          this.pushActivity(runId, "error", `Follow-up turn failed: ${this.getErrorMessage(error)}`);
+          this.updateRun(runId, {
+            status: "completed",
+            progress_message: `Follow-up turn failed: ${this.getErrorMessage(error)}`,
+          });
+        });
+
+        return { accepted: true, run_id: runId, delivery: "new_turn", message };
+      } catch (error) {
+        return { accepted: false, run_id: runId, delivery: "new_turn", message, error: this.getErrorMessage(error) };
+      }
+    }
+
+    return {
+      accepted: false,
+      run_id: runId,
+      delivery: input.delivery ?? "followUp",
+      message,
+      error: `Cannot send follow-up to run in status "${run.status}". Only running or completed runs accept follow-up messages.`,
+    };
+  }
+
+  private async executeFollowUpTurn(run: ExecutionRunRecord, message: string) {
+    const { session, modelFallbackMessage } = await createAgentSession({
+      cwd: run.worktree_path,
+      sessionManager: SessionManager.inMemory(run.worktree_path),
+      tools: createCodingTools(run.worktree_path),
+    });
+
+    if (modelFallbackMessage) {
+      this.logger.warn(modelFallbackMessage);
+    }
+
+    this.activeSessions.set(run.run_id, session);
+    const unsubscribe = session.subscribe((event) => {
+      this.handleSessionEvent(run.run_id, event);
+    });
+
+    try {
+      await session.prompt(message);
+    } finally {
+      unsubscribe();
+      this.activeSessions.delete(run.run_id);
+      session.dispose();
+    }
+
+    const assistantText = session.getLastAssistantText()?.trim() ?? "Follow-up turn completed without a summary.";
+    this.pushChatMessage(run.run_id, { timestamp: this.now(), role: "assistant", text: assistantText });
+
+    const changedFiles = this.listChangedFiles(run.worktree_path);
+    const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
+
+    this.pushActivity(run.run_id, "follow_up", `Follow-up turn completed. ${changedFiles.length} file(s) changed.`);
+    const nextRun = this.updateRun(run.run_id, {
+      status: "completed",
+      completed_at: this.now(),
+      progress_message: "Follow-up turn completed.",
+      result_summary: assistantText,
+      changed_files: changedFiles,
+    });
+    if (nextRun) {
+      this.writeSummary(nextRun);
+      this.appendEvent(nextRun, { type: "follow_up_turn_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
+      this.emitRun("execution_result", nextRun);
+    }
+  }
+
+  private pushChatMessage(runId: string, message: RunChatMessage) {
+    if (!this.chatHistories.has(runId)) {
+      this.chatHistories.set(runId, []);
+    }
+    this.chatHistories.get(runId)!.push(message);
   }
 
   private handleSessionEvent(runId: string, event: AgentSessionEvent) {

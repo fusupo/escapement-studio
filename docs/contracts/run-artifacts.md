@@ -71,6 +71,30 @@ Suggested V1 types:
 - `execution`
 - `reconciliation`
 
+## Follow-up chat
+
+Active and recently completed execution runs support follow-up messages from the Studio UI.
+
+### Delivery modes
+
+| Run status | Delivery | Behavior |
+|------------|----------|----------|
+| `running` / `preparing` | `steer` | Interrupts the current turn; message is delivered before the next LLM call. |
+| `running` / `preparing` | `followUp` (default) | Queued; delivered when the current turn finishes. |
+| `completed` | `new_turn` | A new agent session is created in the same worktree and the follow-up is sent as a fresh prompt. |
+
+### API
+
+- `POST /api/execution/follow-up` — `{ run_id, message, delivery? }`
+- `GET /api/execution/runs/:runId/chat` — returns chat history `{ run_id, messages: [{ timestamp, role, text }] }`
+
+### Artifact events
+
+Follow-up interactions append to the existing `events.jsonl`:
+
+- `follow_up_sent` — when a steer/followUp message is accepted by an active session
+- `follow_up_turn_completed` — when a new-turn follow-up finishes
+
 ## Notes
 
 - `status.json` and SSE serve different purposes: current durable snapshot vs live browser transport
