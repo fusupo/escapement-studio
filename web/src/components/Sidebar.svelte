@@ -161,6 +161,7 @@
           <select bind:value={editForm.state}>
             <option value="planned">planned</option>
             <option value="in_progress">in_progress</option>
+            <option value="open_pr">open_pr</option>
             <option value="done">done</option>
             <option value="deferred">deferred</option>
             <option value="cancelled">cancelled</option>
@@ -214,6 +215,7 @@
         <select bind:value={createForm.state}>
           <option value="planned">planned</option>
           <option value="in_progress">in_progress</option>
+          <option value="open_pr">open_pr</option>
           <option value="done">done</option>
           <option value="deferred">deferred</option>
           <option value="cancelled">cancelled</option>

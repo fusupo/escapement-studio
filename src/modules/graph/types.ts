@@ -1,5 +1,5 @@
 export type WorkItemKind = "issue" | "capability" | "phase" | "track";
-export type WorkItemState = "planned" | "in_progress" | "done" | "deferred" | "cancelled";
+export type WorkItemState = "planned" | "in_progress" | "open_pr" | "done" | "deferred" | "cancelled";
 export type EdgeRel = "depends_on" | "is_part_of" | "implemented_by";
 export type EdgeConfidence = "certain" | "inferred" | "ambiguous";
 

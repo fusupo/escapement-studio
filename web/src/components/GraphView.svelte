@@ -45,6 +45,7 @@
         <h3>Node State</h3>
         <div class="legend-row"><span class="legend-swatch" style="background:#238636"></span><code>done</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#d29922"></span><code>in_progress</code></div>
+        <div class="legend-row"><span class="legend-swatch" style="background:#a371f7"></span><code>open_pr</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#58a6ff"></span><code>planned</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#8b949e"></span><code>deferred</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#f85149"></span><code>cancelled</code></div>

@@ -234,11 +234,11 @@ export class ExecutionService {
     this.appendEvent(nextRun, { type: "pull_request_created", pull_request: pullRequest });
     this.writeSummary(nextRun);
 
-    // Update work item: set state to in_progress and store PR metadata
+    // Update work item: set state to open_pr and store PR metadata
     try {
       const existingMeta = workItem.meta ?? {};
       this.workItemsService.update(run.work_item_id, {
-        state: "in_progress",
+        state: "open_pr",
         branch: run.branch,
         meta: {
           ...existingMeta,

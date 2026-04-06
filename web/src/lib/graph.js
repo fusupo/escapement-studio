@@ -3,6 +3,7 @@ import * as d3 from "d3";
 const STATE_COLORS = {
   done: "#238636",
   in_progress: "#d29922",
+  open_pr: "#a371f7",
   planned: "#58a6ff",
   deferred: "#8b949e",
   cancelled: "#f85149",
