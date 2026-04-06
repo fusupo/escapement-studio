@@ -121,6 +121,18 @@ export interface CreateExecutionPullRequestResult {
   pull_request: ExecutionPullRequestRecord;
 }
 
+export interface CleanupWorktreeDto {
+  run_id: string;
+}
+
+export interface CleanupWorktreeResult {
+  run_id: string;
+  branch: string;
+  worktree_path: string;
+  worktree_removed: boolean;
+  branch_removed: boolean;
+}
+
 export interface SyncMergedExecutionDto {
   work_item_id: string;
   pull_request_number?: number;
@@ -164,6 +176,7 @@ export interface SyncMergedExecutionResult {
       };
     }>;
   } | null;
+  cleanup: CleanupWorktreeResult | null;
 }
 
 export interface ExecutionStatusEvent {
