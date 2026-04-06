@@ -122,7 +122,7 @@
                 <pre>{issueDetails.managed_block.content}</pre>
               </details>
             {/if}
-            {#if issueDetails.state !== 'closed'}
+            {#if issueDetails.state?.toLowerCase() !== 'closed'}
               <button class="danger small" on:click={() => onCloseIssue(selectedItem)} disabled={closingIssue}>
                 {closingIssue ? 'Closing…' : 'Close issue'}
               </button>
