@@ -62,6 +62,14 @@ export function getGitHubIssueDetails({ repo, issue_number }) {
   return request(`/api/github/issue?${query.toString()}`);
 }
 
+export function closeGitHubIssue({ repo, issue_number }) {
+  return request("/api/github/issue/close", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ repo, issue_number }),
+  });
+}
+
 export function getExecutionPreview(params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

@@ -121,6 +121,25 @@ export class GitHubService {
     };
   }
 
+  async closeIssue(repo: string, issueNumber: number): Promise<GitHubIssueDetails> {
+    if (!repo?.trim()) {
+      throw new BadRequestException("repo is required");
+    }
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      throw new BadRequestException("issue_number must be a positive integer");
+    }
+
+    this.runGh([
+      "issue",
+      "close",
+      String(issueNumber),
+      "--repo",
+      repo,
+    ]);
+
+    return this.readIssue(repo, issueNumber);
+  }
+
   async readIssue(repo: string, issueNumber: number): Promise<GitHubIssueDetails> {
     if (!repo?.trim()) {
       throw new BadRequestException("repo is required");

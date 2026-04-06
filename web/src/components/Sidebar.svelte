@@ -25,6 +25,8 @@
   export let onCreateItem = () => {};
   export let onCreateEdge = () => {};
   export let onDeleteEdge = () => {};
+  export let onCloseIssue = () => {};
+  export let closingIssue = false;
 
   let editForm = { ...defaultWorkItem };
   let createForm = { ...defaultWorkItem };
@@ -90,6 +92,47 @@
   <section>
     <h2>Selected node</h2>
     {#if selectedItem}
+      {#if selectedItem.issue_number && selectedItem.repo}
+        <div class="issue-details-card">
+          <div class="issue-details-header">
+            <h3>GitHub issue</h3>
+            {#if (issueDetails?.url || selectedItem.issue_url)}
+              <a href={issueDetails?.url || selectedItem.issue_url} target="_blank" rel="noreferrer">Open</a>
+            {/if}
+          </div>
+
+          {#if issueDetails?.error}
+            <p class="muted">Failed to load issue details: {issueDetails.error}</p>
+          {:else if issueDetails}
+            <strong>#{issueDetails.number} {issueDetails.title}</strong>
+            <p class="muted">{issueDetails.state}</p>
+            {#if issueDetails.labels?.length}
+              <div class="tag-list">
+                {#each issueDetails.labels as label}
+                  <span class="status-pill">{label.name}</span>
+                {/each}
+              </div>
+            {/if}
+            {#if issueDetails.assignees?.length}
+              <p class="muted">Assignees: {issueDetails.assignees.map((assignee) => assignee.login).join(', ')}</p>
+            {/if}
+            {#if issueDetails.managed_block}
+              <details class="issue-body-preview">
+                <summary>Managed Studio block</summary>
+                <pre>{issueDetails.managed_block.content}</pre>
+              </details>
+            {/if}
+            {#if issueDetails.state !== 'closed'}
+              <button class="danger small" on:click={() => onCloseIssue(selectedItem)} disabled={closingIssue}>
+                {closingIssue ? 'Closing…' : 'Close issue'}
+              </button>
+            {/if}
+          {:else}
+            <p class="muted">Loading issue details…</p>
+          {/if}
+        </div>
+      {/if}
+
       <div class="stack">
         <label>
           ID
@@ -136,42 +179,6 @@
         </label>
         <button on:click={submitEdit} disabled={saving}>{saving ? "Saving..." : "Save changes"}</button>
       </div>
-
-      {#if selectedItem.issue_number && selectedItem.repo}
-        <div class="issue-details-card">
-          <div class="issue-details-header">
-            <h3>GitHub issue</h3>
-            {#if (issueDetails?.url || selectedItem.issue_url)}
-              <a href={issueDetails?.url || selectedItem.issue_url} target="_blank" rel="noreferrer">Open</a>
-            {/if}
-          </div>
-
-          {#if issueDetails?.error}
-            <p class="muted">Failed to load issue details: {issueDetails.error}</p>
-          {:else if issueDetails}
-            <strong>#{issueDetails.number} {issueDetails.title}</strong>
-            <p class="muted">{issueDetails.state}</p>
-            {#if issueDetails.labels?.length}
-              <div class="tag-list">
-                {#each issueDetails.labels as label}
-                  <span class="status-pill">{label.name}</span>
-                {/each}
-              </div>
-            {/if}
-            {#if issueDetails.assignees?.length}
-              <p class="muted">Assignees: {issueDetails.assignees.map((assignee) => assignee.login).join(', ')}</p>
-            {/if}
-            {#if issueDetails.managed_block}
-              <details class="issue-body-preview">
-                <summary>Managed Studio block</summary>
-                <pre>{issueDetails.managed_block.content}</pre>
-              </details>
-            {/if}
-          {:else}
-            <p class="muted">Loading issue details…</p>
-          {/if}
-        </div>
-      {/if}
     {:else}
       <p class="muted">Select a node in the graph to inspect and edit it.</p>
     {/if}
