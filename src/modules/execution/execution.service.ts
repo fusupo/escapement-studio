@@ -194,6 +194,12 @@ export class ExecutionService {
 
     const workItem = this.workItemsService.get(run.work_item_id);
     const baseRef = input.base_ref?.trim() || run.base_ref || getDefaultWorkingBranch(workItem.repo);
+
+    // Auto-stage and commit if requested and worktree has uncommitted changes
+    if (input.auto_commit !== false) {
+      this.autoStageAndCommit(run, workItem, input.commit_message);
+    }
+
     const title = input.title?.trim() || this.buildPullRequestTitle(workItem);
     const body = input.body?.trim() || this.buildPullRequestBody(run, workItem, baseRef);
     const aheadCount = this.countCommitsAhead(run.worktree_path, baseRef, run.branch);
@@ -829,6 +835,30 @@ export class ExecutionService {
     }
 
     return lines.join("\n");
+  }
+
+  private autoStageAndCommit(run: ExecutionRunRecord, workItem: WorkItemRecord, commitMessage?: string): void {
+    const status = this.runGitIn(run.worktree_path, ["status", "--porcelain"], { allowFailure: true }).trim();
+    if (!status) {
+      return; // working tree is clean, nothing to commit
+    }
+
+    this.logger.log(`Auto-staging and committing changes in ${run.worktree_path}`);
+    this.runGitIn(run.worktree_path, ["add", "-A"]);
+
+    const message = commitMessage?.trim() || this.buildCommitMessage(workItem);
+    this.runGitIn(run.worktree_path, ["commit", "-m", message]);
+
+    // Refresh changed files after commit
+    const changedFiles = this.listChangedFiles(run.worktree_path);
+    if (changedFiles.length > 0) {
+      this.updateRun(run.run_id, { changed_files: changedFiles });
+    }
+  }
+
+  private buildCommitMessage(workItem: WorkItemRecord): string {
+    const issueRef = workItem.issue_number ? ` (#${workItem.issue_number})` : "";
+    return `${workItem.name}${issueRef}`;
   }
 
   private syncActualFiles(workItemId: string, changedFiles: string[]): { ok: true; actual_files: string[] } | { ok: false; message: string } {
