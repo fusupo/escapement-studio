@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { ExecutionService } from "../execution/configured-execution.service.js";
+import { ExecutionService } from "../execution/execution.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord } from "../graph/types.js";
 import type { ExecutionRunRecord } from "../execution/types.js";
