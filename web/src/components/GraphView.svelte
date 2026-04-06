@@ -71,6 +71,10 @@
 <style>
   .graph-shell {
     position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .graph-legend {

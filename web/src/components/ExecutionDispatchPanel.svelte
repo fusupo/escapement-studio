@@ -162,7 +162,7 @@
   });
 </script>
 
-<section class="card execution-panel">
+<section class="execution-panel">
   <div class="panel-header execution-header">
     <div>
       <h2>Dispatch execution work</h2>

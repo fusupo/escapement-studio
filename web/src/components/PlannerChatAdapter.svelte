@@ -449,7 +449,7 @@
   });
 </script>
 
-<section class="card planner-chat planner-chat-shell" class:planner-chat-loading={waitingForInitialSnapshot} aria-busy={waitingForInitialSnapshot}>
+<section class="planner-chat" class:planner-chat-loading={waitingForInitialSnapshot} aria-busy={waitingForInitialSnapshot}>
   <div class="planner-header">
     <div>
       <h2>Planner chat</h2>
@@ -785,10 +785,10 @@
 
     </div>
 
-    <div class="planner-composer planner-composer-shell">
+    <div class="planner-composer">
       <label>
         Message
-        <textarea bind:value={draft} rows="4" placeholder="Ask the planner to inspect the graph, delegate specialists, review reconciliation drift, propose memory updates, or explain blockers."></textarea>
+        <textarea bind:value={draft} rows="2" placeholder="Ask the planner to inspect the graph, delegate specialists, review reconciliation drift, propose memory updates, or explain blockers."></textarea>
       </label>
       <div class="planner-actions">
         <button class="secondary" on:click={loadSnapshot} disabled={loading}>Refresh transcript</button>
@@ -799,60 +799,5 @@
 </section>
 
 <style>
-  .planner-chat-shell {
-    height: min(100dvh - 13rem, 1120px);
-    min-height: 0;
-    overflow: hidden;
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
-  }
-
-  .planner-scroll-region {
-    min-height: 0;
-    overflow: auto;
-    padding-right: 0.35rem;
-    overscroll-behavior: contain;
-  }
-
-  .planner-body {
-    min-height: min(52dvh, 540px);
-  }
-
-  .planner-transcript,
-  .planner-tools,
-  .proposal-list,
-  .memory-preview {
-    min-height: 0;
-  }
-
-  .planner-tools,
-  .proposal-list,
-  .memory-preview {
-    max-height: min(36dvh, 420px);
-    overflow: auto;
-    overscroll-behavior: contain;
-  }
-
-  .planner-composer-shell {
-    border-top: 1px solid rgba(148, 163, 184, 0.16);
-    padding-top: 1rem;
-  }
-
-  @media (max-width: 1200px) {
-    .planner-chat-shell {
-      height: auto;
-      max-height: none;
-    }
-
-    .planner-scroll-region,
-    .planner-tools,
-    .proposal-list,
-    .memory-preview {
-      overflow: visible;
-      max-height: none;
-    }
-
-    .planner-body {
-      min-height: 0;
-    }
-  }
+  /* Parent (.col-chat) controls height; we just fill it */
 </style>

@@ -5,7 +5,6 @@
   import GraphView from "./components/GraphView.svelte";
   import FiltersToolbar from "./components/FiltersToolbar.svelte";
   import Sidebar from "./components/Sidebar.svelte";
-  import WorkspaceTabs from "./components/WorkspaceTabs.svelte";
   import {
     createEdge,
     createWorkItem,
@@ -31,16 +30,8 @@
   let activeTab = "planning";
 
   const workspaceTabs = [
-    {
-      id: "planning",
-      label: "Planning",
-      description: "Planner chat, filters, dependency graph, and work item editor.",
-    },
-    {
-      id: "execute",
-      label: "Execute",
-      description: "Dispatch execution work and review reconciliation output.",
-    },
+    { id: "planning", label: "Planning" },
+    { id: "execute", label: "Execute" },
   ];
 
   $: selectedItem = graph.items.find((item) => item.id === selectedId) ?? null;
@@ -54,7 +45,6 @@
   async function loadGraph() {
     loading = true;
     error = "";
-
     try {
       const [graphResponse, healthResponse, catalogResponse] = await Promise.all([
         getGraph(filters),
@@ -64,7 +54,6 @@
       graph = graphResponse;
       health = healthResponse;
       catalog = catalogResponse;
-
       if (selectedId && !graph.items.some((item) => item.id === selectedId)) {
         selectedId = null;
       }
@@ -84,17 +73,13 @@
 
   async function loadSelectedIssueDetails(item) {
     const token = ++issueLookupToken;
-
     if (!item?.repo || !item?.issue_number) {
       selectedIssueDetails = null;
       return;
     }
-
     try {
       const details = await getGitHubIssueDetails({ repo: item.repo, issue_number: item.issue_number });
-      if (token === issueLookupToken) {
-        selectedIssueDetails = details;
-      }
+      if (token === issueLookupToken) selectedIssueDetails = details;
     } catch (lookupError) {
       if (token === issueLookupToken) {
         selectedIssueDetails = { error: lookupError.message, repo: item.repo, number: item.issue_number, url: item.issue_url };
@@ -103,10 +88,7 @@
   }
 
   async function handleSaveItem(payload) {
-    if (!selectedItem) {
-      return;
-    }
-
+    if (!selectedItem) return;
     saving = true;
     error = "";
     try {
@@ -173,59 +155,66 @@
 </script>
 
 <svelte:head>
-  <title>Escapement Studio Workspace</title>
+  <title>Escapement Studio</title>
 </svelte:head>
 
-<div class="app-shell">
-  <header class="app-header">
-    <div>
-      <p class="eyebrow">Escapement Studio</p>
-      <h1>Studio workspace</h1>
-      <p class="muted">
-        {activeTab === "planning"
-          ? "Plan work in the graph-backed workspace and keep edits synchronized with the Studio API."
-          : "Launch execution work and compare predicted scope with recorded execution results."}
-      </p>
+<div class="app-viewport">
+  <!-- Top bar -->
+  <header class="app-topbar">
+    <div class="topbar-left">
+      <span class="app-brand">Escapement Studio</span>
+      <nav class="tab-strip">
+        {#each workspaceTabs as tab}
+          <button
+            class="tab-btn"
+            class:active={activeTab === tab.id}
+            on:click={() => (activeTab = tab.id)}
+          >{tab.label}</button>
+        {/each}
+      </nav>
     </div>
-    <div class="status-cluster">
+    <div class="topbar-right">
       <span class:healthy={health?.ok} class="status-pill">
         {health?.ok ? "API healthy" : "API unavailable"}
       </span>
-      {#if activeTab === "planning"}
-        <button class="secondary" on:click={refresh} disabled={loading}>Refresh graph</button>
-      {/if}
+      <button class="secondary small" on:click={refresh} disabled={loading}>Refresh</button>
     </div>
   </header>
 
-  <WorkspaceTabs tabs={workspaceTabs} bind:activeTab />
-
+  <!-- Planning tab -->
   {#if activeTab === "planning"}
-    <section id="planning-panel" role="tabpanel" aria-labelledby="planning-tab" class="workspace-panel">
-      <div class="planning-workspace">
-        <PlannerChatAdapter on:graphChanged={refresh} />
-
+    <div class="planning-viewport">
+      <!-- Filter bar -->
+      <div class="filter-bar">
         <FiltersToolbar {filters} options={filterOptions} onChange={handleFilterChange} onReset={resetFilters} />
+      </div>
 
-        {#if error}
-          <div class="banner error">{error}</div>
-        {/if}
+      <!-- 3-column layout -->
+      <div class="planning-columns">
+        <!-- Left: Chat -->
+        <div class="col-chat">
+          <PlannerChatAdapter on:graphChanged={refresh} />
+        </div>
 
-        <main class="layout">
-          <section class="graph-panel card">
-            <div class="panel-header">
-              <div>
-                <h2>Dependency graph</h2>
-                <p class="muted">{graph.items.length} items · {graph.edges.length} edges</p>
-              </div>
-            </div>
+        <!-- Center: Graph -->
+        <div class="col-graph">
+          {#if error}
+            <div class="banner error">{error}</div>
+          {/if}
 
-            {#if loading}
-              <div class="empty-state">Loading graph from the Studio server…</div>
-            {:else}
-              <GraphView {graph} {selectedId} onSelect={(item) => (selectedId = item.id)} />
-            {/if}
-          </section>
+          <div class="graph-header">
+            <span class="muted">{graph.items.length} items · {graph.edges.length} edges</span>
+          </div>
 
+          {#if loading}
+            <div class="empty-state">Loading graph…</div>
+          {:else}
+            <GraphView {graph} {selectedId} onSelect={(item) => (selectedId = item.id)} />
+          {/if}
+        </div>
+
+        <!-- Right: Node detail -->
+        <div class="col-sidebar">
           <Sidebar
             {selectedItem}
             issueDetails={selectedIssueDetails}
@@ -237,27 +226,165 @@
             onCreateEdge={handleCreateEdge}
             onDeleteEdge={handleDeleteEdge}
           />
-        </main>
+        </div>
       </div>
-    </section>
+    </div>
   {:else if activeTab === "execute"}
-    <section id="execute-panel" role="tabpanel" aria-labelledby="execute-tab" class="workspace-panel">
-      <div class="execute-workspace">
-        <ExecutionDispatchPanel />
-        <ReconciliationPanel />
-      </div>
-    </section>
+    <div class="execute-viewport">
+      <ExecutionDispatchPanel />
+      <ReconciliationPanel />
+    </div>
   {/if}
 </div>
 
 <style>
-  .workspace-panel {
+  /* ── Fixed viewport shell ── */
+  .app-viewport {
     display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100vh;
+    overflow: hidden;
   }
 
-  .planning-workspace,
-  .execute-workspace {
+  /* ── Top bar ── */
+  .app-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 1rem;
+    height: 48px;
+    background: #0f172a;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    flex-shrink: 0;
+  }
+
+  .topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .app-brand {
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: #60a5fa;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+  }
+
+  .tab-strip {
+    display: flex;
+    gap: 2px;
+  }
+
+  .tab-btn {
+    padding: 0.35rem 1rem;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border-radius: 6px;
+    transition: background 120ms, color 120ms;
+  }
+
+  .tab-btn:hover {
+    background: rgba(148, 163, 184, 0.1);
+    color: #cbd5e1;
+  }
+
+  .tab-btn.active {
+    background: rgba(37, 99, 235, 0.22);
+    color: #eff6ff;
+  }
+
+  /* ── Planning tab ── */
+  .planning-viewport {
     display: grid;
-    gap: 1rem;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .filter-bar {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+    background: rgba(15, 23, 42, 0.5);
+  }
+
+  .planning-columns {
+    display: grid;
+    grid-template-columns: 380px minmax(0, 1fr) 320px;
+    overflow: hidden;
+  }
+
+  .col-chat {
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-right: 1px solid rgba(148, 163, 184, 0.12);
+    overscroll-behavior: contain;
+  }
+
+  .col-graph {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0.5rem;
+  }
+
+  .graph-header {
+    padding: 0.25rem 0.5rem;
+    flex-shrink: 0;
+  }
+
+  .col-sidebar {
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-left: 1px solid rgba(148, 163, 184, 0.12);
+    overscroll-behavior: contain;
+  }
+
+  /* ── Execute tab ── */
+  .execute-viewport {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  /* ── Shared ── */
+  .empty-state {
+    display: grid;
+    place-items: center;
+    flex: 1;
+    color: #94a3b8;
+  }
+
+  @media (max-width: 1100px) {
+    .planning-columns {
+      grid-template-columns: 300px minmax(0, 1fr) 280px;
+    }
+  }
+
+  @media (max-width: 860px) {
+    .planning-columns {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto;
+      overflow-y: auto;
+    }
+
+    .col-chat,
+    .col-sidebar {
+      border: none;
+    }
+
+    .execute-viewport {
+      grid-template-rows: auto;
+      overflow-y: auto;
+    }
   }
 </style>
