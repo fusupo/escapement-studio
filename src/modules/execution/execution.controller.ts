@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Param, Post, Query, Sse } from "@nestjs/
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./execution.service.js";
-import type { CleanupWorktreeDto, CreateExecutionPullRequestDto, FollowUpMessageDto, LaunchExecutionRunDto, SyncMergedExecutionDto } from "./types.js";
+import type { CleanupWorktreeDto, CreateExecutionPullRequestDto, FollowUpMessageDto, LaunchExecutionRunDto, ResolveDisambiguationDto, SyncMergedExecutionDto } from "./types.js";
 
 @Controller("api/execution")
 export class ExecutionController {
@@ -51,6 +51,11 @@ export class ExecutionController {
   @Post("follow-up")
   sendFollowUp(@Body() body: FollowUpMessageDto) {
     return this.executionService.sendFollowUp(body);
+  }
+
+  @Post("resolve-disambiguation")
+  resolveDisambiguation(@Body() body: ResolveDisambiguationDto) {
+    return this.executionService.resolveDisambiguation(body);
   }
 
   @Get("runs/:runId/chat")

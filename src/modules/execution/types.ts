@@ -1,4 +1,4 @@
-export type ExecutionRunStatus = "queued" | "blocked" | "preparing" | "running" | "completed" | "error";
+export type ExecutionRunStatus = "queued" | "blocked" | "preparing" | "disambiguating" | "running" | "completed" | "error";
 export type ExecutionSafetyStatus = "pass" | "warn" | "fail";
 export type ActivityLogEntryKind = "status_change" | "tool_start" | "tool_end" | "turn_start" | "turn_end" | "reasoning" | "error" | "info" | "follow_up";
 
@@ -69,6 +69,8 @@ export interface LaunchExecutionRunDto {
   work_item_id: string;
   base_ref?: string;
   prompt?: string;
+  /** When true, run a Q&A disambiguation phase before coding starts. Default: false */
+  disambiguate?: boolean;
 }
 
 export interface ExecutionRunRecord {
@@ -218,4 +220,17 @@ export interface RunChatMessage {
   timestamp: string;
   role: "user" | "assistant";
   text: string;
+}
+
+export interface ResolveDisambiguationDto {
+  run_id: string;
+  /** Optional additional context or answers to pass to the coding agent when it starts. */
+  additional_context?: string;
+}
+
+export interface ResolveDisambiguationResult {
+  resolved: boolean;
+  run_id: string;
+  /** Present when resolved is false */
+  error?: string;
 }
