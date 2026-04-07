@@ -149,12 +149,11 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     const hasMergedPr = node._prStatus === "merged" && node.state === "done";
 
     g.setNode(node.id, {
-      label: node.id,
+      label: "",
       shape: "circle",
       style: `fill: ${color}; stroke: ${isSelected ? "#e6edf3" : "#0d1117"}; stroke-width: ${isSelected ? "2.5px" : "1.5px"};`,
-      labelStyle: `fill: #8b949e; font-size: 11px; font-family: inherit;`,
-      width: r * 2 + node.id.length * 7 + 10,
-      height: r * 2 + 4,
+      width: r * 2,
+      height: r * 2,
       rx: r,
       ry: r,
       _data: node,
@@ -224,13 +223,17 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
         .attr("pointer-events", "none");
     }
 
-    // Reposition label to beside the node
-    label.attr("transform", `translate(${r + 6}, 0)`);
-    label.select("text")
-      .attr("text-anchor", "start")
+    // Remove dagre's empty label, add our own
+    label.remove();
+    el.append("text")
+      .text(data.id)
+      .attr("x", r + 5)
       .attr("dy", "0.35em")
+      .attr("text-anchor", "start")
       .attr("fill", "#8b949e")
-      .attr("font-size", "11px");
+      .attr("font-size", "11px")
+      .attr("font-family", "inherit")
+      .attr("pointer-events", "none");
   });
 
   // --- Zoom + pan ---
