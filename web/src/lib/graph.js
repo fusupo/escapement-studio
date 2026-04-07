@@ -222,6 +222,70 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   // Node click + cursor
   inner.selectAll("g.node")
     .style("cursor", "pointer")
+    .call(d3.drag()
+      .on("start", (event) => {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        event.subject.fx = event.subject.x;
+        event.subject.fy = event.subject.y;
+      })
+      .on("drag", (event) => {
+        event.subject.fx = event.x;
+        event.subject.fy = event.y;
+      })
+      .on("end", (event) => {
+        if (!event.active) simulation.alphaTarget(0);
+        event.subject.fx = null;
+        event.subject.fy = null;
+      })
+    );
+
+  // PR ring — only for merged PRs (open_pr state handles open/draft via node color)
+  node.filter((d) => d._prStatus === "merged" && d.state === "done")
+    .append("circle")
+    .attr("class", "pr-ring")
+    .attr("r", (d) => (KIND_RADIUS[d.kind] ?? 8) + 4)
+    .attr("fill", "none")
+    .attr("stroke", PR_MERGED_RING_COLOR)
+    .attr("stroke-width", 2)
+    .attr("opacity", 0.85);
+
+  // Node circles — colored by state
+  node.append("circle")
+    .attr("r", (d) => KIND_RADIUS[d.kind] ?? 8)
+    .attr("fill", (d) => STATE_COLORS[d.state] ?? "#484f58")
+    .attr("stroke", (d) => d.id === selectedId ? "#e6edf3" : "#0d1117")
+    .attr("stroke-width", (d) => d.id === selectedId ? 2.5 : 1.5);
+
+  // PR badge — only for merged PRs on done items
+  node.filter((d) => d._prStatus === "merged" && d.state === "done")
+    .append("text")
+    .text("✓PR")
+    .attr("dy", (d) => (KIND_RADIUS[d.kind] ?? 8) + 13)
+    .attr("text-anchor", "middle")
+    .attr("fill", PR_MERGED_RING_COLOR)
+    .attr("font-size", "9px")
+    .attr("font-weight", "600")
+    .attr("font-family", "inherit")
+    .attr("pointer-events", "none");
+
+  // Labels — beside the node
+  node.append("text")
+    .text((d) => d.id)
+    .attr("dx", (d) => (KIND_RADIUS[d.kind] ?? 8) + 5)
+    .attr("dy", "0.35em")
+    .attr("fill", "#8b949e")
+    .attr("font-size", "11px")
+    .attr("font-family", "inherit")
+    .attr("pointer-events", "none");
+
+  // Click to select
+  node.on("click", (event, d) => {
+    event.stopPropagation();
+    onSelect(d);
+  });
+
+  // Click background to deselect
+  svg.on("click", () => onSelect(null));
     .on("click", function (event, id) {
       const data = g.node(id)?._data;
       if (data) onSelect(data);

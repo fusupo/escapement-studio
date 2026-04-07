@@ -226,7 +226,7 @@
           {#if loading}
             <div class="empty-state">Loading graph…</div>
           {:else}
-            <GraphView {graph} {selectedId} onSelect={(item) => (selectedId = item.id)} />
+            <GraphView {graph} {selectedId} onSelect={(item) => (selectedId = item?.id ?? null)} />
           {/if}
         </div>
 
