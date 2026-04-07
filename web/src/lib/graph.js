@@ -153,8 +153,8 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       shape: "circle",
       style: `fill: ${color}; stroke: ${isSelected ? "#e6edf3" : "#0d1117"}; stroke-width: ${isSelected ? "2.5px" : "1.5px"};`,
       labelStyle: `fill: #8b949e; font-size: 11px; font-family: inherit;`,
-      width: r * 2,
-      height: r * 2,
+      width: r * 2 + node.id.length * 7 + 10,
+      height: r * 2 + 4,
       rx: r,
       ry: r,
       _data: node,
@@ -225,8 +225,12 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     }
 
     // Reposition label to beside the node
-    label.attr("transform", `translate(${r + 5}, 4)`);
-    label.select("text").attr("text-anchor", "start");
+    label.attr("transform", `translate(${r + 6}, 0)`);
+    label.select("text")
+      .attr("text-anchor", "start")
+      .attr("dy", "0.35em")
+      .attr("fill", "#8b949e")
+      .attr("font-size", "11px");
   });
 
   // --- Zoom + pan ---
