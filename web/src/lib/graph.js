@@ -10,25 +10,20 @@ const STATE_COLORS = {
   cancelled: "#f85149",
 };
 
-const EDGE_STYLES = {
-  depends_on: { color: "#58a6ff", dash: "", width: 1.5 },
-  is_part_of: { color: "#3fb950", dash: "6,3", width: 1.5 },
-  implemented_by: { color: "#d29922", dash: "2,3", width: 1.5 },
+const EDGE_COLORS = {
+  depends_on: "#58a6ff",
+  is_part_of: "#3fb950",
+  implemented_by: "#d29922",
+};
+
+const EDGE_DASH = {
+  depends_on: "",
+  is_part_of: "6,3",
+  implemented_by: "2,3",
 };
 
 const PR_MERGED_RING_COLOR = "#238636";
 const PR_RING_COLOR = "#a371f7";
-
-const KIND_RADIUS = {
-  issue: 8,
-  capability: 12,
-  phase: 16,
-  track: 14,
-};
-
-function edgeStyle(rel) {
-  return EDGE_STYLES[rel] ?? { color: "#484f58", dash: "", width: 1.2 };
-}
 
 function extractPullRequest(item) {
   const pr =
@@ -87,7 +82,7 @@ function hideTooltip(tooltip) {
 }
 
 /**
- * Render the dependency graph using dagre-d3 for layout + rendering, D3 for interaction.
+ * Render the dependency graph using dagre-d3 natively.
  */
 export function renderGraph(svgElement, graph, selectedId, onSelect, options = {}) {
   if (!svgElement) return () => {};
@@ -134,119 +129,64 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   // --- Build dagre-d3 graph ---
   const g = new dagreD3.graphlib.Graph().setGraph({
     rankdir: "LR",
-    nodesep: 25,
-    ranksep: 80,
-    edgesep: 10,
-    marginx: 30,
-    marginy: 30,
+    nodesep: 20,
+    ranksep: 40,
+    edgesep: 8,
+    marginx: 20,
+    marginy: 20,
   }).setDefaultEdgeLabel(() => ({}));
 
-  // Add nodes with custom rendering
+  // Nodes — rounded rects with label inside, colored by state
   for (const node of nodes) {
-    const r = KIND_RADIUS[node.kind] ?? 8;
     const color = STATE_COLORS[node.state] ?? "#484f58";
     const isSelected = node.id === selectedId;
-    const hasMergedPr = node._prStatus === "merged" && node.state === "done";
+    const borderColor = isSelected ? "#e6edf3" : "rgba(255,255,255,0.15)";
+    const borderWidth = isSelected ? "2.5px" : "1px";
 
     g.setNode(node.id, {
-      label: "",
-      shape: "circle",
-      style: `fill: ${color}; stroke: ${isSelected ? "#e6edf3" : "#0d1117"}; stroke-width: ${isSelected ? "2.5px" : "1.5px"};`,
-      width: r * 2,
-      height: r * 2,
-      rx: r,
-      ry: r,
+      label: node.id,
+      style: `fill: ${color}; stroke: ${borderColor}; stroke-width: ${borderWidth};`,
+      labelStyle: "fill: #fff; font-size: 11px; font-weight: 500;",
+      rx: 5,
+      ry: 5,
+      paddingLeft: 8,
+      paddingRight: 8,
+      paddingTop: 4,
+      paddingBottom: 4,
       _data: node,
-      _radius: r,
-      _hasMergedPr: hasMergedPr,
     });
   }
 
-  // Add edges
+  // Edges
   for (const link of links) {
-    const style = edgeStyle(link.rel);
+    const color = EDGE_COLORS[link.rel] ?? "#484f58";
+    const dash = EDGE_DASH[link.rel] ?? "";
+    const w = link.confidence === "ambiguous" ? 1 : 1.5;
+
     g.setEdge(link.target, link.source, {
-      style: `stroke: ${style.color}; stroke-width: ${link.confidence === "ambiguous" ? 1 : style.width}px; fill: none; stroke-opacity: 0.5;${style.dash ? ` stroke-dasharray: ${style.dash};` : ""}`,
-      arrowheadStyle: `fill: ${style.color}; stroke: none;`,
+      style: `stroke: ${color}; stroke-width: ${w}px; fill: none; stroke-opacity: 0.6;${dash ? ` stroke-dasharray: ${dash};` : ""}`,
+      arrowheadStyle: `fill: ${color}; stroke: none; opacity: 0.8;`,
       curve: d3.curveBasis,
       _data: link,
     });
   }
 
   // --- Render ---
-  const svgGroup = svg.append("g");
+  const inner = svg.append("g");
   const render = dagreD3.render();
-  render(svgGroup, g);
-
-  // --- Post-render customization ---
-
-  // Replace dagre-d3's rect/ellipse nodes with our circle nodes
-  svgGroup.selectAll("g.node").each(function (id) {
-    const nodeData = g.node(id);
-    if (!nodeData) return;
-    const el = d3.select(this);
-    const data = nodeData._data;
-    const r = nodeData._radius;
-
-    // Remove dagre-d3's default shape
-    el.select("rect, ellipse, circle").remove();
-
-    // Insert our circles before the label
-    const label = el.select("g");
-
-    // Merged PR ring
-    if (nodeData._hasMergedPr) {
-      el.insert("circle", "g")
-        .attr("r", r + 4)
-        .attr("fill", "none")
-        .attr("stroke", PR_MERGED_RING_COLOR)
-        .attr("stroke-width", 2)
-        .attr("opacity", 0.85);
-    }
-
-    // Main circle
-    el.insert("circle", "g")
-      .attr("r", r)
-      .attr("fill", STATE_COLORS[data.state] ?? "#484f58")
-      .attr("stroke", data.id === selectedId ? "#e6edf3" : "#0d1117")
-      .attr("stroke-width", data.id === selectedId ? 2.5 : 1.5);
-
-    // Merged PR badge
-    if (nodeData._hasMergedPr) {
-      el.append("text")
-        .text("✓PR")
-        .attr("dy", r + 13)
-        .attr("text-anchor", "middle")
-        .attr("fill", PR_MERGED_RING_COLOR)
-        .attr("font-size", "9px")
-        .attr("font-weight", "600")
-        .attr("pointer-events", "none");
-    }
-
-    // Remove dagre's empty label, add our own
-    label.remove();
-    el.append("text")
-      .text(data.id)
-      .attr("x", r + 5)
-      .attr("dy", "0.35em")
-      .attr("text-anchor", "start")
-      .attr("fill", "#8b949e")
-      .attr("font-size", "11px")
-      .attr("font-family", "inherit")
-      .attr("pointer-events", "none");
-  });
+  render(inner, g);
 
   // --- Zoom + pan ---
   const zoom = d3.zoom()
     .scaleExtent([0.1, 6])
-    .on("zoom", (event) => svgGroup.attr("transform", event.transform));
+    .on("zoom", (event) => inner.attr("transform", event.transform));
   svg.call(zoom);
   svg.on("dblclick.zoom", null);
 
   // Auto-fit
   const graphInfo = g.graph();
   if (graphInfo.width && graphInfo.height) {
-    const pad = 40;
+    const pad = 20;
     const gw = graphInfo.width + pad * 2;
     const gh = graphInfo.height + pad * 2;
     const scale = Math.min(width / gw, height / gh, 1.5);
@@ -255,23 +195,47 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
   }
 
+  // --- Post-render: add merged PR badges ---
+  inner.selectAll("g.node").each(function (id) {
+    const nodeData = g.node(id);
+    if (!nodeData?._data) return;
+    const data = nodeData._data;
+    if (data._prStatus === "merged" && data.state === "done") {
+      const el = d3.select(this);
+      const bbox = el.select("rect").node()?.getBBox();
+      if (bbox) {
+        el.append("text")
+          .text("✓PR")
+          .attr("x", bbox.x + bbox.width / 2)
+          .attr("y", bbox.y + bbox.height + 12)
+          .attr("text-anchor", "middle")
+          .attr("fill", PR_MERGED_RING_COLOR)
+          .attr("font-size", "9px")
+          .attr("font-weight", "600")
+          .attr("pointer-events", "none");
+      }
+    }
+  });
+
   // --- Interactions ---
 
-  // Node click
-  svgGroup.selectAll("g.node").on("click", function (event, id) {
-    const data = g.node(id)?._data;
-    if (data) onSelect(data);
-  }).style("cursor", "pointer");
+  // Node click + cursor
+  inner.selectAll("g.node")
+    .style("cursor", "pointer")
+    .on("click", function (event, id) {
+      const data = g.node(id)?._data;
+      if (data) onSelect(data);
+    });
 
   // Node hover
-  svgGroup.selectAll("g.node")
+  inner.selectAll("g.node")
     .on("mouseenter", function (event) {
       const id = d3.select(this).datum();
       const data = g.node(id)?._data;
       if (!data) return;
 
-      d3.select(this).select("circle:not([opacity])")
-        .attr("stroke", "#e6edf3").attr("stroke-width", 2.5);
+      d3.select(this).select("rect")
+        .attr("stroke", "#e6edf3").attr("stroke-width", "2.5px");
 
       const inbound = links.filter((l) => l.target === data.id).length;
       const outbound = links.filter((l) => l.source === data.id).length;
@@ -304,18 +268,19 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       tooltip.style.left = (event.clientX + 14) + "px";
       tooltip.style.top = (event.clientY + 14) + "px";
     })
-    .on("mouseleave", function (event) {
+    .on("mouseleave", function () {
       const id = d3.select(this).datum();
       const data = g.node(id)?._data;
       if (!data) return;
-      d3.select(this).select("circle:not([opacity])")
-        .attr("stroke", data.id === selectedId ? "#e6edf3" : "#0d1117")
-        .attr("stroke-width", data.id === selectedId ? 2.5 : 1.5);
+      const isSelected = data.id === selectedId;
+      d3.select(this).select("rect")
+        .attr("stroke", isSelected ? "#e6edf3" : "rgba(255,255,255,0.15)")
+        .attr("stroke-width", isSelected ? "2.5px" : "1px");
       hideTooltip(tooltip);
     });
 
   // Edge hover
-  svgGroup.selectAll("g.edgePath")
+  inner.selectAll("g.edgePath")
     .on("mouseenter", function (event) {
       const edgeId = d3.select(this).datum();
       const edgeData = g.edge(edgeId);
