@@ -568,43 +568,45 @@
       </button>
     </div>
 
-    {#if error}<div class="banner error inline-banner">{error}</div>{/if}
+    <div class="planner-banners">
+      {#if error}<div class="banner error inline-banner">{error}</div>{/if}
 
-    {#if lastCommitResult}
-    <div class="banner {lastCommitResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-      {#if lastCommitResult.result.status === 'applied'}
-        Applied {lastCommitResult.approved_mutation_ids.length} mutation(s) from {lastCommitResult.proposal_id}. Graph version {lastCommitResult.result.previous_graph_version} → {lastCommitResult.result.new_graph_version}.
-      {:else if lastCommitResult.result.status === 'stale'}
-        Proposal {lastCommitResult.proposal_id} is stale. Current graph version: {lastCommitResult.result.current_graph_version}.
-      {:else}
-        Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((item) => item.message).join('; ')}
+      {#if lastCommitResult}
+      <div class="banner {lastCommitResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+        {#if lastCommitResult.result.status === 'applied'}
+          Applied {lastCommitResult.approved_mutation_ids.length} mutation(s) from {lastCommitResult.proposal_id}. Graph version {lastCommitResult.result.previous_graph_version} → {lastCommitResult.result.new_graph_version}.
+        {:else if lastCommitResult.result.status === 'stale'}
+          Proposal {lastCommitResult.proposal_id} is stale. Current graph version: {lastCommitResult.result.current_graph_version}.
+        {:else}
+          Commit failed for proposal {lastCommitResult.proposal_id}: {lastCommitResult.result.errors.map((item) => item.message).join('; ')}
+        {/if}
+      </div>
+      {/if}
+
+      {#if lastMemoryWriteResult}
+      <div class="banner {lastMemoryWriteResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+        {#if lastMemoryWriteResult.result.status === 'applied'}
+          Applied {lastMemoryWriteResult.approved_edit_ids.length} planning memory edit(s). Memory hash {lastMemoryWriteResult.result.previous_content_hash.slice(0, 8)} → {lastMemoryWriteResult.result.new_content_hash.slice(0, 8)}.
+        {:else if lastMemoryWriteResult.result.status === 'stale'}
+          Memory change {lastMemoryWriteResult.change_id} is stale. Current memory hash: {lastMemoryWriteResult.result.current_content_hash.slice(0, 8)}.
+        {:else}
+          Memory write failed: {lastMemoryWriteResult.result.errors.map((item) => item.message).join('; ')}
+        {/if}
+      </div>
+      {/if}
+
+      {#if lastGitHubSyncResult}
+      <div class="banner {lastGitHubSyncResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
+        {#if lastGitHubSyncResult.result.status === 'applied'}
+          Applied {lastGitHubSyncResult.approved_operation_ids.length} GitHub sync operation(s). Body hash {lastGitHubSyncResult.result.previous_body_hash.slice(0, 8)} → {lastGitHubSyncResult.result.new_body_hash.slice(0, 8)}.
+        {:else if lastGitHubSyncResult.result.status === 'stale'}
+          GitHub sync {lastGitHubSyncResult.sync_id} is stale. Current body hash: {lastGitHubSyncResult.result.current_body_hash.slice(0, 8)}.
+        {:else}
+          GitHub sync failed: {lastGitHubSyncResult.result.errors.map((item) => item.message).join('; ')}
+        {/if}
+      </div>
       {/if}
     </div>
-    {/if}
-
-    {#if lastMemoryWriteResult}
-    <div class="banner {lastMemoryWriteResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-      {#if lastMemoryWriteResult.result.status === 'applied'}
-        Applied {lastMemoryWriteResult.approved_edit_ids.length} planning memory edit(s). Memory hash {lastMemoryWriteResult.result.previous_content_hash.slice(0, 8)} → {lastMemoryWriteResult.result.new_content_hash.slice(0, 8)}.
-      {:else if lastMemoryWriteResult.result.status === 'stale'}
-        Memory change {lastMemoryWriteResult.change_id} is stale. Current memory hash: {lastMemoryWriteResult.result.current_content_hash.slice(0, 8)}.
-      {:else}
-        Memory write failed: {lastMemoryWriteResult.result.errors.map((item) => item.message).join('; ')}
-      {/if}
-    </div>
-    {/if}
-
-    {#if lastGitHubSyncResult}
-    <div class="banner {lastGitHubSyncResult.result.status === 'applied' ? 'success' : 'error'} inline-banner">
-      {#if lastGitHubSyncResult.result.status === 'applied'}
-        Applied {lastGitHubSyncResult.approved_operation_ids.length} GitHub sync operation(s). Body hash {lastGitHubSyncResult.result.previous_body_hash.slice(0, 8)} → {lastGitHubSyncResult.result.new_body_hash.slice(0, 8)}.
-      {:else if lastGitHubSyncResult.result.status === 'stale'}
-        GitHub sync {lastGitHubSyncResult.sync_id} is stale. Current body hash: {lastGitHubSyncResult.result.current_body_hash.slice(0, 8)}.
-      {:else}
-        GitHub sync failed: {lastGitHubSyncResult.result.errors.map((item) => item.message).join('; ')}
-      {/if}
-    </div>
-    {/if}
 
     {#if chatSubTab === 'transcript'}
     <div class="planner-scroll-region" bind:this={chatScrollEl}>
