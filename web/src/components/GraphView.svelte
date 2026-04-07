@@ -81,7 +81,7 @@
   .graph-legend {
     position: absolute;
     bottom: 16px;
-    left: 16px;
+    right: 16px;
     z-index: 2;
     display: grid;
     gap: 10px;

@@ -141,20 +141,19 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   const g_layout = new dagre.graphlib.Graph();
   g_layout.setGraph({
     rankdir: "LR",       // left-to-right
-    nodesep: 35,          // vertical spacing between nodes
-    ranksep: 120,         // horizontal spacing between ranks
-    edgesep: 15,
-    marginx: 40,
-    marginy: 40,
+    nodesep: 25,          // vertical spacing between nodes
+    ranksep: 80,          // horizontal spacing between ranks
+    edgesep: 10,
+    marginx: 30,
+    marginy: 30,
   });
   g_layout.setDefaultEdgeLabel(() => ({}));
 
   for (const node of nodes) {
     const r = KIND_RADIUS[node.kind] ?? 8;
-    // Give dagre the node dimensions (label width estimate + circle)
     g_layout.setNode(node.id, {
-      width: Math.max(node.id.length * 7 + r * 2, 60),
-      height: r * 2 + 10,
+      width: Math.max(node.id.length * 7 + r * 2, 50),
+      height: r * 2 + 6,
     });
   }
 
@@ -192,7 +191,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     defs.append("marker")
       .attr("id", `arrow-${rel}`)
       .attr("viewBox", "0 -5 10 10")
-      .attr("refX", 20)
+      .attr("refX", 12)
       .attr("refY", 0)
       .attr("markerWidth", 6)
       .attr("markerHeight", 6)
