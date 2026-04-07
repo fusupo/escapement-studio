@@ -375,6 +375,116 @@ h1, h2, h3 {
   color: #e2e8f0;
 }
 
+/* Rendered markdown inside assistant chat bubbles */
+.chat-markdown {
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown > :first-child { margin-top: 0; }
+.chat-markdown > :last-child { margin-bottom: 0; }
+
+.chat-markdown p {
+  margin: 0.35em 0;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4 {
+  margin: 0.6em 0 0.25em;
+  font-size: 0.9rem;
+  color: #f1f5f9;
+}
+
+.chat-markdown h1 { font-size: 1rem; }
+.chat-markdown h2 { font-size: 0.95rem; }
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.35em 0;
+  padding-left: 1.4em;
+}
+
+.chat-markdown li {
+  margin: 0.15em 0;
+}
+
+.chat-markdown code {
+  background: rgba(148, 163, 184, 0.15);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.78rem;
+}
+
+.chat-markdown pre {
+  background: rgba(2, 6, 23, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 6px;
+  padding: 0.5em 0.65em;
+  overflow-x: auto;
+  margin: 0.4em 0;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.chat-markdown pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.chat-markdown blockquote {
+  margin: 0.4em 0;
+  padding: 0.25em 0.65em;
+  border-left: 3px solid rgba(52, 211, 153, 0.4);
+  color: #94a3b8;
+}
+
+.chat-markdown table {
+  border-collapse: collapse;
+  margin: 0.4em 0;
+  font-size: 0.78rem;
+  width: 100%;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  padding: 0.3em 0.5em;
+  text-align: left;
+}
+
+.chat-markdown th {
+  background: rgba(148, 163, 184, 0.1);
+  font-weight: 600;
+}
+
+.chat-markdown a {
+  color: #60a5fa;
+  text-decoration: underline;
+  text-decoration-color: rgba(96, 165, 250, 0.4);
+}
+
+.chat-markdown a:hover {
+  text-decoration-color: rgba(96, 165, 250, 0.8);
+}
+
+.chat-markdown hr {
+  border: none;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  margin: 0.5em 0;
+}
+
+.chat-markdown strong { color: #f1f5f9; }
+.chat-markdown em { color: #cbd5e1; }
+
 .tool-activity-list {
   list-style: none;
   padding: 0;
