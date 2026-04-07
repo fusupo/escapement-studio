@@ -161,10 +161,12 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     const color = EDGE_COLORS[link.rel] ?? "#484f58";
     const dash = EDGE_DASH[link.rel] ?? "";
     const w = link.confidence === "ambiguous" ? 1 : 1.5;
-    // target (dependency) ranks first in LR layout; arrow points from dependency → dependent
+    // target (dependency) ranks first in LR layout
+    // reversed arrow points back toward dependency ("depends on" direction)
     g.setEdge(link.target, link.source, {
       style: `stroke: ${color}; stroke-width: ${w}px; fill: none; stroke-opacity: 0.6;${dash ? ` stroke-dasharray: ${dash};` : ""}`,
       arrowheadStyle: `fill: ${color}; stroke: none; opacity: 0.8;`,
+      arrowhead: "reversed",
       curve: d3.curveBasis,
       _data: link,
     });
@@ -173,6 +175,25 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   // Render
   const inner = svg.append("g");
   const render = dagreD3.render();
+
+  // Custom reversed arrow — points back toward the source (dependency)
+  render.arrows().reversed = function (parent, id, edge, type) {
+    const marker = parent.append("marker")
+      .attr("id", id)
+      .attr("viewBox", "0 0 10 10")
+      .attr("refX", 0)
+      .attr("refY", 5)
+      .attr("markerUnits", "strokeWidth")
+      .attr("markerWidth", 8)
+      .attr("markerHeight", 6)
+      .attr("orient", "auto");
+    const path = marker.append("path")
+      .attr("d", "M 10 0 L 0 5 L 10 10 z")
+      .style("stroke-width", 1)
+      .style("stroke-dasharray", "1,0");
+    dagreD3.util.applyStyle(path, edge[type + "Style"]);
+  };
+
   render(inner, g);
 
   // Zoom + pan
