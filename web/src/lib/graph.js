@@ -161,7 +161,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     const color = EDGE_COLORS[link.rel] ?? "#484f58";
     const dash = EDGE_DASH[link.rel] ?? "";
     const w = link.confidence === "ambiguous" ? 1 : 1.5;
-    g.setEdge(link.target, link.source, {
+    g.setEdge(link.source, link.target, {
       style: `stroke: ${color}; stroke-width: ${w}px; fill: none; stroke-opacity: 0.6;${dash ? ` stroke-dasharray: ${dash};` : ""}`,
       arrowheadStyle: `fill: ${color}; stroke: none; opacity: 0.8;`,
       curve: d3.curveBasis,
