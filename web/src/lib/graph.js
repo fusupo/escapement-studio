@@ -162,11 +162,9 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     const dash = EDGE_DASH[link.rel] ?? "";
     const w = link.confidence === "ambiguous" ? 1 : 1.5;
     // target (dependency) ranks first in LR layout
-    // reversed arrow points back toward dependency ("depends on" direction)
     g.setEdge(link.target, link.source, {
       style: `stroke: ${color}; stroke-width: ${w}px; fill: none; stroke-opacity: 0.6;${dash ? ` stroke-dasharray: ${dash};` : ""}`,
-      arrowheadStyle: `fill: ${color}; stroke: none; opacity: 0.8;`,
-      arrowhead: "reversed",
+      arrowheadStyle: `fill: none; stroke: none;`,
       curve: d3.curveBasis,
       _data: link,
     });
@@ -175,26 +173,48 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   // Render
   const inner = svg.append("g");
   const render = dagreD3.render();
+  render(inner, g);
 
-  // Custom reversed arrow — points back toward the source (dependency)
-  render.arrows().reversed = function (parent, id, edge, type) {
-    const marker = parent.append("marker")
-      .attr("id", id)
+  // Post-render: swap arrowheads to source end (reversed direction)
+  // Add reversed arrow markers to defs
+  const defs = inner.select("defs").empty() ? inner.append("defs") : inner.select("defs");
+  const markerColors = new Set();
+  for (const link of links) {
+    markerColors.add(EDGE_COLORS[link.rel] ?? "#484f58");
+  }
+  for (const color of markerColors) {
+    const markerId = `arrow-rev-${color.replace("#", "")}`;
+    defs.append("marker")
+      .attr("id", markerId)
       .attr("viewBox", "0 0 10 10")
-      .attr("refX", 0)
+      .attr("refX", 9)
       .attr("refY", 5)
       .attr("markerUnits", "strokeWidth")
       .attr("markerWidth", 8)
       .attr("markerHeight", 6)
-      .attr("orient", "auto");
-    const path = marker.append("path")
-      .attr("d", "M 10 0 L 0 5 L 10 10 z")
-      .style("stroke-width", 1)
-      .style("stroke-dasharray", "1,0");
-    dagreD3.util.applyStyle(path, edge[type + "Style"]);
-  };
+      .attr("orient", "auto-start-reverse")
+      .append("path")
+      .attr("d", "M 0 0 L 10 5 L 0 10 z")
+      .attr("fill", color)
+      .attr("opacity", 0.8);
+  }
 
-  render(inner, g);
+  // Swap marker-end to marker-start on all edge paths
+  inner.selectAll("g.edgePath path.path").each(function () {
+    const path = d3.select(this);
+    const markerEnd = path.attr("marker-end");
+    path.attr("marker-end", null);
+    // Extract color from the edge's stroke
+    const stroke = path.style("stroke") || path.attr("stroke") || "#484f58";
+    // Convert rgb to hex if needed
+    let hex = stroke;
+    const rgbMatch = stroke.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+    if (rgbMatch) {
+      hex = "#" + [rgbMatch[1], rgbMatch[2], rgbMatch[3]].map(c => parseInt(c).toString(16).padStart(2, "0")).join("");
+    }
+    const markerId = `arrow-rev-${hex.replace("#", "")}`;
+    path.attr("marker-start", `url(#${markerId})`);
+  });
 
   // Zoom + pan
   const zoom = d3.zoom()
