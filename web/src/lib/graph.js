@@ -1,4 +1,5 @@
 import * as d3 from "d3";
+import dagre from "dagre";
 
 const STATE_COLORS = {
   done: "#238636",
@@ -15,8 +16,8 @@ const EDGE_STYLES = {
   implemented_by: { color: "#d29922", dash: "2,3", width: 1.5 },
 };
 
-const PR_RING_COLOR = "#a371f7"; // purple ring for open PRs
-const PR_MERGED_RING_COLOR = "#238636"; // green ring for merged PRs
+const PR_RING_COLOR = "#a371f7";
+const PR_MERGED_RING_COLOR = "#238636";
 
 const KIND_RADIUS = {
   issue: 8,
@@ -29,16 +30,8 @@ function edgeStyle(rel) {
   return EDGE_STYLES[rel] ?? { color: "#484f58", dash: null, width: 1.2 };
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
 /**
- * Extract pull request info from a work item, checking multiple locations:
- * - item.pull_request (backend-enriched)
- * - item.meta.pull_request (direct meta)
- * - item.meta.studio_post_merge_sync.pull_request (post-merge sync)
- * Returns { number, url, title, state, merged_at, is_draft, head_ref, base_ref } or null.
+ * Extract pull request info from a work item.
  */
 function extractPullRequest(item) {
   const pr =
@@ -51,8 +44,7 @@ function extractPullRequest(item) {
 }
 
 /**
- * Classify PR status for visual rendering.
- * Returns "merged" | "open" | "draft" | "closed" | null
+ * Classify PR status: "merged" | "open" | "draft" | "closed" | null
  */
 function classifyPrStatus(pr) {
   if (!pr) return null;
@@ -60,57 +52,6 @@ function classifyPrStatus(pr) {
   if (pr.is_draft) return "draft";
   if (pr.state === "closed") return "closed";
   return "open";
-}
-
-function computeLayers(nodes, edges) {
-  const ids = new Set(nodes.map((n) => n.id));
-
-  // Build adjacency: upstream → downstream
-  // All edge types: "to" is upstream of "from"
-  const children = new Map();
-  const parentCount = new Map();
-  for (const id of ids) {
-    children.set(id, []);
-    parentCount.set(id, 0);
-  }
-
-  for (const e of edges) {
-    if (!ids.has(e.from_id) || !ids.has(e.to_id)) continue;
-    children.get(e.to_id).push(e.from_id);
-    parentCount.set(e.from_id, parentCount.get(e.from_id) + 1);
-  }
-
-  // BFS longest-path layering
-  const depth = new Map();
-  const queue = [];
-  for (const id of ids) {
-    if (parentCount.get(id) === 0) {
-      depth.set(id, 0);
-      queue.push(id);
-    }
-  }
-
-  let head = 0;
-  while (head < queue.length) {
-    const u = queue[head++];
-    const d = depth.get(u);
-    for (const v of children.get(u)) {
-      const newD = d + 1;
-      if (!depth.has(v) || depth.get(v) < newD) {
-        depth.set(v, newD);
-      }
-      parentCount.set(v, parentCount.get(v) - 1);
-      if (parentCount.get(v) === 0) queue.push(v);
-    }
-  }
-
-  // Handle cycles or disconnected nodes
-  const maxDepth = Math.max(0, ...depth.values());
-  for (const id of ids) {
-    if (!depth.has(id)) depth.set(id, maxDepth + 1);
-  }
-
-  return depth;
 }
 
 function ensureTooltip() {
@@ -152,13 +93,7 @@ function hideTooltip(tooltip) {
 }
 
 /**
- * Render the dependency graph.
- * @param {SVGElement} svgElement
- * @param {{ items: Array, edges: Array }} graph
- * @param {string|null} selectedId
- * @param {function} onSelect
- * @param {{ executionRuns?: Array }} options - Optional. executionRuns: array of
- *   execution run records keyed by work_item_id, used to enrich nodes with open PR data.
+ * Render the dependency graph using dagre for layout, D3 for rendering.
  */
 export function renderGraph(svgElement, graph, selectedId, onSelect, options = {}) {
   if (!svgElement) return () => {};
@@ -172,7 +107,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   const tooltip = ensureTooltip();
 
-  // Build a map of work_item_id → PR from execution runs (for open PRs)
+  // Build PR map from execution runs
   const runPrByWorkItem = new Map();
   if (options.executionRuns) {
     for (const run of options.executionRuns) {
@@ -184,11 +119,9 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   const nodes = graph.items.map((item) => {
     const node = { ...item };
-    // Enrich with PR data from execution runs if not already present
     if (!extractPullRequest(node) && runPrByWorkItem.has(node.id)) {
       node.pull_request = runPrByWorkItem.get(node.id);
     }
-    // Cache extracted PR info
     node._pr = extractPullRequest(node);
     node._prStatus = classifyPrStatus(node._pr);
     return node;
@@ -204,38 +137,56 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       confidence: e.confidence,
     }));
 
-  // Compute topological layers
-  const depthMap = computeLayers(nodes, graph.edges);
-  const maxLayer = Math.max(0, ...depthMap.values());
+  // --- Dagre layout ---
+  const g_layout = new dagre.graphlib.Graph();
+  g_layout.setGraph({
+    rankdir: "LR",       // left-to-right
+    nodesep: 35,          // vertical spacing between nodes
+    ranksep: 120,         // horizontal spacing between ranks
+    edgesep: 15,
+    marginx: 40,
+    marginy: 40,
+  });
+  g_layout.setDefaultEdgeLabel(() => ({}));
 
-  const MARGIN_X = 120;
-  const MARGIN_Y = 60;
-  const layerSpacing = maxLayer > 0
-    ? (width - MARGIN_X * 2) / maxLayer
-    : width / 2;
-
-  // Group nodes by layer
-  const layers = new Map();
-  for (const n of nodes) {
-    const d = depthMap.get(n.id) ?? 0;
-    if (!layers.has(d)) layers.set(d, []);
-    layers.get(d).push(n);
-  }
-
-  // Assign initial positions
-  for (const [layer, group] of layers) {
-    const x = MARGIN_X + layer * layerSpacing;
-    const ySpacing = Math.min(50, (height - MARGIN_Y * 2) / (group.length + 1));
-    const yStart = height / 2 - ((group.length - 1) * ySpacing) / 2;
-    group.forEach((n, i) => {
-      n.x = x;
-      n.y = yStart + i * ySpacing;
-      n._layerX = x;
-      n._layer = layer;
+  for (const node of nodes) {
+    const r = KIND_RADIUS[node.kind] ?? 8;
+    // Give dagre the node dimensions (label width estimate + circle)
+    g_layout.setNode(node.id, {
+      width: Math.max(node.id.length * 7 + r * 2, 60),
+      height: r * 2 + 10,
     });
   }
 
-  // Defs for arrow markers
+  for (const link of links) {
+    // Edge direction: dependency flows from target → source (target is upstream)
+    // dagre wants edges pointing in rank direction, so upstream → downstream
+    g_layout.setEdge(link.target, link.source);
+  }
+
+  dagre.layout(g_layout);
+
+  // Apply dagre positions to nodes
+  for (const node of nodes) {
+    const pos = g_layout.node(node.id);
+    if (pos) {
+      node.x = pos.x;
+      node.y = pos.y;
+    }
+  }
+
+  // Get dagre edge points for routing
+  const edgePoints = new Map();
+  for (const link of links) {
+    const edge = g_layout.edge(link.target, link.source);
+    if (edge?.points) {
+      edgePoints.set(`${link.source}->${link.target}`, edge.points);
+    }
+  }
+
+  // --- D3 Rendering ---
+
+  // Arrow markers
   const defs = svg.append("defs");
   for (const [rel, style] of Object.entries(EDGE_STYLES)) {
     defs.append("marker")
@@ -253,69 +204,76 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   const g = svg.append("g");
 
-  // Zoom
-  svg.call(d3.zoom()
+  // Zoom + pan
+  const zoom = d3.zoom()
     .scaleExtent([0.1, 6])
-    .on("zoom", (event) => g.attr("transform", event.transform))
-  );
+    .on("zoom", (event) => g.attr("transform", event.transform));
+  svg.call(zoom);
   svg.on("dblclick.zoom", null);
 
-  // Force simulation
-  const simulation = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id((d) => d.id).distance(layerSpacing * 0.8).strength(0.1))
-    .force("x", d3.forceX((d) => d._layerX).strength(0.8))
-    .force("y", d3.forceY(height / 2).strength(0.02))
-    .force("charge", d3.forceManyBody().strength(-150))
-    .force("collision", d3.forceCollide().radius(25))
-    .alphaDecay(0.03);
+  // Auto-fit: compute bounding box and center
+  const graphInfo = g_layout.graph();
+  if (graphInfo.width && graphInfo.height) {
+    const pad = 60;
+    const gw = graphInfo.width + pad * 2;
+    const gh = graphInfo.height + pad * 2;
+    const scale = Math.min(width / gw, height / gh, 1.5);
+    const tx = (width - graphInfo.width * scale) / 2;
+    const ty = (height - graphInfo.height * scale) / 2;
+    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  }
+
+  // Build path from dagre edge points
+  function buildEdgePath(d) {
+    const key = `${d.source}->${d.target}`;
+    const pts = edgePoints.get(key);
+    if (pts && pts.length >= 2) {
+      const line = d3.line().x((p) => p.x).y((p) => p.y).curve(d3.curveBasis);
+      return line(pts);
+    }
+    // Fallback: straight line
+    const src = nodeById.get(d.source);
+    const tgt = nodeById.get(d.target);
+    if (src && tgt) {
+      return `M${src.x},${src.y} L${tgt.x},${tgt.y}`;
+    }
+    return "";
+  }
 
   // Edges
-  const link = g.append("g")
+  const link_el = g.append("g")
     .attr("fill", "none")
     .selectAll("path")
     .data(links)
     .join("path")
+    .attr("d", buildEdgePath)
     .attr("stroke", (d) => edgeStyle(d.rel).color)
     .attr("stroke-width", (d) => d.confidence === "ambiguous" ? 1 : edgeStyle(d.rel).width)
     .attr("stroke-dasharray", (d) => edgeStyle(d.rel).dash)
     .attr("stroke-opacity", 0.5)
     .attr("marker-end", (d) => `url(#arrow-${d.rel})`);
 
-  // Edge hover — invisible wider hitbox
+  // Edge hover hitbox
   const linkHitbox = g.append("g")
     .attr("fill", "none")
     .selectAll("path")
     .data(links)
     .join("path")
+    .attr("d", buildEdgePath)
     .attr("stroke", "transparent")
     .attr("stroke-width", 16)
     .style("cursor", "default");
 
   // Nodes
-  const node = g.append("g")
+  const node_el = g.append("g")
     .selectAll("g")
     .data(nodes)
     .join("g")
-    .style("cursor", "pointer")
-    .call(d3.drag()
-      .on("start", (event) => {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        event.subject.fx = event.subject.x;
-        event.subject.fy = event.subject.y;
-      })
-      .on("drag", (event) => {
-        event.subject.fx = event.x;
-        event.subject.fy = event.y;
-      })
-      .on("end", (event) => {
-        if (!event.active) simulation.alphaTarget(0);
-        event.subject.fx = null;
-        event.subject.fy = null;
-      })
-    );
+    .attr("transform", (d) => `translate(${d.x},${d.y})`)
+    .style("cursor", "pointer");
 
-  // PR ring — only for merged PRs (open_pr state handles open/draft via node color)
-  node.filter((d) => d._prStatus === "merged" && d.state === "done")
+  // PR ring — only for merged PRs on done items
+  node_el.filter((d) => d._prStatus === "merged" && d.state === "done")
     .append("circle")
     .attr("class", "pr-ring")
     .attr("r", (d) => (KIND_RADIUS[d.kind] ?? 8) + 4)
@@ -324,15 +282,15 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     .attr("stroke-width", 2)
     .attr("opacity", 0.85);
 
-  // Node circles — colored by state
-  node.append("circle")
+  // Node circles
+  node_el.append("circle")
     .attr("r", (d) => KIND_RADIUS[d.kind] ?? 8)
     .attr("fill", (d) => STATE_COLORS[d.state] ?? "#484f58")
     .attr("stroke", (d) => d.id === selectedId ? "#e6edf3" : "#0d1117")
     .attr("stroke-width", (d) => d.id === selectedId ? 2.5 : 1.5);
 
-  // PR badge — only for merged PRs on done items
-  node.filter((d) => d._prStatus === "merged" && d.state === "done")
+  // PR badge
+  node_el.filter((d) => d._prStatus === "merged" && d.state === "done")
     .append("text")
     .text("✓PR")
     .attr("dy", (d) => (KIND_RADIUS[d.kind] ?? 8) + 13)
@@ -343,8 +301,8 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     .attr("font-family", "inherit")
     .attr("pointer-events", "none");
 
-  // Labels — beside the node
-  node.append("text")
+  // Labels
+  node_el.append("text")
     .text((d) => d.id)
     .attr("dx", (d) => (KIND_RADIUS[d.kind] ?? 8) + 5)
     .attr("dy", "0.35em")
@@ -354,20 +312,19 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     .attr("pointer-events", "none");
 
   // Click to select
-  node.on("click", (_, d) => onSelect(d));
+  node_el.on("click", (_, d) => onSelect(d));
 
   // Node hover
-  node.on("mouseenter", (event, d) => {
+  node_el.on("mouseenter", (event, d) => {
     d3.select(event.currentTarget).select("circle:not(.pr-ring)")
       .attr("stroke", "#e6edf3").attr("stroke-width", 2.5);
 
-    const inbound = links.filter((l) => l.target === d.id || l.target.id === d.id).length;
-    const outbound = links.filter((l) => l.source === d.id || l.source.id === d.id).length;
+    const inbound = links.filter((l) => l.target === d.id).length;
+    const outbound = links.filter((l) => l.source === d.id).length;
 
     let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.id}: ${d.name}</div>`;
     body += `<div style="color:#8b949e;margin:2px 0;">Kind: <span style="color:#c9d1d9">${d.kind}</span></div>`;
     body += `<div style="color:#8b949e;margin:2px 0;">State: <span style="color:#c9d1d9">${d.state}</span></div>`;
-    body += `<div style="color:#8b949e;margin:2px 0;">Layer: <span style="color:#c9d1d9">${depthMap.get(d.id) ?? "?"}</span></div>`;
     body += `<div style="color:#8b949e;margin:2px 0;">Edges: <span style="color:#c9d1d9">${inbound} in / ${outbound} out</span></div>`;
     if (d.issue_number) body += `<div style="color:#8b949e;margin:2px 0;">Issue: <span style="color:#c9d1d9">#${d.issue_number}</span></div>`;
     if (d.repo) body += `<div style="color:#8b949e;margin:2px 0;">Repo: <span style="color:#c9d1d9">${d.repo}</span></div>`;
@@ -405,9 +362,8 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   // Edge hover
   linkHitbox.on("mouseenter", (event, d) => {
-    const src = typeof d.source === "object" ? d.source : nodeById.get(d.source);
-    const tgt = typeof d.target === "object" ? d.target : nodeById.get(d.target);
-    const style = edgeStyle(d.rel);
+    const src = nodeById.get(d.source);
+    const tgt = nodeById.get(d.target);
 
     let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.rel.replace(/_/g, " ")}</div>`;
     body += `<div style="color:#c9d1d9;">${src?.name ?? d.source} → ${tgt?.name ?? d.target}</div>`;
@@ -422,23 +378,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   })
   .on("mouseleave", () => hideTooltip(tooltip));
 
-  // Tick
-  simulation.on("tick", () => {
-    const curvePath = (d) => {
-      const sx = d.source.x, sy = d.source.y;
-      const tx = d.target.x, ty = d.target.y;
-      const dx = tx - sx;
-      const cp = dx * 0.4;
-      return `M${sx},${sy} C${sx + cp},${sy} ${tx - cp},${ty} ${tx},${ty}`;
-    };
-
-    link.attr("d", curvePath);
-    linkHitbox.attr("d", curvePath);
-    node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-  });
-
   return () => {
-    simulation.stop();
     hideTooltip(tooltip);
     tooltip?.remove();
   };

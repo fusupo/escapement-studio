@@ -19,6 +19,7 @@
     "@nestjs/core": "^11.1.6",
     "@nestjs/platform-express": "^11.1.6",
     "better-sqlite3": "^11.10.0",
+    "dagre": "^0.8.5",
     "escapement": "github:fusupo/escapement-pi",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
