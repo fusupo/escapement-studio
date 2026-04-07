@@ -1,7 +1,7 @@
 import { BadRequestException, Inject, Injectable, Logger, MessageEvent } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
-import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -606,6 +606,27 @@ export class ExecutionService {
       run_id: runId,
       messages: this.chatHistories.get(runId) ?? [],
     };
+  }
+
+  getRunScratchpad(runId: string): { run_id: string; content: string | null; source: "worktree" | "artifact" | null } {
+    const run = this.getRun(runId);
+    if (!run) {
+      return { run_id: runId, content: null, source: null };
+    }
+
+    // Prefer the live scratchpad in the worktree
+    const worktreePath = join(run.worktree_path, "SCRATCHPAD.md");
+    if (existsSync(worktreePath)) {
+      return { run_id: runId, content: readFileSync(worktreePath, "utf8"), source: "worktree" };
+    }
+
+    // Fall back to the initial snapshot in the artifact directory
+    const artifactPath = join(run.artifact_dir, "scratchpad-initial.md");
+    if (existsSync(artifactPath)) {
+      return { run_id: runId, content: readFileSync(artifactPath, "utf8"), source: "artifact" };
+    }
+
+    return { run_id: runId, content: null, source: null };
   }
 
   async sendFollowUp(input: FollowUpMessageDto): Promise<FollowUpMessageResult> {

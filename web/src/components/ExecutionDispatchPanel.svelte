@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
-  import { getExecutionPreview, getRunChatHistory, launchExecutionRun, listExecutionRuns, openPullRequest, resolveDisambiguation, sendFollowUpMessage } from "../lib/api.js";
+  import { getExecutionPreview, getRunChatHistory, getRunScratchpad, launchExecutionRun, listExecutionRuns, openPullRequest, resolveDisambiguation, sendFollowUpMessage } from "../lib/api.js";
+  import { renderMarkdown } from "../lib/markdown.js";
 
   let preview = null;
   let runs = [];
@@ -21,6 +22,9 @@
 
   let resolvingDisambiguation = {};
   let disambiguationContext = {};
+
+  let scratchpadContent = {};
+  let scratchpadLoading = {};
 
   $: activeRuns = runs.filter((run) => ["queued", "preparing", "running", "disambiguating"].includes(run.status));
   $: disambiguatingRuns = runs.filter((run) => run.status === "disambiguating");
@@ -226,6 +230,26 @@
     expandedChat = { ...expandedChat, [runId]: next };
     if (next && !chatHistories[runId]) {
       loadChatHistory(runId);
+    }
+  }
+
+  async function loadScratchpad(runId) {
+    if (scratchpadContent[runId] !== undefined) return;
+    scratchpadLoading = { ...scratchpadLoading, [runId]: true };
+    try {
+      const result = await getRunScratchpad(runId);
+      scratchpadContent = { ...scratchpadContent, [runId]: result.content };
+    } catch (scratchpadError) {
+      scratchpadContent = { ...scratchpadContent, [runId]: null };
+      console.error("Failed to load scratchpad", scratchpadError);
+    } finally {
+      scratchpadLoading = { ...scratchpadLoading, [runId]: false };
+    }
+  }
+
+  function handleScratchpadToggle(event, runId) {
+    if (event.target.open) {
+      loadScratchpad(runId);
     }
   }
 
@@ -704,6 +728,19 @@
                     </details>
                   {/if}
 
+                  <details class="scratchpad-details" on:toggle={(e) => handleScratchpadToggle(e, run.run_id)}>
+                    <summary>Scratchpad</summary>
+                    <div class="scratchpad-content">
+                      {#if scratchpadLoading[run.run_id]}
+                        <p class="muted small-text">Loading scratchpad…</p>
+                      {:else if scratchpadContent[run.run_id]}
+                        <div class="scratchpad-rendered">{@html renderMarkdown(scratchpadContent[run.run_id])}</div>
+                      {:else if scratchpadContent[run.run_id] === null}
+                        <p class="muted small-text">No scratchpad available for this run.</p>
+                      {/if}
+                    </div>
+                  </details>
+
                   {#if run.changed_files?.length}
                     <details>
                       <summary>Changed files</summary>
@@ -1149,6 +1186,86 @@
     border-color: rgba(139, 92, 246, 0.35) !important;
     color: #c4b5fd !important;
     background: rgba(139, 92, 246, 0.12) !important;
+  }
+
+  /* Scratchpad viewer */
+  .scratchpad-details {
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .scratchpad-details summary {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+    background: rgba(15, 23, 42, 0.5);
+    color: #93c5fd;
+    user-select: none;
+  }
+
+  .scratchpad-content {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .scratchpad-rendered {
+    max-height: 400px;
+    overflow: auto;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: #e2e8f0;
+    word-break: break-word;
+  }
+
+  .scratchpad-rendered :global(h1),
+  .scratchpad-rendered :global(h2),
+  .scratchpad-rendered :global(h3) {
+    margin: 0.6em 0 0.3em;
+    color: #93c5fd;
+    font-size: 0.92em;
+  }
+
+  .scratchpad-rendered :global(h1) {
+    font-size: 1.05em;
+  }
+
+  .scratchpad-rendered :global(ul),
+  .scratchpad-rendered :global(ol) {
+    margin: 0.3em 0;
+    padding-left: 1.4em;
+  }
+
+  .scratchpad-rendered :global(li) {
+    margin: 0.15em 0;
+  }
+
+  .scratchpad-rendered :global(code) {
+    background: rgba(30, 41, 59, 0.8);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+
+  .scratchpad-rendered :global(pre) {
+    background: rgba(15, 23, 42, 0.7);
+    padding: 0.5rem 0.65rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.82em;
+    margin: 0.4em 0;
+  }
+
+  .scratchpad-rendered :global(pre code) {
+    background: none;
+    padding: 0;
+  }
+
+  .scratchpad-rendered :global(p) {
+    margin: 0.35em 0;
+  }
+
+  .scratchpad-rendered :global(strong) {
+    color: #dbeafe;
   }
 
   .status-pill.info {
