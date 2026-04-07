@@ -631,7 +631,7 @@
                           {openingPrRunIds.includes(run.run_id) ? 'Opening PR…' : 'Open PR'}
                         </button>
                       {/if}
-                      <a class="ghost-link small" href="#reconciliation-panel">Review reconciliation</a>
+
                     {/if}
                   </div>
 
