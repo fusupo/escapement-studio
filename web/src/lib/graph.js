@@ -191,7 +191,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     defs.append("marker")
       .attr("id", `arrow-${rel}`)
       .attr("viewBox", "0 -5 10 10")
-      .attr("refX", 12)
+      .attr("refX", 6)
       .attr("refY", 0)
       .attr("markerWidth", 6)
       .attr("markerHeight", 6)
@@ -222,17 +222,33 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
   }
 
-  // Build path from dagre edge points
+  // Shorten a point towards another point by `dist` pixels
+  function shortenPoint(p, toward, dist) {
+    const dx = toward.x - p.x;
+    const dy = toward.y - p.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 0.1) return { ...p };
+    const ratio = dist / len;
+    return { x: p.x + dx * ratio, y: p.y + dy * ratio };
+  }
+
+  // Build path from dagre edge points, trimmed to node circle edges
   function buildEdgePath(d) {
     const key = `${d.source}->${d.target}`;
     const pts = edgePoints.get(key);
-    if (pts && pts.length >= 2) {
-      const line = d3.line().x((p) => p.x).y((p) => p.y).curve(d3.curveBasis);
-      return line(pts);
-    }
-    // Fallback: straight line
     const src = nodeById.get(d.source);
     const tgt = nodeById.get(d.target);
+    if (pts && pts.length >= 2 && src && tgt) {
+      const srcR = KIND_RADIUS[src.kind] ?? 8;
+      const tgtR = KIND_RADIUS[tgt.kind] ?? 8;
+      // Trim start and end points to circle edge
+      const trimmed = [...pts];
+      trimmed[0] = shortenPoint(trimmed[0], trimmed[1], srcR);
+      trimmed[trimmed.length - 1] = shortenPoint(trimmed[trimmed.length - 1], trimmed[trimmed.length - 2], tgtR + 4);
+      const line = d3.line().x((p) => p.x).y((p) => p.y).curve(d3.curveBasis);
+      return line(trimmed);
+    }
+    // Fallback: straight line
     if (src && tgt) {
       return `M${src.x},${src.y} L${tgt.x},${tgt.y}`;
     }
