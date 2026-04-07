@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { getExecutionPreview, getRunChatHistory, launchExecutionRun, listExecutionRuns, openPullRequest, sendFollowUpMessage } from "../lib/api.js";
+  import { getExecutionPreview, getRunChatHistory, launchExecutionRun, listExecutionRuns, openPullRequest, resolveDisambiguation, sendFollowUpMessage } from "../lib/api.js";
 
   let preview = null;
   let runs = [];
@@ -19,7 +19,11 @@
   let chatHistories = {};
   let expandedChat = {};
 
-  $: activeRuns = runs.filter((run) => ["queued", "preparing", "running"].includes(run.status));
+  let resolvingDisambiguation = {};
+  let disambiguationContext = {};
+
+  $: activeRuns = runs.filter((run) => ["queued", "preparing", "running", "disambiguating"].includes(run.status));
+  $: disambiguatingRuns = runs.filter((run) => run.status === "disambiguating");
   $: completedRuns = runs.filter((run) => run.status === "completed");
   $: blockedRuns = runs.filter((run) => run.status === "blocked");
   $: failedRuns = runs.filter((run) => run.status === "error");
@@ -68,6 +72,10 @@
 
     if (status === "running" || status === "preparing" || status === "queued") {
       return "info";
+    }
+
+    if (status === "disambiguating") {
+      return "disambiguating";
     }
 
     if (status === "blocked") {
@@ -134,6 +142,13 @@
       const [nextPreview, nextRuns] = await Promise.all([getExecutionPreview(), listExecutionRuns()]);
       preview = nextPreview;
       runs = nextRuns;
+      // Auto-expand chat for any disambiguating runs
+      for (const run of nextRuns) {
+        if (run.status === "disambiguating" && !expandedChat[run.run_id]) {
+          expandedChat = { ...expandedChat, [run.run_id]: true };
+          loadChatHistory(run.run_id);
+        }
+      }
     } catch (loadError) {
       error = loadError.message;
     } finally {
@@ -157,7 +172,11 @@
   }
 
   function canSendFollowUp(run) {
-    return ["running", "preparing", "completed"].includes(run.status);
+    return ["running", "preparing", "completed", "disambiguating"].includes(run.status);
+  }
+
+  function isDisambiguating(run) {
+    return run.status === "disambiguating";
   }
 
   async function handleSendFollowUp(run) {
@@ -222,14 +241,61 @@
     error = "";
 
     try {
-      const result = await launchExecutionRun({ work_item_id: node.id });
+      const result = await launchExecutionRun({ work_item_id: node.id, disambiguate: true });
       mergeRun(result.run);
+      // Auto-expand chat so user sees Q&A questions immediately
+      if (result.run) {
+        expandedChat = { ...expandedChat, [result.run.run_id]: true };
+      }
       await loadData({ quiet: true });
     } catch (launchError) {
       error = launchError.message;
     } finally {
       launchingIds = launchingIds.filter((id) => id !== node.id);
     }
+  }
+
+  async function handleResolveDisambiguation(run) {
+    resolvingDisambiguation = { ...resolvingDisambiguation, [run.run_id]: true };
+    error = "";
+
+    try {
+      const additionalContext = (disambiguationContext[run.run_id] || "").trim() || undefined;
+      const result = await resolveDisambiguation({
+        run_id: run.run_id,
+        additional_context: additionalContext,
+      });
+      if (!result.resolved) {
+        error = result.error || "Failed to resolve disambiguation.";
+      } else {
+        disambiguationContext = { ...disambiguationContext, [run.run_id]: "" };
+      }
+    } catch (resolveError) {
+      error = resolveError.message;
+    } finally {
+      resolvingDisambiguation = { ...resolvingDisambiguation, [run.run_id]: false };
+    }
+  }
+
+  // Poll chat history for disambiguating runs so user sees questions as they arrive
+  let disambiguationPollTimer;
+  function startDisambiguationPolling() {
+    if (disambiguationPollTimer) return;
+    disambiguationPollTimer = setInterval(() => {
+      const disambRuns = runs.filter((r) => r.status === "disambiguating" && expandedChat[r.run_id]);
+      for (const run of disambRuns) {
+        loadChatHistory(run.run_id);
+      }
+      if (disambRuns.length === 0) {
+        clearInterval(disambiguationPollTimer);
+        disambiguationPollTimer = null;
+      }
+    }, 2000);
+  }
+
+  // Reactive: start polling when disambiguating runs exist
+  $: if (disambiguatingRuns.length > 0) {
+    startDisambiguationPolling();
   }
 
   onMount(() => {
@@ -246,7 +312,13 @@
     const handleEnvelope = (event) => {
       try {
         const envelope = JSON.parse(event.data);
-        mergeRun(envelope.payload?.run);
+        const run = envelope.payload?.run;
+        mergeRun(run);
+        // Auto-expand chat and load history when run enters disambiguating
+        if (run && run.status === "disambiguating") {
+          expandedChat = { ...expandedChat, [run.run_id]: true };
+          loadChatHistory(run.run_id);
+        }
       } catch (streamError) {
         console.error("Failed to parse execution SSE event", streamError);
       }
@@ -257,6 +329,7 @@
 
     return () => {
       window.clearTimeout(copyTimer);
+      if (disambiguationPollTimer) clearInterval(disambiguationPollTimer);
       stream?.close();
     };
   });
@@ -294,7 +367,7 @@
       </div>
       <div class="execution-summary-card">
         <strong>Active runs</strong>
-        <span>{activeRuns.length}</span>
+        <span>{activeRuns.length}{disambiguatingRuns.length ? ` (${disambiguatingRuns.length} Q&A)` : ''}</span>
       </div>
       <div class="execution-summary-card">
         <strong>Completed runs</strong>
@@ -539,7 +612,11 @@
                     {/if}
                     <button class="secondary small" on:click={() => copyValue(run.branch, `Copied branch ${run.branch}`)}>Copy branch</button>
                     <button class="secondary small" on:click={() => copyValue(run.worktree_path, `Copied worktree for ${run.work_item_id}`)}>Copy worktree</button>
-                    {#if canSendFollowUp(run)}
+                    {#if isDisambiguating(run)}
+                      <button class="secondary small disambiguation-chat-btn" on:click={() => toggleChat(run.run_id)}>
+                        {expandedChat[run.run_id] ? 'Hide Q&A' : '🔍 Open Q&A gate'}
+                      </button>
+                    {:else if canSendFollowUp(run)}
                       <button class="secondary small" on:click={() => toggleChat(run.run_id)}>
                         {expandedChat[run.run_id] ? 'Hide chat' : 'Follow-up chat'}
                       </button>
@@ -559,9 +636,18 @@
                   </div>
 
                   {#if expandedChat[run.run_id] && canSendFollowUp(run)}
-                    <div class="follow-up-chat">
+                    <div class="follow-up-chat" class:disambiguating-chat={isDisambiguating(run)}>
+                      {#if isDisambiguating(run)}
+                        <div class="disambiguation-banner">
+                          <span class="disambiguation-icon">🔍</span>
+                          <div class="disambiguation-banner-text">
+                            <strong>Disambiguation in progress</strong>
+                            <span>The agent is identifying questions about this work item. Review the questions below, send answers or clarifications, then confirm to proceed to coding.</span>
+                          </div>
+                        </div>
+                      {/if}
                       {#if chatHistories[run.run_id]?.length}
-                        <div class="follow-up-messages">
+                        <div class="follow-up-messages" class:disambiguation-messages={isDisambiguating(run)}>
                           {#each chatHistories[run.run_id] as msg}
                             <div class="follow-up-msg follow-up-{msg.role}">
                               <span class="follow-up-role">{msg.role === 'user' ? 'You' : 'Agent'}</span>
@@ -570,11 +656,13 @@
                             </div>
                           {/each}
                         </div>
+                      {:else if isDisambiguating(run)}
+                        <div class="disambiguation-waiting muted small-text">Waiting for the agent to generate questions…</div>
                       {/if}
                       <div class="follow-up-input-row">
                         <textarea
                           class="follow-up-input"
-                          placeholder={["running", "preparing"].includes(run.status) ? "Steer or follow up on the active run…" : "Send a follow-up message to continue this run…"}
+                          placeholder={isDisambiguating(run) ? "Answer questions or add context for the agent…" : ["running", "preparing"].includes(run.status) ? "Steer or follow up on the active run…" : "Send a follow-up message to continue this run…"}
                           bind:value={followUpTexts[run.run_id]}
                           on:keydown={(e) => handleFollowUpKeydown(e, run)}
                           rows="2"
@@ -588,6 +676,24 @@
                           {sendingFollowUp[run.run_id] ? 'Sending…' : 'Send'}
                         </button>
                       </div>
+                      {#if isDisambiguating(run)}
+                        <div class="disambiguation-resolve-row">
+                          <textarea
+                            class="disambiguation-context-input"
+                            placeholder="Optional: final context or instructions to pass to the coding agent…"
+                            bind:value={disambiguationContext[run.run_id]}
+                            rows="2"
+                            disabled={resolvingDisambiguation[run.run_id]}
+                          ></textarea>
+                          <button
+                            class="disambiguation-resolve-btn"
+                            on:click={() => handleResolveDisambiguation(run)}
+                            disabled={resolvingDisambiguation[run.run_id]}
+                          >
+                            {resolvingDisambiguation[run.run_id] ? 'Starting coding…' : '✅ Proceed to coding'}
+                          </button>
+                        </div>
+                      {/if}
                     </div>
                   {/if}
 
@@ -920,6 +1026,129 @@
   .ghost-link.small {
     padding: 0.35rem 0.7rem;
     font-size: 0.875rem;
+  }
+
+  /* Disambiguation status pill */
+  .status-pill.disambiguating {
+    background: rgba(139, 92, 246, 0.85);
+    color: #ede9fe;
+    animation: pulse-disambiguating 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-disambiguating {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+
+  /* Disambiguation chat styling */
+  .disambiguating-chat {
+    border-color: rgba(139, 92, 246, 0.35);
+    background: rgba(76, 29, 149, 0.12);
+  }
+
+  .disambiguation-banner {
+    display: flex;
+    gap: 0.65rem;
+    align-items: flex-start;
+    padding: 0.65rem 0.75rem;
+    background: rgba(139, 92, 246, 0.12);
+    border-bottom: 1px solid rgba(139, 92, 246, 0.2);
+  }
+
+  .disambiguation-icon {
+    font-size: 1.15rem;
+    line-height: 1;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+  }
+
+  .disambiguation-banner-text {
+    display: grid;
+    gap: 0.2rem;
+  }
+
+  .disambiguation-banner-text strong {
+    color: #c4b5fd;
+    font-size: 0.88rem;
+  }
+
+  .disambiguation-banner-text span {
+    color: #a78bfa;
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+
+  .disambiguation-messages {
+    max-height: 320px;
+  }
+
+  .disambiguation-waiting {
+    padding: 1rem 0.75rem;
+    text-align: center;
+    color: #a78bfa;
+    animation: pulse-disambiguating 2s ease-in-out infinite;
+  }
+
+  .disambiguation-resolve-row {
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.65rem;
+    border-top: 1px solid rgba(139, 92, 246, 0.2);
+    background: rgba(139, 92, 246, 0.06);
+  }
+
+  .disambiguation-context-input {
+    width: 100%;
+    resize: vertical;
+    min-height: 2.2rem;
+    max-height: 6rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid rgba(139, 92, 246, 0.25);
+    background: rgba(2, 6, 23, 0.6);
+    color: #e2e8f0;
+    font-size: 0.82rem;
+    font-family: inherit;
+    line-height: 1.4;
+    box-sizing: border-box;
+  }
+
+  .disambiguation-context-input::placeholder {
+    color: #7c3aed;
+  }
+
+  .disambiguation-context-input:focus {
+    outline: none;
+    border-color: rgba(139, 92, 246, 0.55);
+  }
+
+  .disambiguation-resolve-btn {
+    justify-self: end;
+    background: rgba(34, 197, 94, 0.15);
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    color: #86efac;
+    padding: 0.5rem 1.2rem;
+    border-radius: 8px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .disambiguation-resolve-btn:hover:not(:disabled) {
+    background: rgba(34, 197, 94, 0.25);
+    border-color: rgba(34, 197, 94, 0.55);
+  }
+
+  .disambiguation-resolve-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .disambiguation-chat-btn {
+    border-color: rgba(139, 92, 246, 0.35) !important;
+    color: #c4b5fd !important;
+    background: rgba(139, 92, 246, 0.12) !important;
   }
 
   .status-pill.info {

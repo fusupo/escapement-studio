@@ -28,6 +28,8 @@ import type {
   LaunchExecutionRunResult,
   CleanupWorktreeDto,
   CleanupWorktreeResult,
+  ResolveDisambiguationDto,
+  ResolveDisambiguationResult,
   RunChatHistory,
   RunChatMessage,
   SyncMergedExecutionDto,
@@ -49,6 +51,8 @@ export class ExecutionService {
   private readonly activeSessions = new Map<string, import("@mariozechner/pi-coding-agent").AgentSession>();
   /** Chat history per run (user follow-ups + assistant replies) */
   private readonly chatHistories = new Map<string, RunChatMessage[]>();
+  /** Disambiguation gate resolvers — calling the stored function unblocks the coding phase */
+  private readonly disambiguationGates = new Map<string, { resolve: (additionalContext?: string) => void }>();
 
   constructor(
     @Inject(GraphService) private readonly graphService: GraphService,
@@ -169,7 +173,7 @@ export class ExecutionService {
 
     this.persistRun(run);
     this.pushActivity(run.run_id, "status_change", "Execution run queued.");
-    void this.executeRun(run, node).catch((error) => {
+    void this.executeRun(run, node, input.disambiguate !== false).catch((error) => {
       this.pushActivity(run.run_id, "error", `Execution failed: ${this.getErrorMessage(error)}`);
       const failedRun = this.updateRun(run.run_id, {
         status: "error",
@@ -359,7 +363,7 @@ export class ExecutionService {
       throw new BadRequestException(`No recent run found with id ${runId}`);
     }
 
-    if (run.status === "running" || run.status === "preparing") {
+    if (run.status === "running" || run.status === "preparing" || run.status === "disambiguating") {
       throw new BadRequestException(`Cannot cleanup worktree for run ${runId} — status is ${run.status}`);
     }
 
@@ -434,7 +438,41 @@ export class ExecutionService {
     }
   }
 
-  private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview) {
+  async resolveDisambiguation(input: ResolveDisambiguationDto): Promise<ResolveDisambiguationResult> {
+    const runId = input.run_id?.trim();
+    if (!runId) {
+      throw new BadRequestException("run_id is required");
+    }
+
+    const run = this.getRun(runId);
+    if (!run) {
+      throw new BadRequestException(`Unknown execution run: ${runId}`);
+    }
+
+    if (run.status !== "disambiguating") {
+      return {
+        resolved: false,
+        run_id: runId,
+        error: `Run is in "${run.status}" status; only runs in "disambiguating" status can be resolved.`,
+      };
+    }
+
+    const gate = this.disambiguationGates.get(runId);
+    if (!gate) {
+      return {
+        resolved: false,
+        run_id: runId,
+        error: "No active disambiguation gate found for this run.",
+      };
+    }
+
+    gate.resolve(input.additional_context?.trim() || undefined);
+    this.disambiguationGates.delete(runId);
+    this.pushActivity(runId, "status_change", "Disambiguation resolved — proceeding to coding.");
+    return { resolved: true, run_id: runId };
+  }
+
+  private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview, disambiguate = true) {
     let run = this.updateRun(initialRun.run_id, {
       status: "preparing",
       progress_message: "Creating isolated git worktree.",
@@ -480,9 +518,54 @@ export class ExecutionService {
     });
 
     try {
+      // --- Disambiguation gate ---
+      if (disambiguate) {
+        run = this.updateRun(runId, {
+          status: "disambiguating",
+          progress_message: "Disambiguation phase — agent is identifying questions before coding.",
+        })!;
+        this.pushActivity(runId, "status_change", "Disambiguation phase started.");
+        this.appendEvent(run, { type: "disambiguation_started" });
+
+        const disambiguationPrompt = this.buildDisambiguationPrompt(run, node);
+        await session.prompt(disambiguationPrompt);
+
+        const disambiguationText = session.getLastAssistantText()?.trim() ?? "";
+        this.pushChatMessage(runId, { timestamp: this.now(), role: "assistant", text: disambiguationText });
+        this.pushActivity(runId, "info", "Disambiguation questions generated — waiting for user resolution.");
+        this.appendEvent(run, { type: "disambiguation_questions_ready" });
+        this.updateRun(runId, { progress_message: "Waiting for disambiguation resolution." });
+
+        // Block until the user resolves disambiguation
+        const additionalContext = await new Promise<string | undefined>((resolve) => {
+          this.disambiguationGates.set(runId, { resolve });
+        });
+
+        this.appendEvent(run, { type: "disambiguation_resolved" });
+
+        // Feed additional context if provided, before the main coding prompt
+        if (additionalContext) {
+          await session.prompt(
+            `The user provided the following additional context before coding starts:\n\n${additionalContext}\n\nAcknowledge briefly, then wait for the coding instructions.`
+          );
+          const ackText = session.getLastAssistantText()?.trim() ?? "";
+          if (ackText) {
+            this.pushChatMessage(runId, { timestamp: this.now(), role: "assistant", text: ackText });
+          }
+        }
+
+        run = this.updateRun(runId, {
+          status: "running",
+          progress_message: "Disambiguation resolved — coding phase started.",
+        })!;
+        this.pushActivity(runId, "status_change", "Coding phase started after disambiguation.");
+      }
+      // --- End disambiguation gate ---
+
       await session.prompt(run.prompt);
     } finally {
       unsubscribe();
+      this.disambiguationGates.delete(run.run_id);
       this.activeSessions.delete(run.run_id);
       session.dispose();
     }
@@ -546,7 +629,7 @@ export class ExecutionService {
     const session = this.activeSessions.get(runId);
 
     // Active session: steer or follow-up into the live run
-    if (session && (run.status === "running" || run.status === "preparing")) {
+    if (session && (run.status === "running" || run.status === "preparing" || run.status === "disambiguating")) {
       const delivery = input.delivery ?? "followUp";
       try {
         if (delivery === "steer") {
@@ -748,6 +831,31 @@ export class ExecutionService {
     return target.startsWith(`${boundedRoot}/`) || target === boundedRoot
       ? { code: "worktree_path_bounded", status: "pass", message: "Target worktree path is inside the configured execution worktree root." }
       : { code: "worktree_path_bounded", status: "fail", message: "Target worktree path escaped the configured execution worktree root." };
+  }
+
+  private buildDisambiguationPrompt(run: ExecutionRunRecord, node: ExecutionDispatchNodePreview): string {
+    const lines = [
+      `You are about to execute Studio work item ${run.work_item_id}: ${run.work_item_name}.`,
+      "",
+      "Before coding begins, review the work item scope and identify any ambiguities, missing information, or decisions that should be resolved first.",
+      "",
+      `Repo: ${run.repo ?? "(not set)"}`,
+      `Issue URL: ${run.issue_url ?? "(not set)"}`,
+      `Scope hint: ${node.scope_hint ?? "(not set)"}`,
+      `Branch: ${node.branch}`,
+      `Base ref: ${node.default_base_ref}`,
+      "",
+      "Files owned:",
+      ...(node.files_owned.length ? node.files_owned.map((p) => `- ${p}`) : ["- (none predicted)"]),
+      "",
+      "Please:",
+      "1. List any clarifying questions about scope, approach, or constraints.",
+      "2. Call out any assumptions you would make if no answer is given.",
+      "3. If everything is clear, say so explicitly.",
+      "",
+      "Do NOT start coding yet. This is a disambiguation-only phase.",
+    ];
+    return lines.join("\n");
   }
 
   private buildPrompt(workItem: WorkItemRecord, node: ExecutionDispatchNodePreview): string {
