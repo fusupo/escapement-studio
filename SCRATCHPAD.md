@@ -33,7 +33,7 @@
 - [x] Create `ExecutionChecklist.svelte` component — parses `- [ ]`/`- [x]` lines from scratchpad content, renders compact checklist with progress summary
 - [x] Integrate into `ExecutionDispatchPanel.svelte` — show checklist prominently for active runs, poll scratchpad every 3s
 - [x] Run tests / verify
-- [ ] Summarize results
+- [x] Summarize results
 
 ## Work Log
 
