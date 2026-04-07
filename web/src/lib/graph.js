@@ -354,7 +354,13 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     .attr("pointer-events", "none");
 
   // Click to select
-  node.on("click", (_, d) => onSelect(d));
+  node.on("click", (event, d) => {
+    event.stopPropagation();
+    onSelect(d);
+  });
+
+  // Click background to deselect
+  svg.on("click", () => onSelect(null));
 
   // Node hover
   node.on("mouseenter", (event, d) => {
