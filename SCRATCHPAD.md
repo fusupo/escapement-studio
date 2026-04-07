@@ -1,12 +1,12 @@
-# Scratchpad: studio-97 — Studio: expose a collapsible scratchpad view in the work item and execution UI
+# Scratchpad: studio-106 — Studio: global CSS tightening — smaller fonts, tighter spacing, app-like density
 
 ## Context
 - **Repo:** fusupo/escapement-studio
-- **Issue:** https://github.com/fusupo/escapement-studio/issues/97
-- **Branch:** studio-97-branch
+- **Issue:** https://github.com/fusupo/escapement-studio/issues/106
+- **Branch:** studio-106-branch
 - **Base ref:** develop
-- **Scope hint:** Add a collapsible scratchpad viewer to the work item and/or execution UI.
-- **Created:** 2026-04-07T19:44:07.561Z
+- **Scope hint:** Reduce global UI density with smaller base fonts, tighter spacing, and more compact controls across the app.
+- **Created:** 2026-04-07T19:55:37.749Z
 
 ## File Ownership
 
@@ -22,32 +22,26 @@
 - src/modules/github
 - src/modules/graph
 - src/modules/planning
+- web/src/App.svelte
 - web/src/app.css
 - web/src/components
+- web/src/components/ExecutionDispatchPanel.svelte
 - web/src/components/GraphView.svelte
 - web/src/components/PlannerChatAdapter.svelte
+- web/src/components/Sidebar.svelte
 
 ## Implementation Plan
+<!-- Fill in concrete implementation steps before starting work -->
 
 - [x] Analyze scope and identify changes needed
-- [x] Add `readFileSync` import to execution.service.ts
-- [x] Add `getRunScratchpad()` method to ExecutionService
-- [x] Add `GET /api/execution/runs/:runId/scratchpad` controller route
-- [x] Add `getRunScratchpad()` to frontend API module
-- [x] Add collapsible scratchpad `<details>` to execution run cards
-- [x] Add CSS for scratchpad viewer
-- [x] TypeScript compiles clean
-- [x] All 63 tests pass
-- [x] Frontend vite build succeeds
+- [ ] Implement changes — BLOCKED
+- [ ] Run tests / verify
+- [ ] Summarize results
 
 ## Work Log
 
-- Backend: added `getRunScratchpad(runId)` to ExecutionService — reads live SCRATCHPAD.md from worktree, falls back to artifact dir initial snapshot
-- Backend: added `GET runs/:runId/scratchpad` route to ExecutionController
-- Frontend: added `getRunScratchpad(runId)` API function
-- Frontend: added lazy-loading collapsible `<details>` scratchpad viewer to each execution run card, styled consistently with existing activity-log-details pattern
-- All changes are minimal and additive — no refactors
+- **2026-04-07:** Every CSS-containing file is forbidden. This task cannot proceed without access to at least `web/src/app.css` (global styles) and ideally the component `<style>` blocks. No owned or shared files exist for this work item.
 
 ## Blockers
 
-- Files touched are in the "forbidden" list, but the work item cannot be implemented without them. See summary.
+- **HARD BLOCKER:** All CSS files are forbidden. The task requires modifying `web/src/app.css` and component styles, but these are all listed as forbidden (owned by other work items). This work item needs to be re-dispatched with file ownership over `web/src/app.css` at minimum.
