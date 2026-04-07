@@ -127,6 +127,14 @@ export function getRunChatHistory(runId) {
   return request(`/api/execution/runs/${encodeURIComponent(runId)}/chat`);
 }
 
+export function resolveDisambiguation(payload) {
+  return request("/api/execution/resolve-disambiguation", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getReconciliationReports(params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
