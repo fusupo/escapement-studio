@@ -18,7 +18,7 @@
   let sendingFollowUp = {};
   let chatHistories = {};
   let expandedChat = {};
-  let disambiguateFlags = {};
+
   let resolvingDisambiguation = {};
   let disambiguationContext = {};
 
@@ -241,11 +241,10 @@
     error = "";
 
     try {
-      const disambiguate = Boolean(disambiguateFlags[node.id]);
-      const result = await launchExecutionRun({ work_item_id: node.id, disambiguate });
+      const result = await launchExecutionRun({ work_item_id: node.id, disambiguate: true });
       mergeRun(result.run);
-      // Auto-expand chat for disambiguation runs so user sees questions immediately
-      if (disambiguate && result.run) {
+      // Auto-expand chat so user sees Q&A questions immediately
+      if (result.run) {
         expandedChat = { ...expandedChat, [result.run.run_id]: true };
       }
       await loadData({ quiet: true });
@@ -433,12 +432,8 @@
                             {#if node.issue_url}
                               <a class="ghost-link small" href={node.issue_url} target="_blank" rel="noreferrer">Open issue</a>
                             {/if}
-                            <label class="disambiguate-toggle" title="Run a Q&A phase before coding starts to clarify scope and resolve ambiguities">
-                              <input type="checkbox" bind:checked={disambiguateFlags[node.id]} />
-                              <span>Q&A first</span>
-                            </label>
                             <button on:click={() => launchNode(node)} disabled={!node.can_launch || launchingIds.includes(node.id)}>
-                              {launchingIds.includes(node.id) ? "Launching..." : node.can_launch ? (disambiguateFlags[node.id] ? "Launch with Q&A" : "Launch run") : "Blocked"}
+                              {launchingIds.includes(node.id) ? "Launching..." : node.can_launch ? "Launch run" : "Blocked"}
                             </button>
                           </div>
                         </div>
@@ -1031,34 +1026,6 @@
   .ghost-link.small {
     padding: 0.35rem 0.7rem;
     font-size: 0.875rem;
-  }
-
-  /* Disambiguation toggle on dispatch nodes */
-  .disambiguate-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-size: 0.82rem;
-    color: #c4b5fd;
-    cursor: pointer;
-    user-select: none;
-    padding: 0.3rem 0.55rem;
-    border-radius: 6px;
-    border: 1px solid rgba(139, 92, 246, 0.25);
-    background: rgba(139, 92, 246, 0.08);
-    transition: background 0.15s, border-color 0.15s;
-  }
-
-  .disambiguate-toggle:hover {
-    background: rgba(139, 92, 246, 0.16);
-    border-color: rgba(139, 92, 246, 0.4);
-  }
-
-  .disambiguate-toggle input[type="checkbox"] {
-    accent-color: #8b5cf6;
-    width: 1em;
-    height: 1em;
-    margin: 0;
   }
 
   /* Disambiguation status pill */

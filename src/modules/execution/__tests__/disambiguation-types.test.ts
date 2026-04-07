@@ -20,11 +20,13 @@ describe("disambiguation types", () => {
     expect(dto.disambiguate).toBe(true);
   });
 
-  it("LaunchExecutionRunDto disambiguate is optional and defaults to undefined", () => {
+  it("LaunchExecutionRunDto disambiguate is optional — omitting it enables Q&A by default", () => {
     const dto: LaunchExecutionRunDto = {
       work_item_id: "studio-96",
     };
+    // When omitted, the service treats it as true (Q&A is the default workflow)
     expect(dto.disambiguate).toBeUndefined();
+    expect(dto.disambiguate !== false).toBe(true);
   });
 
   it("ResolveDisambiguationDto accepts minimal input", () => {

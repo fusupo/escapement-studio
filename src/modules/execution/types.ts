@@ -69,7 +69,7 @@ export interface LaunchExecutionRunDto {
   work_item_id: string;
   base_ref?: string;
   prompt?: string;
-  /** When true, run a Q&A disambiguation phase before coding starts. Default: false */
+  /** When true, run a Q&A disambiguation phase before coding starts. Default: true */
   disambiguate?: boolean;
 }
 

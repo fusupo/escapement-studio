@@ -173,7 +173,7 @@ export class ExecutionService {
 
     this.persistRun(run);
     this.pushActivity(run.run_id, "status_change", "Execution run queued.");
-    void this.executeRun(run, node, Boolean(input.disambiguate)).catch((error) => {
+    void this.executeRun(run, node, input.disambiguate !== false).catch((error) => {
       this.pushActivity(run.run_id, "error", `Execution failed: ${this.getErrorMessage(error)}`);
       const failedRun = this.updateRun(run.run_id, {
         status: "error",
@@ -472,7 +472,7 @@ export class ExecutionService {
     return { resolved: true, run_id: runId };
   }
 
-  private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview, disambiguate = false) {
+  private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview, disambiguate = true) {
     let run = this.updateRun(initialRun.run_id, {
       status: "preparing",
       progress_message: "Creating isolated git worktree.",
