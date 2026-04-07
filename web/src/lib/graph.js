@@ -99,6 +99,9 @@ function buildTooltipHtml(data, links) {
   return body;
 }
 
+// Persist zoom transform across renders
+let _savedTransform = null;
+
 export function renderGraph(svgElement, graph, selectedId, onSelect, options = {}) {
   if (!svgElement) return () => {};
 
@@ -219,20 +222,27 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   // Zoom + pan
   const zoom = d3.zoom()
     .scaleExtent([0.1, 6])
-    .on("zoom", (event) => inner.attr("transform", event.transform));
+    .on("zoom", (event) => {
+      inner.attr("transform", event.transform);
+      _savedTransform = event.transform;
+    });
   svg.call(zoom);
   svg.on("dblclick.zoom", null);
 
-  // Auto-fit
-  const graphInfo = g.graph();
-  if (graphInfo.width && graphInfo.height) {
-    const pad = 20;
-    const gw = graphInfo.width + pad * 2;
-    const gh = graphInfo.height + pad * 2;
-    const scale = Math.min(width / gw, height / gh, 1.5);
-    const tx = (width - graphInfo.width * scale) / 2;
-    const ty = (height - graphInfo.height * scale) / 2;
-    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  // Restore saved transform or auto-fit
+  if (_savedTransform) {
+    svg.call(zoom.transform, _savedTransform);
+  } else {
+    const graphInfo = g.graph();
+    if (graphInfo.width && graphInfo.height) {
+      const pad = 20;
+      const gw = graphInfo.width + pad * 2;
+      const gh = graphInfo.height + pad * 2;
+      const scale = Math.min(width / gw, height / gh, 1.5);
+      const tx = (width - graphInfo.width * scale) / 2;
+      const ty = (height - graphInfo.height * scale) / 2;
+      svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+    }
   }
 
   // Post-render: merged PR badges
