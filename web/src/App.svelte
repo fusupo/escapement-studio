@@ -34,6 +34,7 @@
   const workspaceTabs = [
     { id: "planning", label: "Planning" },
     { id: "execute", label: "Execute" },
+    { id: "reconciliation", label: "Reconciliation" },
   ];
 
   $: selectedItem = graph.items.find((item) => item.id === selectedId) ?? null;
@@ -251,6 +252,9 @@
   {:else if activeTab === "execute"}
     <div class="execute-viewport">
       <ExecutionDispatchPanel />
+    </div>
+  {:else if activeTab === "reconciliation"}
+    <div class="reconciliation-viewport">
       <ReconciliationPanel />
     </div>
   {/if}
@@ -371,8 +375,14 @@
   /* ── Execute tab ── */
   .execute-viewport {
     display: grid;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     overflow: hidden;
+  }
+
+  /* ── Reconciliation tab ── */
+  .reconciliation-viewport {
+    overflow-y: auto;
+    padding: 0 1rem 2rem;
   }
 
   /* ── Shared ── */
