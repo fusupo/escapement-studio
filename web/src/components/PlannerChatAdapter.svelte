@@ -701,6 +701,7 @@
     </div>
     {/if}
 
+    {#if chatSubTab === 'transcript'}
     <div class="planner-composer">
       <label>
         Message
@@ -711,6 +712,7 @@
         <button on:click={submitMessage} disabled={sending || !draft.trim()}>{sending ? 'Sending...' : isStreaming ? 'Queue follow-up' : 'Send to planner'}</button>
       </div>
     </div>
+    {/if}
   {/if}
 </section>
 

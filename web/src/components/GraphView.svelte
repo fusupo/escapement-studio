@@ -7,29 +7,41 @@
   export let onSelect = () => {};
 
   let svg;
-  let cleanup = () => {};
+  let handle = { cleanup() {}, updateSelection() {}, resize() {} };
   let resizeObserver;
+  let prevGraph = null;
+  let mounted = false;
 
-  function redraw() {
-    cleanup();
-    cleanup = renderGraph(svg, graph, selectedId, onSelect);
+  function fullRedraw() {
+    handle.cleanup();
+    handle = renderGraph(svg, graph, selectedId, onSelect);
+    prevGraph = graph;
   }
 
-  $: if (svg) {
-    redraw();
+  // Mount + graph data changes → full re-layout
+  $: if (svg && graph) {
+    if (!mounted || graph !== prevGraph) {
+      mounted = true;
+      fullRedraw();
+    }
   }
 
-  $: if (graph || selectedId) {
-    if (svg) redraw();
+  // Selection changes → lightweight stroke update (separate reactive statement)
+  $: applySelection(selectedId);
+
+  function applySelection(id) {
+    if (!mounted) return;
+    handle.updateSelection(id);
   }
 
+  // Resize → viewBox only, no layout
   $: if (svg && !resizeObserver) {
-    resizeObserver = new ResizeObserver(() => redraw());
+    resizeObserver = new ResizeObserver(() => handle.resize());
     resizeObserver.observe(svg);
   }
 
   onDestroy(() => {
-    cleanup();
+    handle.cleanup();
     resizeObserver?.disconnect();
   });
 </script>
@@ -80,42 +92,45 @@
 
   .graph-legend {
     position: absolute;
-    bottom: 16px;
-    right: 16px;
+    bottom: 8px;
+    right: 8px;
     z-index: 2;
     display: grid;
-    gap: 10px;
-    padding: 12px 16px;
-    border-radius: 8px;
-    border: 1px solid #30363d;
-    background: #161b22;
-    font-size: 12px;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 3px;
+    border: 1px solid var(--border, #2b3245);
+    background: var(--bg-surface, #13171f);
+    font-size: 10.5px;
     color: #c9d1d9;
   }
 
   .graph-legend h3 {
-    font-size: 13px;
-    margin: 0 0 8px 0;
-    color: #e6edf3;
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 4px 0;
+    color: var(--text-secondary, #8b95a5);
   }
 
   .legend-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin: 4px 0;
+    gap: 6px;
+    margin: 2px 0;
   }
 
   .legend-swatch {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
     flex-shrink: 0;
     display: inline-block;
   }
 
   .legend-line {
-    width: 24px;
+    width: 20px;
     height: 4px;
     flex-shrink: 0;
     overflow: visible;
@@ -123,7 +138,7 @@
 
   .graph-legend code {
     font-family: inherit;
-    font-size: 12px;
+    font-size: 10.5px;
     color: #c9d1d9;
   }
 </style>

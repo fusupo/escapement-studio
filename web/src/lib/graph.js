@@ -103,7 +103,7 @@ function buildTooltipHtml(data, links) {
 let _savedTransform = null;
 
 export function renderGraph(svgElement, graph, selectedId, onSelect, options = {}) {
-  if (!svgElement) return () => {};
+  if (!svgElement) return { cleanup() {}, updateSelection() {} };
 
   const width = svgElement.clientWidth || 900;
   const height = svgElement.clientHeight || 640;
@@ -275,7 +275,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       const id = d3.select(this).datum();
       const data = g.node(id)?._data;
       if (!data) return;
-      d3.select(this).select("rect").attr("stroke", "#e6edf3").attr("stroke-width", "2.5px");
+      d3.select(this).select("rect").style("stroke", "#8b95a5").style("stroke-width", "1.5px");
       showTooltip(tooltip, event, buildTooltipHtml(data, links));
     })
     .on("mousemove", (event) => {
@@ -287,8 +287,8 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       if (!data) return;
       const sel = data.id === selectedId;
       d3.select(this).select("rect")
-        .attr("stroke", sel ? "#e6edf3" : "rgba(255,255,255,0.15)")
-        .attr("stroke-width", sel ? "2.5px" : "1px");
+        .style("stroke", sel ? "#e6edf3" : "rgba(255,255,255,0.15)")
+        .style("stroke-width", sel ? "2.5px" : "1px");
       hideTooltip(tooltip);
     });
 
@@ -313,8 +313,30 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     })
     .on("mouseleave", () => hideTooltip(tooltip));
 
-  return () => {
-    hideTooltip(tooltip);
-    tooltip?.remove();
+  function updateSelection(newSelectedId) {
+    selectedId = newSelectedId;
+    inner.selectAll("g.node").each(function (nodeId) {
+      const data = g.node(nodeId)?._data;
+      if (!data) return;
+      const sel = data.id === newSelectedId;
+      d3.select(this).select("rect")
+        .style("stroke", sel ? "#e6edf3" : "rgba(255,255,255,0.15)")
+        .style("stroke-width", sel ? "2.5px" : "1px");
+    });
+  }
+
+  function resize() {
+    const newWidth = svgElement.clientWidth || 900;
+    const newHeight = svgElement.clientHeight || 640;
+    svg.attr("viewBox", [0, 0, newWidth, newHeight]);
+  }
+
+  return {
+    cleanup() {
+      hideTooltip(tooltip);
+      tooltip?.remove();
+    },
+    updateSelection,
+    resize,
   };
 }
