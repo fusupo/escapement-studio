@@ -131,6 +131,10 @@ export function getRunScratchpad(runId) {
   return request(`/api/execution/runs/${encodeURIComponent(runId)}/scratchpad`);
 }
 
+export function getRunChecklist(runId) {
+  return request(`/api/execution/runs/${encodeURIComponent(runId)}/checklist`);
+}
+
 export function resolveDisambiguation(payload) {
   return request("/api/execution/resolve-disambiguation", {
     method: "POST",

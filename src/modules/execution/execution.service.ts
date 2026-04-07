@@ -13,8 +13,10 @@ import type { WorkItemRecord } from "../graph/types.js";
 import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
+  ChecklistItem,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
+  ExecutionChecklistSnapshot,
   ExecutionDispatchGroupPreview,
   ExecutionDispatchNodePreview,
   ExecutionDispatchPreview,
@@ -53,6 +55,8 @@ export class ExecutionService {
   private readonly chatHistories = new Map<string, RunChatMessage[]>();
   /** Disambiguation gate resolvers — calling the stored function unblocks the coding phase */
   private readonly disambiguationGates = new Map<string, { resolve: (additionalContext?: string) => void }>();
+  /** Last-emitted checklist snapshots per run — used for dedup */
+  private readonly lastChecklistSnapshots = new Map<string, string>();
 
   constructor(
     @Inject(GraphService) private readonly graphService: GraphService,
@@ -489,6 +493,7 @@ export class ExecutionService {
     const scratchpadPath = this.writeScratchpad(run, node);
     this.pushActivity(run.run_id, "status_change", `Scratchpad written to ${scratchpadPath}`);
     this.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
+    this.emitChecklistIfChanged(run);
 
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: run.worktree_path,
@@ -605,6 +610,20 @@ export class ExecutionService {
     return {
       run_id: runId,
       messages: this.chatHistories.get(runId) ?? [],
+    };
+  }
+
+  getRunChecklist(runId: string): ExecutionChecklistSnapshot {
+    const run = this.getRun(runId);
+    if (!run) {
+      return { run_id: runId, items: [], completed: 0, total: 0 };
+    }
+    const items = this.readChecklistFromWorktree(run);
+    return {
+      run_id: runId,
+      items,
+      completed: items.filter((i) => i.checked).length,
+      total: items.length,
     };
   }
 
@@ -774,6 +793,7 @@ export class ExecutionService {
       this.appendEvent(run, { type: event.type, tool_name: toolName });
       this.pushActivity(runId, "tool_end", `Tool finished: ${toolName ?? "unknown"}`);
       this.updateRun(runId, { progress_message: `${toolName ?? "tool"} finished.` });
+      this.emitChecklistIfChanged(run);
       return;
     }
 
@@ -794,6 +814,77 @@ export class ExecutionService {
       this.pushActivity(runId, "turn_end", "Execution turn completed.");
       this.updateRun(runId, { progress_message: "Execution turn completed." });
     }
+  }
+
+  /**
+   * Parse checklist items from the ## Implementation Plan section of a scratchpad.
+   * Only matches `- [ ]` and `- [x]` lines within that section.
+   */
+  parseImplementationPlanChecklist(content: string): ChecklistItem[] {
+    const lines = content.split("\n");
+    const items: ChecklistItem[] = [];
+    let inSection = false;
+
+    for (const line of lines) {
+      // Detect heading boundaries
+      if (/^##\s/.test(line)) {
+        inSection = /^##\s+Implementation Plan/i.test(line);
+        continue;
+      }
+      if (inSection) {
+        const match = line.match(/^\s*-\s+\[([\sxX])\]\s+(.+)$/);
+        if (match) {
+          items.push({
+            checked: match[1].toLowerCase() === "x",
+            text: match[2].trim(),
+          });
+        }
+      }
+    }
+    return items;
+  }
+
+  private readChecklistFromWorktree(run: ExecutionRunRecord): ChecklistItem[] {
+    const scratchpadPath = join(run.worktree_path, "SCRATCHPAD.md");
+    if (!existsSync(scratchpadPath)) {
+      return [];
+    }
+    try {
+      const content = readFileSync(scratchpadPath, "utf8");
+      return this.parseImplementationPlanChecklist(content);
+    } catch {
+      return [];
+    }
+  }
+
+  private emitChecklistIfChanged(run: ExecutionRunRecord): void {
+    const items = this.readChecklistFromWorktree(run);
+    const snapshot: ExecutionChecklistSnapshot = {
+      run_id: run.run_id,
+      items,
+      completed: items.filter((i) => i.checked).length,
+      total: items.length,
+    };
+    const key = JSON.stringify(snapshot.items);
+    if (this.lastChecklistSnapshots.get(run.run_id) === key) {
+      return; // No change
+    }
+    this.lastChecklistSnapshots.set(run.run_id, key);
+
+    const envelope = {
+      event_id: `evt_${++this.eventCounter}`,
+      stream_id: this.streamId,
+      timestamp: this.now(),
+      event_type: "execution_checklist",
+      session_id: run.run_id,
+      turn_id: null,
+      payload: snapshot,
+    };
+    this.eventSubject.next({
+      type: envelope.event_type,
+      data: JSON.stringify(envelope),
+      id: envelope.event_id,
+    });
   }
 
   private pushActivity(runId: string, kind: ActivityLogEntryKind, message: string, detail?: string) {
