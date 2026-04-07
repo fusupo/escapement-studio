@@ -222,6 +222,18 @@ export interface RunChatMessage {
   text: string;
 }
 
+export interface ChecklistItem {
+  text: string;
+  checked: boolean;
+}
+
+export interface ExecutionChecklistSnapshot {
+  run_id: string;
+  items: ChecklistItem[];
+  completed: number;
+  total: number;
+}
+
 export interface ResolveDisambiguationDto {
   run_id: string;
   /** Optional additional context or answers to pass to the coding agent when it starts. */

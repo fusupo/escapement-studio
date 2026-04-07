@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
-  import { getExecutionPreview, getRunChatHistory, getRunScratchpad, launchExecutionRun, listExecutionRuns, openPullRequest, resolveDisambiguation, sendFollowUpMessage } from "../lib/api.js";
+  import { getExecutionPreview, getRunChecklist, getRunChatHistory, getRunScratchpad, launchExecutionRun, listExecutionRuns, openPullRequest, resolveDisambiguation, sendFollowUpMessage } from "../lib/api.js";
+  import ExecutionChecklist from "./ExecutionChecklist.svelte";
   import { renderMarkdown } from "../lib/markdown.js";
 
   let preview = null;
@@ -25,6 +26,8 @@
 
   let scratchpadContent = {};
   let scratchpadLoading = {};
+
+  let checklistData = {};
 
   $: activeRuns = runs.filter((run) => ["queued", "preparing", "running", "disambiguating"].includes(run.status));
   $: disambiguatingRuns = runs.filter((run) => run.status === "disambiguating");
@@ -153,6 +156,12 @@
           loadChatHistory(run.run_id);
         }
       }
+      // Load initial checklist for active runs
+      for (const run of nextRuns) {
+        if (["queued", "preparing", "running", "completed"].includes(run.status) && !checklistData[run.run_id]) {
+          loadChecklist(run.run_id);
+        }
+      }
     } catch (loadError) {
       error = loadError.message;
     } finally {
@@ -230,6 +239,15 @@
     expandedChat = { ...expandedChat, [runId]: next };
     if (next && !chatHistories[runId]) {
       loadChatHistory(runId);
+    }
+  }
+
+  async function loadChecklist(runId) {
+    try {
+      const result = await getRunChecklist(runId);
+      checklistData = { ...checklistData, [runId]: result };
+    } catch (err) {
+      console.debug("Failed to load checklist", err);
     }
   }
 
@@ -343,13 +361,30 @@
           expandedChat = { ...expandedChat, [run.run_id]: true };
           loadChatHistory(run.run_id);
         }
+        // Load initial checklist when run starts running (if not already populated by SSE)
+        if (run && run.status === "running" && !checklistData[run.run_id]) {
+          loadChecklist(run.run_id);
+        }
       } catch (streamError) {
         console.error("Failed to parse execution SSE event", streamError);
       }
     };
 
+    const handleChecklistEvent = (event) => {
+      try {
+        const envelope = JSON.parse(event.data);
+        const snapshot = envelope.payload;
+        if (snapshot?.run_id) {
+          checklistData = { ...checklistData, [snapshot.run_id]: snapshot };
+        }
+      } catch (err) {
+        console.error("Failed to parse checklist SSE event", err);
+      }
+    };
+
     stream.addEventListener("execution_status", handleEnvelope);
     stream.addEventListener("execution_result", handleEnvelope);
+    stream.addEventListener("execution_checklist", handleChecklistEvent);
 
     return () => {
       window.clearTimeout(copyTimer);
@@ -659,9 +694,9 @@
                     {/if}
                   </div>
 
-                  {#if expandedChat[run.run_id] && canSendFollowUp(run)}
-                    <div class="follow-up-chat" class:disambiguating-chat={isDisambiguating(run)}>
-                      {#if isDisambiguating(run)}
+                  {#if isDisambiguating(run)}
+                    {#if expandedChat[run.run_id]}
+                      <div class="follow-up-chat disambiguating-chat">
                         <div class="disambiguation-banner">
                           <span class="disambiguation-icon">🔍</span>
                           <div class="disambiguation-banner-text">
@@ -669,38 +704,36 @@
                             <span>The agent is identifying questions about this work item. Review the questions below, send answers or clarifications, then confirm to proceed to coding.</span>
                           </div>
                         </div>
-                      {/if}
-                      {#if chatHistories[run.run_id]?.length}
-                        <div class="follow-up-messages" class:disambiguation-messages={isDisambiguating(run)}>
-                          {#each chatHistories[run.run_id] as msg}
-                            <div class="follow-up-msg follow-up-{msg.role}">
-                              <span class="follow-up-role">{msg.role === 'user' ? 'You' : 'Agent'}</span>
-                              <span class="follow-up-time">{formatActivityTime(msg.timestamp)}</span>
-                              <div class="follow-up-text">{msg.text}</div>
-                            </div>
-                          {/each}
+                        {#if chatHistories[run.run_id]?.length}
+                          <div class="follow-up-messages disambiguation-messages">
+                            {#each chatHistories[run.run_id] as msg}
+                              <div class="follow-up-msg follow-up-{msg.role}">
+                                <span class="follow-up-role">{msg.role === 'user' ? 'You' : 'Agent'}</span>
+                                <span class="follow-up-time">{formatActivityTime(msg.timestamp)}</span>
+                                <div class="follow-up-text">{msg.text}</div>
+                              </div>
+                            {/each}
+                          </div>
+                        {:else}
+                          <div class="disambiguation-waiting muted small-text">Waiting for the agent to generate questions…</div>
+                        {/if}
+                        <div class="follow-up-input-row">
+                          <textarea
+                            class="follow-up-input"
+                            placeholder="Answer questions or add context for the agent…"
+                            bind:value={followUpTexts[run.run_id]}
+                            on:keydown={(e) => handleFollowUpKeydown(e, run)}
+                            rows="2"
+                            disabled={sendingFollowUp[run.run_id]}
+                          ></textarea>
+                          <button
+                            class="follow-up-send"
+                            on:click={() => handleSendFollowUp(run)}
+                            disabled={sendingFollowUp[run.run_id] || !(followUpTexts[run.run_id] || '').trim()}
+                          >
+                            {sendingFollowUp[run.run_id] ? 'Sending…' : 'Send'}
+                          </button>
                         </div>
-                      {:else if isDisambiguating(run)}
-                        <div class="disambiguation-waiting muted small-text">Waiting for the agent to generate questions…</div>
-                      {/if}
-                      <div class="follow-up-input-row">
-                        <textarea
-                          class="follow-up-input"
-                          placeholder={isDisambiguating(run) ? "Answer questions or add context for the agent…" : ["running", "preparing"].includes(run.status) ? "Steer or follow up on the active run…" : "Send a follow-up message to continue this run…"}
-                          bind:value={followUpTexts[run.run_id]}
-                          on:keydown={(e) => handleFollowUpKeydown(e, run)}
-                          rows="2"
-                          disabled={sendingFollowUp[run.run_id]}
-                        ></textarea>
-                        <button
-                          class="follow-up-send"
-                          on:click={() => handleSendFollowUp(run)}
-                          disabled={sendingFollowUp[run.run_id] || !(followUpTexts[run.run_id] || '').trim()}
-                        >
-                          {sendingFollowUp[run.run_id] ? 'Sending…' : 'Send'}
-                        </button>
-                      </div>
-                      {#if isDisambiguating(run)}
                         <div class="disambiguation-resolve-row">
                           <textarea
                             class="disambiguation-context-input"
@@ -717,7 +750,42 @@
                             {resolvingDisambiguation[run.run_id] ? 'Starting coding…' : '✅ Proceed to coding'}
                           </button>
                         </div>
+                      </div>
+                    {/if}
+                  {:else if checklistData[run.run_id]?.items?.length}
+                    <ExecutionChecklist items={checklistData[run.run_id].items} />
+                  {/if}
+
+                  {#if !isDisambiguating(run) && expandedChat[run.run_id] && canSendFollowUp(run)}
+                    <div class="follow-up-chat">
+                      {#if chatHistories[run.run_id]?.length}
+                        <div class="follow-up-messages">
+                          {#each chatHistories[run.run_id] as msg}
+                            <div class="follow-up-msg follow-up-{msg.role}">
+                              <span class="follow-up-role">{msg.role === 'user' ? 'You' : 'Agent'}</span>
+                              <span class="follow-up-time">{formatActivityTime(msg.timestamp)}</span>
+                              <div class="follow-up-text">{msg.text}</div>
+                            </div>
+                          {/each}
+                        </div>
                       {/if}
+                      <div class="follow-up-input-row">
+                        <textarea
+                          class="follow-up-input"
+                          placeholder={["running", "preparing"].includes(run.status) ? "Steer or follow up on the active run…" : "Send a follow-up message to continue this run…"}
+                          bind:value={followUpTexts[run.run_id]}
+                          on:keydown={(e) => handleFollowUpKeydown(e, run)}
+                          rows="2"
+                          disabled={sendingFollowUp[run.run_id]}
+                        ></textarea>
+                        <button
+                          class="follow-up-send"
+                          on:click={() => handleSendFollowUp(run)}
+                          disabled={sendingFollowUp[run.run_id] || !(followUpTexts[run.run_id] || '').trim()}
+                        >
+                          {sendingFollowUp[run.run_id] ? 'Sending…' : 'Send'}
+                        </button>
+                      </div>
                     </div>
                   {/if}
 
