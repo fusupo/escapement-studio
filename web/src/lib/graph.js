@@ -187,29 +187,14 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   // Arrow markers
   const defs = svg.append("defs");
-  // Per-kind arrow markers with refX adjusted for node radius
   for (const [rel, style] of Object.entries(EDGE_STYLES)) {
-    for (const [kind, radius] of Object.entries(KIND_RADIUS)) {
-      defs.append("marker")
-        .attr("id", `arrow-${rel}-${kind}`)
-        .attr("viewBox", "0 -5 10 10")
-        .attr("refX", radius + 10)
-        .attr("refY", 0)
-        .attr("markerWidth", 6)
-        .attr("markerHeight", 6)
-        .attr("orient", "auto")
-        .append("path")
-        .attr("d", "M0,-5L10,0L0,5")
-        .attr("fill", style.color);
-    }
-    // Default fallback
     defs.append("marker")
       .attr("id", `arrow-${rel}`)
       .attr("viewBox", "0 -5 10 10")
-      .attr("refX", 18)
+      .attr("refX", 10)
       .attr("refY", 0)
-      .attr("markerWidth", 6)
-      .attr("markerHeight", 6)
+      .attr("markerWidth", 5)
+      .attr("markerHeight", 5)
       .attr("orient", "auto")
       .append("path")
       .attr("d", "M0,-5L10,0L0,5")
@@ -255,9 +240,11 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     const tgt = nodeById.get(d.target);
     if (pts && pts.length >= 2 && src && tgt) {
       const srcR = KIND_RADIUS[src.kind] ?? 8;
-      // Trim start point to source circle edge (target handled by marker refX)
+      // Trim both endpoints to circle edges
+      const tgtR = KIND_RADIUS[tgt.kind] ?? 8;
       const trimmed = [...pts];
       trimmed[0] = shortenPoint(trimmed[0], trimmed[1], srcR);
+      trimmed[trimmed.length - 1] = shortenPoint(trimmed[trimmed.length - 1], trimmed[trimmed.length - 2], tgtR);
       const line = d3.line().x((p) => p.x).y((p) => p.y).curve(d3.curveBasis);
       return line(trimmed);
     }
@@ -279,11 +266,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     .attr("stroke-width", (d) => d.confidence === "ambiguous" ? 1 : edgeStyle(d.rel).width)
     .attr("stroke-dasharray", (d) => edgeStyle(d.rel).dash)
     .attr("stroke-opacity", 0.5)
-    .attr("marker-end", (d) => {
-      const tgt = nodeById.get(d.target);
-      const kind = tgt?.kind;
-      return kind ? `url(#arrow-${d.rel}-${kind})` : `url(#arrow-${d.rel})`;
-    });
+    .attr("marker-end", (d) => `url(#arrow-${d.rel})`);
 
   // Edge hover hitbox
   const linkHitbox = g.append("g")
