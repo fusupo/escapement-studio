@@ -1,4 +1,5 @@
 import * as d3 from "d3";
+import * as dagreD3 from "dagre-d3-es";
 
 const STATE_COLORS = {
   done: "#238636",
@@ -9,37 +10,21 @@ const STATE_COLORS = {
   cancelled: "#f85149",
 };
 
-const EDGE_STYLES = {
-  depends_on: { color: "#58a6ff", dash: null, width: 1.5 },
-  is_part_of: { color: "#3fb950", dash: "6,3", width: 1.5 },
-  implemented_by: { color: "#d29922", dash: "2,3", width: 1.5 },
+const EDGE_COLORS = {
+  depends_on: "#58a6ff",
+  is_part_of: "#3fb950",
+  implemented_by: "#d29922",
 };
 
-const PR_RING_COLOR = "#a371f7"; // purple ring for open PRs
-const PR_MERGED_RING_COLOR = "#238636"; // green ring for merged PRs
-
-const KIND_RADIUS = {
-  issue: 8,
-  capability: 12,
-  phase: 16,
-  track: 14,
+const EDGE_DASH = {
+  depends_on: "",
+  is_part_of: "6,3",
+  implemented_by: "2,3",
 };
 
-function edgeStyle(rel) {
-  return EDGE_STYLES[rel] ?? { color: "#484f58", dash: null, width: 1.2 };
-}
+const PR_MERGED_RING_COLOR = "#238636";
+const PR_RING_COLOR = "#a371f7";
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-/**
- * Extract pull request info from a work item, checking multiple locations:
- * - item.pull_request (backend-enriched)
- * - item.meta.pull_request (direct meta)
- * - item.meta.studio_post_merge_sync.pull_request (post-merge sync)
- * Returns { number, url, title, state, merged_at, is_draft, head_ref, base_ref } or null.
- */
 function extractPullRequest(item) {
   const pr =
     item.pull_request ??
@@ -50,67 +35,12 @@ function extractPullRequest(item) {
   return pr;
 }
 
-/**
- * Classify PR status for visual rendering.
- * Returns "merged" | "open" | "draft" | "closed" | null
- */
 function classifyPrStatus(pr) {
   if (!pr) return null;
   if (pr.merged_at) return "merged";
   if (pr.is_draft) return "draft";
   if (pr.state === "closed") return "closed";
   return "open";
-}
-
-function computeLayers(nodes, edges) {
-  const ids = new Set(nodes.map((n) => n.id));
-
-  // Build adjacency: upstream → downstream
-  // All edge types: "to" is upstream of "from"
-  const children = new Map();
-  const parentCount = new Map();
-  for (const id of ids) {
-    children.set(id, []);
-    parentCount.set(id, 0);
-  }
-
-  for (const e of edges) {
-    if (!ids.has(e.from_id) || !ids.has(e.to_id)) continue;
-    children.get(e.to_id).push(e.from_id);
-    parentCount.set(e.from_id, parentCount.get(e.from_id) + 1);
-  }
-
-  // BFS longest-path layering
-  const depth = new Map();
-  const queue = [];
-  for (const id of ids) {
-    if (parentCount.get(id) === 0) {
-      depth.set(id, 0);
-      queue.push(id);
-    }
-  }
-
-  let head = 0;
-  while (head < queue.length) {
-    const u = queue[head++];
-    const d = depth.get(u);
-    for (const v of children.get(u)) {
-      const newD = d + 1;
-      if (!depth.has(v) || depth.get(v) < newD) {
-        depth.set(v, newD);
-      }
-      parentCount.set(v, parentCount.get(v) - 1);
-      if (parentCount.get(v) === 0) queue.push(v);
-    }
-  }
-
-  // Handle cycles or disconnected nodes
-  const maxDepth = Math.max(0, ...depth.values());
-  for (const id of ids) {
-    if (!depth.has(id)) depth.set(id, maxDepth + 1);
-  }
-
-  return depth;
 }
 
 function ensureTooltip() {
@@ -152,13 +82,7 @@ function hideTooltip(tooltip) {
 }
 
 /**
- * Render the dependency graph.
- * @param {SVGElement} svgElement
- * @param {{ items: Array, edges: Array }} graph
- * @param {string|null} selectedId
- * @param {function} onSelect
- * @param {{ executionRuns?: Array }} options - Optional. executionRuns: array of
- *   execution run records keyed by work_item_id, used to enrich nodes with open PR data.
+ * Render the dependency graph using dagre-d3 natively.
  */
 export function renderGraph(svgElement, graph, selectedId, onSelect, options = {}) {
   if (!svgElement) return () => {};
@@ -172,7 +96,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   const tooltip = ensureTooltip();
 
-  // Build a map of work_item_id → PR from execution runs (for open PRs)
+  // Build PR map from execution runs
   const runPrByWorkItem = new Map();
   if (options.executionRuns) {
     for (const run of options.executionRuns) {
@@ -184,11 +108,9 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   const nodes = graph.items.map((item) => {
     const node = { ...item };
-    // Enrich with PR data from execution runs if not already present
     if (!extractPullRequest(node) && runPrByWorkItem.has(node.id)) {
       node.pull_request = runPrByWorkItem.get(node.id);
     }
-    // Cache extracted PR info
     node._pr = extractPullRequest(node);
     node._prStatus = classifyPrStatus(node._pr);
     return node;
@@ -204,98 +126,101 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       confidence: e.confidence,
     }));
 
-  // Compute topological layers
-  const depthMap = computeLayers(nodes, graph.edges);
-  const maxLayer = Math.max(0, ...depthMap.values());
+  // --- Build dagre-d3 graph ---
+  const g = new dagreD3.graphlib.Graph().setGraph({
+    rankdir: "LR",
+    nodesep: 20,
+    ranksep: 40,
+    edgesep: 8,
+    marginx: 20,
+    marginy: 20,
+  }).setDefaultEdgeLabel(() => ({}));
 
-  const MARGIN_X = 120;
-  const MARGIN_Y = 60;
-  const layerSpacing = maxLayer > 0
-    ? (width - MARGIN_X * 2) / maxLayer
-    : width / 2;
+  // Nodes — rounded rects with label inside, colored by state
+  for (const node of nodes) {
+    const color = STATE_COLORS[node.state] ?? "#484f58";
+    const isSelected = node.id === selectedId;
+    const borderColor = isSelected ? "#e6edf3" : "rgba(255,255,255,0.15)";
+    const borderWidth = isSelected ? "2.5px" : "1px";
 
-  // Group nodes by layer
-  const layers = new Map();
-  for (const n of nodes) {
-    const d = depthMap.get(n.id) ?? 0;
-    if (!layers.has(d)) layers.set(d, []);
-    layers.get(d).push(n);
-  }
-
-  // Assign initial positions
-  for (const [layer, group] of layers) {
-    const x = MARGIN_X + layer * layerSpacing;
-    const ySpacing = Math.min(50, (height - MARGIN_Y * 2) / (group.length + 1));
-    const yStart = height / 2 - ((group.length - 1) * ySpacing) / 2;
-    group.forEach((n, i) => {
-      n.x = x;
-      n.y = yStart + i * ySpacing;
-      n._layerX = x;
-      n._layer = layer;
+    g.setNode(node.id, {
+      label: node.id,
+      style: `fill: ${color}; stroke: ${borderColor}; stroke-width: ${borderWidth};`,
+      labelStyle: "fill: #fff; font-size: 11px; font-weight: 500;",
+      rx: 5,
+      ry: 5,
+      paddingLeft: 8,
+      paddingRight: 8,
+      paddingTop: 4,
+      paddingBottom: 4,
+      _data: node,
     });
   }
 
-  // Defs for arrow markers
-  const defs = svg.append("defs");
-  for (const [rel, style] of Object.entries(EDGE_STYLES)) {
-    defs.append("marker")
-      .attr("id", `arrow-${rel}`)
-      .attr("viewBox", "0 -5 10 10")
-      .attr("refX", 20)
-      .attr("refY", 0)
-      .attr("markerWidth", 6)
-      .attr("markerHeight", 6)
-      .attr("orient", "auto")
-      .append("path")
-      .attr("d", "M0,-5L10,0L0,5")
-      .attr("fill", style.color);
+  // Edges
+  for (const link of links) {
+    const color = EDGE_COLORS[link.rel] ?? "#484f58";
+    const dash = EDGE_DASH[link.rel] ?? "";
+    const w = link.confidence === "ambiguous" ? 1 : 1.5;
+
+    g.setEdge(link.target, link.source, {
+      style: `stroke: ${color}; stroke-width: ${w}px; fill: none; stroke-opacity: 0.6;${dash ? ` stroke-dasharray: ${dash};` : ""}`,
+      arrowheadStyle: `fill: ${color}; stroke: none; opacity: 0.8;`,
+      curve: d3.curveBasis,
+      _data: link,
+    });
   }
 
-  const g = svg.append("g");
+  // --- Render ---
+  const inner = svg.append("g");
+  const render = dagreD3.render();
+  render(inner, g);
 
-  // Zoom
-  svg.call(d3.zoom()
+  // --- Zoom + pan ---
+  const zoom = d3.zoom()
     .scaleExtent([0.1, 6])
-    .on("zoom", (event) => g.attr("transform", event.transform))
-  );
+    .on("zoom", (event) => inner.attr("transform", event.transform));
+  svg.call(zoom);
   svg.on("dblclick.zoom", null);
 
-  // Force simulation
-  const simulation = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id((d) => d.id).distance(layerSpacing * 0.8).strength(0.1))
-    .force("x", d3.forceX((d) => d._layerX).strength(0.8))
-    .force("y", d3.forceY(height / 2).strength(0.02))
-    .force("charge", d3.forceManyBody().strength(-150))
-    .force("collision", d3.forceCollide().radius(25))
-    .alphaDecay(0.03);
+  // Auto-fit
+  const graphInfo = g.graph();
+  if (graphInfo.width && graphInfo.height) {
+    const pad = 20;
+    const gw = graphInfo.width + pad * 2;
+    const gh = graphInfo.height + pad * 2;
+    const scale = Math.min(width / gw, height / gh, 1.5);
+    const tx = (width - graphInfo.width * scale) / 2;
+    const ty = (height - graphInfo.height * scale) / 2;
+    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  }
 
-  // Edges
-  const link = g.append("g")
-    .attr("fill", "none")
-    .selectAll("path")
-    .data(links)
-    .join("path")
-    .attr("stroke", (d) => edgeStyle(d.rel).color)
-    .attr("stroke-width", (d) => d.confidence === "ambiguous" ? 1 : edgeStyle(d.rel).width)
-    .attr("stroke-dasharray", (d) => edgeStyle(d.rel).dash)
-    .attr("stroke-opacity", 0.5)
-    .attr("marker-end", (d) => `url(#arrow-${d.rel})`);
+  // --- Post-render: add merged PR badges ---
+  inner.selectAll("g.node").each(function (id) {
+    const nodeData = g.node(id);
+    if (!nodeData?._data) return;
+    const data = nodeData._data;
+    if (data._prStatus === "merged" && data.state === "done") {
+      const el = d3.select(this);
+      const bbox = el.select("rect").node()?.getBBox();
+      if (bbox) {
+        el.append("text")
+          .text("✓PR")
+          .attr("x", bbox.x + bbox.width / 2)
+          .attr("y", bbox.y + bbox.height + 12)
+          .attr("text-anchor", "middle")
+          .attr("fill", PR_MERGED_RING_COLOR)
+          .attr("font-size", "9px")
+          .attr("font-weight", "600")
+          .attr("pointer-events", "none");
+      }
+    }
+  });
 
-  // Edge hover — invisible wider hitbox
-  const linkHitbox = g.append("g")
-    .attr("fill", "none")
-    .selectAll("path")
-    .data(links)
-    .join("path")
-    .attr("stroke", "transparent")
-    .attr("stroke-width", 16)
-    .style("cursor", "default");
+  // --- Interactions ---
 
-  // Nodes
-  const node = g.append("g")
-    .selectAll("g")
-    .data(nodes)
-    .join("g")
+  // Node click + cursor
+  inner.selectAll("g.node")
     .style("cursor", "pointer")
     .call(d3.drag()
       .on("start", (event) => {
@@ -361,90 +286,87 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   // Click background to deselect
   svg.on("click", () => onSelect(null));
+    .on("click", function (event, id) {
+      const data = g.node(id)?._data;
+      if (data) onSelect(data);
+    });
 
   // Node hover
-  node.on("mouseenter", (event, d) => {
-    d3.select(event.currentTarget).select("circle:not(.pr-ring)")
-      .attr("stroke", "#e6edf3").attr("stroke-width", 2.5);
+  inner.selectAll("g.node")
+    .on("mouseenter", function (event) {
+      const id = d3.select(this).datum();
+      const data = g.node(id)?._data;
+      if (!data) return;
 
-    const inbound = links.filter((l) => l.target === d.id || l.target.id === d.id).length;
-    const outbound = links.filter((l) => l.source === d.id || l.source.id === d.id).length;
+      d3.select(this).select("rect")
+        .attr("stroke", "#e6edf3").attr("stroke-width", "2.5px");
 
-    let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.id}: ${d.name}</div>`;
-    body += `<div style="color:#8b949e;margin:2px 0;">Kind: <span style="color:#c9d1d9">${d.kind}</span></div>`;
-    body += `<div style="color:#8b949e;margin:2px 0;">State: <span style="color:#c9d1d9">${d.state}</span></div>`;
-    body += `<div style="color:#8b949e;margin:2px 0;">Layer: <span style="color:#c9d1d9">${depthMap.get(d.id) ?? "?"}</span></div>`;
-    body += `<div style="color:#8b949e;margin:2px 0;">Edges: <span style="color:#c9d1d9">${inbound} in / ${outbound} out</span></div>`;
-    if (d.issue_number) body += `<div style="color:#8b949e;margin:2px 0;">Issue: <span style="color:#c9d1d9">#${d.issue_number}</span></div>`;
-    if (d.repo) body += `<div style="color:#8b949e;margin:2px 0;">Repo: <span style="color:#c9d1d9">${d.repo}</span></div>`;
-    if (d.scope_hint) body += `<div style="color:#8b949e;margin:2px 0;">Scope: <span style="color:#c9d1d9">${d.scope_hint}</span></div>`;
-    if (d._pr) {
-      const prColor = d._prStatus === "merged" ? PR_MERGED_RING_COLOR
-        : d._prStatus === "draft" ? "#8b949e"
-        : PR_RING_COLOR;
-      const statusLabel = d._prStatus === "merged" ? "Merged"
-        : d._prStatus === "draft" ? "Draft"
-        : d._prStatus === "closed" ? "Closed"
-        : "Open";
-      body += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #30363d;">`;
-      body += `<div style="color:${prColor};font-weight:600;margin-bottom:2px;">PR #${d._pr.number} · ${statusLabel}</div>`;
-      if (d._pr.title) body += `<div style="color:#c9d1d9;font-size:11px;">${d._pr.title}</div>`;
-      if (d._pr.url) body += `<div style="color:#58a6ff;font-size:11px;margin-top:2px;">${d._pr.url}</div>`;
-      if (d._pr.head_ref) body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${d._pr.head_ref} → ${d._pr.base_ref ?? "?"}</div>`;
-      body += `</div>`;
-    }
+      const inbound = links.filter((l) => l.target === data.id).length;
+      const outbound = links.filter((l) => l.source === data.id).length;
 
-    showTooltip(tooltip, event, body);
-  })
-  .on("mousemove", (event) => {
-    if (!tooltip) return;
-    tooltip.style.left = (event.clientX + 14) + "px";
-    tooltip.style.top = (event.clientY + 14) + "px";
-  })
-  .on("mouseleave", (event) => {
-    const d = d3.select(event.currentTarget).datum();
-    d3.select(event.currentTarget).select("circle:not(.pr-ring)")
-      .attr("stroke", d.id === selectedId ? "#e6edf3" : "#0d1117")
-      .attr("stroke-width", d.id === selectedId ? 2.5 : 1.5);
-    hideTooltip(tooltip);
-  });
+      let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${data.id}: ${data.name}</div>`;
+      body += `<div style="color:#8b949e;margin:2px 0;">Kind: <span style="color:#c9d1d9">${data.kind}</span></div>`;
+      body += `<div style="color:#8b949e;margin:2px 0;">State: <span style="color:#c9d1d9">${data.state}</span></div>`;
+      body += `<div style="color:#8b949e;margin:2px 0;">Edges: <span style="color:#c9d1d9">${inbound} in / ${outbound} out</span></div>`;
+      if (data.issue_number) body += `<div style="color:#8b949e;margin:2px 0;">Issue: <span style="color:#c9d1d9">#${data.issue_number}</span></div>`;
+      if (data.repo) body += `<div style="color:#8b949e;margin:2px 0;">Repo: <span style="color:#c9d1d9">${data.repo}</span></div>`;
+      if (data.scope_hint) body += `<div style="color:#8b949e;margin:2px 0;">Scope: <span style="color:#c9d1d9">${data.scope_hint}</span></div>`;
+      if (data._pr) {
+        const prColor = data._prStatus === "merged" ? PR_MERGED_RING_COLOR
+          : data._prStatus === "draft" ? "#8b949e" : PR_RING_COLOR;
+        const statusLabel = data._prStatus === "merged" ? "Merged"
+          : data._prStatus === "draft" ? "Draft"
+          : data._prStatus === "closed" ? "Closed" : "Open";
+        body += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #30363d;">`;
+        body += `<div style="color:${prColor};font-weight:600;margin-bottom:2px;">PR #${data._pr.number} · ${statusLabel}</div>`;
+        if (data._pr.title) body += `<div style="color:#c9d1d9;font-size:11px;">${data._pr.title}</div>`;
+        if (data._pr.url) body += `<div style="color:#58a6ff;font-size:11px;margin-top:2px;">${data._pr.url}</div>`;
+        if (data._pr.head_ref) body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${data._pr.head_ref} → ${data._pr.base_ref ?? "?"}</div>`;
+        body += `</div>`;
+      }
+
+      showTooltip(tooltip, event, body);
+    })
+    .on("mousemove", (event) => {
+      if (!tooltip) return;
+      tooltip.style.left = (event.clientX + 14) + "px";
+      tooltip.style.top = (event.clientY + 14) + "px";
+    })
+    .on("mouseleave", function () {
+      const id = d3.select(this).datum();
+      const data = g.node(id)?._data;
+      if (!data) return;
+      const isSelected = data.id === selectedId;
+      d3.select(this).select("rect")
+        .attr("stroke", isSelected ? "#e6edf3" : "rgba(255,255,255,0.15)")
+        .attr("stroke-width", isSelected ? "2.5px" : "1px");
+      hideTooltip(tooltip);
+    });
 
   // Edge hover
-  linkHitbox.on("mouseenter", (event, d) => {
-    const src = typeof d.source === "object" ? d.source : nodeById.get(d.source);
-    const tgt = typeof d.target === "object" ? d.target : nodeById.get(d.target);
-    const style = edgeStyle(d.rel);
+  inner.selectAll("g.edgePath")
+    .on("mouseenter", function (event) {
+      const edgeId = d3.select(this).datum();
+      const edgeData = g.edge(edgeId);
+      if (!edgeData?._data) return;
+      const d = edgeData._data;
+      const src = nodeById.get(d.source);
+      const tgt = nodeById.get(d.target);
 
-    let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.rel.replace(/_/g, " ")}</div>`;
-    body += `<div style="color:#c9d1d9;">${src?.name ?? d.source} → ${tgt?.name ?? d.target}</div>`;
-    body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${src?.id ?? d.source} → ${tgt?.id ?? d.target}</div>`;
+      let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.rel.replace(/_/g, " ")}</div>`;
+      body += `<div style="color:#c9d1d9;">${src?.name ?? d.source} → ${tgt?.name ?? d.target}</div>`;
+      body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${src?.id ?? d.source} → ${tgt?.id ?? d.target}</div>`;
 
-    showTooltip(tooltip, event, body);
-  })
-  .on("mousemove", (event) => {
-    if (!tooltip) return;
-    tooltip.style.left = (event.clientX + 14) + "px";
-    tooltip.style.top = (event.clientY + 14) + "px";
-  })
-  .on("mouseleave", () => hideTooltip(tooltip));
-
-  // Tick
-  simulation.on("tick", () => {
-    const curvePath = (d) => {
-      const sx = d.source.x, sy = d.source.y;
-      const tx = d.target.x, ty = d.target.y;
-      const dx = tx - sx;
-      const cp = dx * 0.4;
-      return `M${sx},${sy} C${sx + cp},${sy} ${tx - cp},${ty} ${tx},${ty}`;
-    };
-
-    link.attr("d", curvePath);
-    linkHitbox.attr("d", curvePath);
-    node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-  });
+      showTooltip(tooltip, event, body);
+    })
+    .on("mousemove", (event) => {
+      if (!tooltip) return;
+      tooltip.style.left = (event.clientX + 14) + "px";
+      tooltip.style.top = (event.clientY + 14) + "px";
+    })
+    .on("mouseleave", () => hideTooltip(tooltip));
 
   return () => {
-    simulation.stop();
     hideTooltip(tooltip);
     tooltip?.remove();
   };
