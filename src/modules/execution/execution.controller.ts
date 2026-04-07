@@ -63,6 +63,11 @@ export class ExecutionController {
     return this.executionService.getRunChatHistory(runId);
   }
 
+  @Get("runs/:runId/scratchpad")
+  getRunScratchpad(@Param("runId") runId: string) {
+    return this.executionService.getRunScratchpad(runId);
+  }
+
   @Sse("stream")
   stream(): Observable<MessageEvent> {
     return this.executionService.stream();

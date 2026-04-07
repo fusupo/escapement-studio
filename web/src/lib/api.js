@@ -127,6 +127,10 @@ export function getRunChatHistory(runId) {
   return request(`/api/execution/runs/${encodeURIComponent(runId)}/chat`);
 }
 
+export function getRunScratchpad(runId) {
+  return request(`/api/execution/runs/${encodeURIComponent(runId)}/scratchpad`);
+}
+
 export function resolveDisambiguation(payload) {
   return request("/api/execution/resolve-disambiguation", {
     method: "POST",
