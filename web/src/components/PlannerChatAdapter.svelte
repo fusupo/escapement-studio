@@ -9,6 +9,7 @@
     sendAgentMessage,
   } from "../lib/api.js";
   import { connectPlannerStream, extractMessageText, toToolStatus } from "../lib/planner-chat.js";
+  import { renderMarkdown } from "../lib/markdown.js";
 
   const dispatch = createEventDispatcher();
   const graphModes = ["default", "focused", "full"];
@@ -622,7 +623,11 @@
                 <strong>{message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Planner' : message.tool_name || 'Tool'}</strong>
                 <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
               </div>
-              <pre>{message.content || (message.role === 'assistant' && isStreaming ? '…' : '')}</pre>
+              {#if message.role === 'assistant'}
+                <div class="chat-markdown">{@html renderMarkdown(message.content) || (isStreaming ? '<p>…</p>' : '')}</div>
+              {:else}
+                <pre>{message.content}</pre>
+              {/if}
             </article>
           {/each}
         {/if}
