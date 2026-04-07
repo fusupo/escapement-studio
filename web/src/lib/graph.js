@@ -1,5 +1,5 @@
 import * as d3 from "d3";
-import dagre from "dagre";
+import * as dagreD3 from "dagre-d3-es";
 
 const STATE_COLORS = {
   done: "#238636",
@@ -11,13 +11,13 @@ const STATE_COLORS = {
 };
 
 const EDGE_STYLES = {
-  depends_on: { color: "#58a6ff", dash: null, width: 1.5 },
+  depends_on: { color: "#58a6ff", dash: "", width: 1.5 },
   is_part_of: { color: "#3fb950", dash: "6,3", width: 1.5 },
   implemented_by: { color: "#d29922", dash: "2,3", width: 1.5 },
 };
 
-const PR_RING_COLOR = "#a371f7";
 const PR_MERGED_RING_COLOR = "#238636";
+const PR_RING_COLOR = "#a371f7";
 
 const KIND_RADIUS = {
   issue: 8,
@@ -27,12 +27,9 @@ const KIND_RADIUS = {
 };
 
 function edgeStyle(rel) {
-  return EDGE_STYLES[rel] ?? { color: "#484f58", dash: null, width: 1.2 };
+  return EDGE_STYLES[rel] ?? { color: "#484f58", dash: "", width: 1.2 };
 }
 
-/**
- * Extract pull request info from a work item.
- */
 function extractPullRequest(item) {
   const pr =
     item.pull_request ??
@@ -43,9 +40,6 @@ function extractPullRequest(item) {
   return pr;
 }
 
-/**
- * Classify PR status: "merged" | "open" | "draft" | "closed" | null
- */
 function classifyPrStatus(pr) {
   if (!pr) return null;
   if (pr.merged_at) return "merged";
@@ -93,7 +87,7 @@ function hideTooltip(tooltip) {
 }
 
 /**
- * Render the dependency graph using dagre for layout, D3 for rendering.
+ * Render the dependency graph using dagre-d3 for layout + rendering, D3 for interaction.
  */
 export function renderGraph(svgElement, graph, selectedId, onSelect, options = {}) {
   if (!svgElement) return () => {};
@@ -137,83 +131,115 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       confidence: e.confidence,
     }));
 
-  // --- Dagre layout ---
-  const g_layout = new dagre.graphlib.Graph();
-  g_layout.setGraph({
-    rankdir: "LR",       // left-to-right
-    nodesep: 25,          // vertical spacing between nodes
-    ranksep: 80,          // horizontal spacing between ranks
+  // --- Build dagre-d3 graph ---
+  const g = new dagreD3.graphlib.Graph().setGraph({
+    rankdir: "LR",
+    nodesep: 25,
+    ranksep: 80,
     edgesep: 10,
     marginx: 30,
     marginy: 30,
-  });
-  g_layout.setDefaultEdgeLabel(() => ({}));
+  }).setDefaultEdgeLabel(() => ({}));
 
+  // Add nodes with custom rendering
   for (const node of nodes) {
     const r = KIND_RADIUS[node.kind] ?? 8;
-    g_layout.setNode(node.id, {
-      width: Math.max(node.id.length * 7 + r * 2, 50),
-      height: r * 2 + 6,
+    const color = STATE_COLORS[node.state] ?? "#484f58";
+    const isSelected = node.id === selectedId;
+    const hasMergedPr = node._prStatus === "merged" && node.state === "done";
+
+    g.setNode(node.id, {
+      label: node.id,
+      shape: "circle",
+      style: `fill: ${color}; stroke: ${isSelected ? "#e6edf3" : "#0d1117"}; stroke-width: ${isSelected ? "2.5px" : "1.5px"};`,
+      labelStyle: `fill: #8b949e; font-size: 11px; font-family: inherit;`,
+      width: r * 2,
+      height: r * 2,
+      rx: r,
+      ry: r,
+      _data: node,
+      _radius: r,
+      _hasMergedPr: hasMergedPr,
     });
   }
 
+  // Add edges
   for (const link of links) {
-    // Edge direction: dependency flows from target → source (target is upstream)
-    // dagre wants edges pointing in rank direction, so upstream → downstream
-    g_layout.setEdge(link.target, link.source);
+    const style = edgeStyle(link.rel);
+    g.setEdge(link.target, link.source, {
+      style: `stroke: ${style.color}; stroke-width: ${link.confidence === "ambiguous" ? 1 : style.width}px; fill: none; stroke-opacity: 0.5;${style.dash ? ` stroke-dasharray: ${style.dash};` : ""}`,
+      arrowheadStyle: `fill: ${style.color}; stroke: none;`,
+      curve: d3.curveBasis,
+      _data: link,
+    });
   }
 
-  dagre.layout(g_layout);
+  // --- Render ---
+  const svgGroup = svg.append("g");
+  const render = dagreD3.render();
+  render(svgGroup, g);
 
-  // Apply dagre positions to nodes
-  for (const node of nodes) {
-    const pos = g_layout.node(node.id);
-    if (pos) {
-      node.x = pos.x;
-      node.y = pos.y;
+  // --- Post-render customization ---
+
+  // Replace dagre-d3's rect/ellipse nodes with our circle nodes
+  svgGroup.selectAll("g.node").each(function (id) {
+    const nodeData = g.node(id);
+    if (!nodeData) return;
+    const el = d3.select(this);
+    const data = nodeData._data;
+    const r = nodeData._radius;
+
+    // Remove dagre-d3's default shape
+    el.select("rect, ellipse, circle").remove();
+
+    // Insert our circles before the label
+    const label = el.select("g");
+
+    // Merged PR ring
+    if (nodeData._hasMergedPr) {
+      el.insert("circle", "g")
+        .attr("r", r + 4)
+        .attr("fill", "none")
+        .attr("stroke", PR_MERGED_RING_COLOR)
+        .attr("stroke-width", 2)
+        .attr("opacity", 0.85);
     }
-  }
 
-  // Get dagre edge points for routing
-  const edgePoints = new Map();
-  for (const link of links) {
-    const edge = g_layout.edge(link.target, link.source);
-    if (edge?.points) {
-      edgePoints.set(`${link.source}->${link.target}`, edge.points);
+    // Main circle
+    el.insert("circle", "g")
+      .attr("r", r)
+      .attr("fill", STATE_COLORS[data.state] ?? "#484f58")
+      .attr("stroke", data.id === selectedId ? "#e6edf3" : "#0d1117")
+      .attr("stroke-width", data.id === selectedId ? 2.5 : 1.5);
+
+    // Merged PR badge
+    if (nodeData._hasMergedPr) {
+      el.append("text")
+        .text("✓PR")
+        .attr("dy", r + 13)
+        .attr("text-anchor", "middle")
+        .attr("fill", PR_MERGED_RING_COLOR)
+        .attr("font-size", "9px")
+        .attr("font-weight", "600")
+        .attr("pointer-events", "none");
     }
-  }
 
-  // --- D3 Rendering ---
+    // Reposition label to beside the node
+    label.attr("transform", `translate(${r + 5}, 4)`);
+    label.select("text").attr("text-anchor", "start");
+  });
 
-  // Arrow markers
-  const defs = svg.append("defs");
-  for (const [rel, style] of Object.entries(EDGE_STYLES)) {
-    defs.append("marker")
-      .attr("id", `arrow-${rel}`)
-      .attr("viewBox", "0 -5 10 10")
-      .attr("refX", 10)
-      .attr("refY", 0)
-      .attr("markerWidth", 5)
-      .attr("markerHeight", 5)
-      .attr("orient", "auto")
-      .append("path")
-      .attr("d", "M0,-5L10,0L0,5")
-      .attr("fill", style.color);
-  }
-
-  const g = svg.append("g");
-
-  // Zoom + pan
+  // --- Zoom + pan ---
   const zoom = d3.zoom()
     .scaleExtent([0.1, 6])
-    .on("zoom", (event) => g.attr("transform", event.transform));
+    .on("zoom", (event) => svgGroup.attr("transform", event.transform));
   svg.call(zoom);
   svg.on("dblclick.zoom", null);
 
-  // Auto-fit: compute bounding box and center
-  const graphInfo = g_layout.graph();
+  // Auto-fit
+  const graphInfo = g.graph();
   if (graphInfo.width && graphInfo.height) {
-    const pad = 60;
+    const pad = 40;
     const gw = graphInfo.width + pad * 2;
     const gh = graphInfo.height + pad * 2;
     const scale = Math.min(width / gw, height / gh, 1.5);
@@ -222,176 +248,87 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
   }
 
-  // Shorten a point towards another point by `dist` pixels
-  function shortenPoint(p, toward, dist) {
-    const dx = toward.x - p.x;
-    const dy = toward.y - p.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 0.1) return { ...p };
-    const ratio = dist / len;
-    return { x: p.x + dx * ratio, y: p.y + dy * ratio };
-  }
+  // --- Interactions ---
 
-  // Build path from dagre edge points, trimmed to node circle edges
-  function buildEdgePath(d) {
-    const key = `${d.source}->${d.target}`;
-    const pts = edgePoints.get(key);
-    const src = nodeById.get(d.source);
-    const tgt = nodeById.get(d.target);
-    if (pts && pts.length >= 2 && src && tgt) {
-      const srcR = KIND_RADIUS[src.kind] ?? 8;
-      // Trim both endpoints to circle edges
-      const tgtR = KIND_RADIUS[tgt.kind] ?? 8;
-      const trimmed = [...pts];
-      trimmed[0] = shortenPoint(trimmed[0], trimmed[1], srcR);
-      trimmed[trimmed.length - 1] = shortenPoint(trimmed[trimmed.length - 1], trimmed[trimmed.length - 2], tgtR);
-      const line = d3.line().x((p) => p.x).y((p) => p.y).curve(d3.curveBasis);
-      return line(trimmed);
-    }
-    // Fallback: straight line
-    if (src && tgt) {
-      return `M${src.x},${src.y} L${tgt.x},${tgt.y}`;
-    }
-    return "";
-  }
-
-  // Edges
-  const link_el = g.append("g")
-    .attr("fill", "none")
-    .selectAll("path")
-    .data(links)
-    .join("path")
-    .attr("d", buildEdgePath)
-    .attr("stroke", (d) => edgeStyle(d.rel).color)
-    .attr("stroke-width", (d) => d.confidence === "ambiguous" ? 1 : edgeStyle(d.rel).width)
-    .attr("stroke-dasharray", (d) => edgeStyle(d.rel).dash)
-    .attr("stroke-opacity", 0.5)
-    .attr("marker-end", (d) => `url(#arrow-${d.rel})`);
-
-  // Edge hover hitbox
-  const linkHitbox = g.append("g")
-    .attr("fill", "none")
-    .selectAll("path")
-    .data(links)
-    .join("path")
-    .attr("d", buildEdgePath)
-    .attr("stroke", "transparent")
-    .attr("stroke-width", 16)
-    .style("cursor", "default");
-
-  // Nodes
-  const node_el = g.append("g")
-    .selectAll("g")
-    .data(nodes)
-    .join("g")
-    .attr("transform", (d) => `translate(${d.x},${d.y})`)
-    .style("cursor", "pointer");
-
-  // PR ring — only for merged PRs on done items
-  node_el.filter((d) => d._prStatus === "merged" && d.state === "done")
-    .append("circle")
-    .attr("class", "pr-ring")
-    .attr("r", (d) => (KIND_RADIUS[d.kind] ?? 8) + 4)
-    .attr("fill", "none")
-    .attr("stroke", PR_MERGED_RING_COLOR)
-    .attr("stroke-width", 2)
-    .attr("opacity", 0.85);
-
-  // Node circles
-  node_el.append("circle")
-    .attr("r", (d) => KIND_RADIUS[d.kind] ?? 8)
-    .attr("fill", (d) => STATE_COLORS[d.state] ?? "#484f58")
-    .attr("stroke", (d) => d.id === selectedId ? "#e6edf3" : "#0d1117")
-    .attr("stroke-width", (d) => d.id === selectedId ? 2.5 : 1.5);
-
-  // PR badge
-  node_el.filter((d) => d._prStatus === "merged" && d.state === "done")
-    .append("text")
-    .text("✓PR")
-    .attr("dy", (d) => (KIND_RADIUS[d.kind] ?? 8) + 13)
-    .attr("text-anchor", "middle")
-    .attr("fill", PR_MERGED_RING_COLOR)
-    .attr("font-size", "9px")
-    .attr("font-weight", "600")
-    .attr("font-family", "inherit")
-    .attr("pointer-events", "none");
-
-  // Labels
-  node_el.append("text")
-    .text((d) => d.id)
-    .attr("dx", (d) => (KIND_RADIUS[d.kind] ?? 8) + 5)
-    .attr("dy", "0.35em")
-    .attr("fill", "#8b949e")
-    .attr("font-size", "11px")
-    .attr("font-family", "inherit")
-    .attr("pointer-events", "none");
-
-  // Click to select
-  node_el.on("click", (_, d) => onSelect(d));
+  // Node click
+  svgGroup.selectAll("g.node").on("click", function (event, id) {
+    const data = g.node(id)?._data;
+    if (data) onSelect(data);
+  }).style("cursor", "pointer");
 
   // Node hover
-  node_el.on("mouseenter", (event, d) => {
-    d3.select(event.currentTarget).select("circle:not(.pr-ring)")
-      .attr("stroke", "#e6edf3").attr("stroke-width", 2.5);
+  svgGroup.selectAll("g.node")
+    .on("mouseenter", function (event) {
+      const id = d3.select(this).datum();
+      const data = g.node(id)?._data;
+      if (!data) return;
 
-    const inbound = links.filter((l) => l.target === d.id).length;
-    const outbound = links.filter((l) => l.source === d.id).length;
+      d3.select(this).select("circle:not([opacity])")
+        .attr("stroke", "#e6edf3").attr("stroke-width", 2.5);
 
-    let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.id}: ${d.name}</div>`;
-    body += `<div style="color:#8b949e;margin:2px 0;">Kind: <span style="color:#c9d1d9">${d.kind}</span></div>`;
-    body += `<div style="color:#8b949e;margin:2px 0;">State: <span style="color:#c9d1d9">${d.state}</span></div>`;
-    body += `<div style="color:#8b949e;margin:2px 0;">Edges: <span style="color:#c9d1d9">${inbound} in / ${outbound} out</span></div>`;
-    if (d.issue_number) body += `<div style="color:#8b949e;margin:2px 0;">Issue: <span style="color:#c9d1d9">#${d.issue_number}</span></div>`;
-    if (d.repo) body += `<div style="color:#8b949e;margin:2px 0;">Repo: <span style="color:#c9d1d9">${d.repo}</span></div>`;
-    if (d.scope_hint) body += `<div style="color:#8b949e;margin:2px 0;">Scope: <span style="color:#c9d1d9">${d.scope_hint}</span></div>`;
-    if (d._pr) {
-      const prColor = d._prStatus === "merged" ? PR_MERGED_RING_COLOR
-        : d._prStatus === "draft" ? "#8b949e"
-        : PR_RING_COLOR;
-      const statusLabel = d._prStatus === "merged" ? "Merged"
-        : d._prStatus === "draft" ? "Draft"
-        : d._prStatus === "closed" ? "Closed"
-        : "Open";
-      body += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #30363d;">`;
-      body += `<div style="color:${prColor};font-weight:600;margin-bottom:2px;">PR #${d._pr.number} · ${statusLabel}</div>`;
-      if (d._pr.title) body += `<div style="color:#c9d1d9;font-size:11px;">${d._pr.title}</div>`;
-      if (d._pr.url) body += `<div style="color:#58a6ff;font-size:11px;margin-top:2px;">${d._pr.url}</div>`;
-      if (d._pr.head_ref) body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${d._pr.head_ref} → ${d._pr.base_ref ?? "?"}</div>`;
-      body += `</div>`;
-    }
+      const inbound = links.filter((l) => l.target === data.id).length;
+      const outbound = links.filter((l) => l.source === data.id).length;
 
-    showTooltip(tooltip, event, body);
-  })
-  .on("mousemove", (event) => {
-    if (!tooltip) return;
-    tooltip.style.left = (event.clientX + 14) + "px";
-    tooltip.style.top = (event.clientY + 14) + "px";
-  })
-  .on("mouseleave", (event) => {
-    const d = d3.select(event.currentTarget).datum();
-    d3.select(event.currentTarget).select("circle:not(.pr-ring)")
-      .attr("stroke", d.id === selectedId ? "#e6edf3" : "#0d1117")
-      .attr("stroke-width", d.id === selectedId ? 2.5 : 1.5);
-    hideTooltip(tooltip);
-  });
+      let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${data.id}: ${data.name}</div>`;
+      body += `<div style="color:#8b949e;margin:2px 0;">Kind: <span style="color:#c9d1d9">${data.kind}</span></div>`;
+      body += `<div style="color:#8b949e;margin:2px 0;">State: <span style="color:#c9d1d9">${data.state}</span></div>`;
+      body += `<div style="color:#8b949e;margin:2px 0;">Edges: <span style="color:#c9d1d9">${inbound} in / ${outbound} out</span></div>`;
+      if (data.issue_number) body += `<div style="color:#8b949e;margin:2px 0;">Issue: <span style="color:#c9d1d9">#${data.issue_number}</span></div>`;
+      if (data.repo) body += `<div style="color:#8b949e;margin:2px 0;">Repo: <span style="color:#c9d1d9">${data.repo}</span></div>`;
+      if (data.scope_hint) body += `<div style="color:#8b949e;margin:2px 0;">Scope: <span style="color:#c9d1d9">${data.scope_hint}</span></div>`;
+      if (data._pr) {
+        const prColor = data._prStatus === "merged" ? PR_MERGED_RING_COLOR
+          : data._prStatus === "draft" ? "#8b949e" : PR_RING_COLOR;
+        const statusLabel = data._prStatus === "merged" ? "Merged"
+          : data._prStatus === "draft" ? "Draft"
+          : data._prStatus === "closed" ? "Closed" : "Open";
+        body += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #30363d;">`;
+        body += `<div style="color:${prColor};font-weight:600;margin-bottom:2px;">PR #${data._pr.number} · ${statusLabel}</div>`;
+        if (data._pr.title) body += `<div style="color:#c9d1d9;font-size:11px;">${data._pr.title}</div>`;
+        if (data._pr.url) body += `<div style="color:#58a6ff;font-size:11px;margin-top:2px;">${data._pr.url}</div>`;
+        if (data._pr.head_ref) body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${data._pr.head_ref} → ${data._pr.base_ref ?? "?"}</div>`;
+        body += `</div>`;
+      }
+
+      showTooltip(tooltip, event, body);
+    })
+    .on("mousemove", (event) => {
+      if (!tooltip) return;
+      tooltip.style.left = (event.clientX + 14) + "px";
+      tooltip.style.top = (event.clientY + 14) + "px";
+    })
+    .on("mouseleave", function (event) {
+      const id = d3.select(this).datum();
+      const data = g.node(id)?._data;
+      if (!data) return;
+      d3.select(this).select("circle:not([opacity])")
+        .attr("stroke", data.id === selectedId ? "#e6edf3" : "#0d1117")
+        .attr("stroke-width", data.id === selectedId ? 2.5 : 1.5);
+      hideTooltip(tooltip);
+    });
 
   // Edge hover
-  linkHitbox.on("mouseenter", (event, d) => {
-    const src = nodeById.get(d.source);
-    const tgt = nodeById.get(d.target);
+  svgGroup.selectAll("g.edgePath")
+    .on("mouseenter", function (event) {
+      const edgeId = d3.select(this).datum();
+      const edgeData = g.edge(edgeId);
+      if (!edgeData?._data) return;
+      const d = edgeData._data;
+      const src = nodeById.get(d.source);
+      const tgt = nodeById.get(d.target);
 
-    let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.rel.replace(/_/g, " ")}</div>`;
-    body += `<div style="color:#c9d1d9;">${src?.name ?? d.source} → ${tgt?.name ?? d.target}</div>`;
-    body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${src?.id ?? d.source} → ${tgt?.id ?? d.target}</div>`;
+      let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${d.rel.replace(/_/g, " ")}</div>`;
+      body += `<div style="color:#c9d1d9;">${src?.name ?? d.source} → ${tgt?.name ?? d.target}</div>`;
+      body += `<div style="color:#8b949e;font-size:11px;margin-top:2px;">${src?.id ?? d.source} → ${tgt?.id ?? d.target}</div>`;
 
-    showTooltip(tooltip, event, body);
-  })
-  .on("mousemove", (event) => {
-    if (!tooltip) return;
-    tooltip.style.left = (event.clientX + 14) + "px";
-    tooltip.style.top = (event.clientY + 14) + "px";
-  })
-  .on("mouseleave", () => hideTooltip(tooltip));
+      showTooltip(tooltip, event, body);
+    })
+    .on("mousemove", (event) => {
+      if (!tooltip) return;
+      tooltip.style.left = (event.clientX + 14) + "px";
+      tooltip.style.top = (event.clientY + 14) + "px";
+    })
+    .on("mouseleave", () => hideTooltip(tooltip));
 
   return () => {
     hideTooltip(tooltip);
