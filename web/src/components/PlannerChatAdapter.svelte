@@ -4,6 +4,7 @@
     approveGitHubSync,
     approveMemoryChange,
     approveMutationProposal,
+    dismissActiveProposals,
     getPlannerSessionSnapshot,
     sendAgentMessage,
   } from "../lib/api.js";
@@ -21,8 +22,10 @@
   let loading = true;
   let sending = false;
   let approving = false;
+  let dismissing = false;
   let connected = false;
   let error = "";
+  let approvalError = "";
   let sessionId = "";
   let isStreaming = false;
   let activeProposal = null;
@@ -284,7 +287,7 @@
     }
 
     approving = true;
-    error = "";
+    approvalError = "";
     try {
       const commitResult = await approveMutationProposal({
         proposal_id: activeProposal.proposal_id,
@@ -296,8 +299,8 @@
       if (commitResult.result?.status === "applied") {
         dispatch("graphChanged");
       }
-    } catch (approveError) {
-      error = approveError.message;
+    } catch (err) {
+      approvalError = err.message;
     } finally {
       approving = false;
     }
@@ -309,7 +312,7 @@
     }
 
     approving = true;
-    error = "";
+    approvalError = "";
     try {
       const writeResult = await approveMemoryChange({
         change_id: activeMemoryChange.change_id,
@@ -319,8 +322,8 @@
       activeMemoryChange = writeResult.active_memory_change;
       memoryDocument = writeResult.memory ?? memoryDocument;
       syncMemorySelection(activeMemoryChange);
-    } catch (approveError) {
-      error = approveError.message;
+    } catch (err) {
+      approvalError = err.message;
     } finally {
       approving = false;
     }
@@ -332,7 +335,7 @@
     }
 
     approving = true;
-    error = "";
+    approvalError = "";
     try {
       const syncResult = await approveGitHubSync({
         sync_id: activeGitHubSync.sync_id,
@@ -341,11 +344,39 @@
       lastGitHubSyncResult = syncResult;
       activeGitHubSync = syncResult.active_github_sync;
       syncGitHubSelection(activeGitHubSync);
-    } catch (approveError) {
-      error = approveError.message;
+    } catch (err) {
+      approvalError = err.message;
     } finally {
       approving = false;
     }
+  }
+
+  async function dismissOverlay() {
+    dismissing = true;
+    approvalError = "";
+    try {
+      await dismissActiveProposals();
+      activeProposal = null;
+      activeMemoryChange = null;
+      activeGitHubSync = null;
+      selectedMutationIds = [];
+      selectedMemoryEditIds = [];
+      selectedGitHubOperationIds = [];
+    } catch (err) {
+      approvalError = `Failed to dismiss: ${err.message}`;
+    } finally {
+      dismissing = false;
+    }
+  }
+
+  function forceCloseOverlay() {
+    activeProposal = null;
+    activeMemoryChange = null;
+    activeGitHubSync = null;
+    selectedMutationIds = [];
+    selectedMemoryEditIds = [];
+    selectedGitHubOperationIds = [];
+    approvalError = "";
   }
 
   async function rejectProposal() {
@@ -677,8 +708,16 @@
 </section>
 
 {#if activeProposal || activeMemoryChange || activeGitHubSync}
-<div class="approval-overlay" on:click|self={() => {}}>
+<!-- svelte-ignore a11y-no-static-element-interactions -->
+<div class="approval-overlay" role="dialog" aria-modal="true" aria-label="Proposal review" on:click|self={forceCloseOverlay} on:keydown={(e) => { if (e.key === 'Escape') forceCloseOverlay(); }}>
   <div class="approval-modal">
+    <div class="approval-modal-toolbar">
+      <button class="dismiss-btn" on:click={dismissOverlay} disabled={dismissing} title="Dismiss all active proposals (server-side clear)">{dismissing ? 'Dismissing…' : 'Dismiss all'}</button>
+      <button class="close-btn" on:click={forceCloseOverlay} title="Close overlay (client-side only)">✕</button>
+    </div>
+
+    {#if approvalError}<div class="banner error inline-banner approval-error-banner">{approvalError}</div>{/if}
+
     {#if activeProposal}
     <div class="approval-section">
       <div class="approval-header">
@@ -687,8 +726,9 @@
       </div>
       <div class="proposal-summary">
         <strong>{activeProposal.proposal_id}</strong>
-        <p>{activeProposal.summary}</p>
+        <p>{activeProposal.summary ?? '(no summary)'}</p>
       </div>
+      {#if activeProposal.mutations?.length}
       <div class="proposal-list">
         {#each activeProposal.mutations as mutation}
           <label class="proposal-card">
@@ -705,6 +745,9 @@
           </label>
         {/each}
       </div>
+      {:else}
+      <div class="banner error inline-banner">Proposal has no mutations. Dismiss or reject to recover.</div>
+      {/if}
       <div class="approval-actions">
         <button on:click={approveSelectedMutations} disabled={approving || selectedMutationIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMutationIds.length} selected`}</button>
         <button class="secondary" on:click={rejectProposal} disabled={sending}>Reject</button>
@@ -717,12 +760,13 @@
     <div class="approval-section">
       <div class="approval-header">
         <h3>Planning memory change</h3>
-        {#if memoryDocument}<span class="status-pill">{memoryDocument.content_hash.slice(0, 8)}</span>{/if}
+        {#if memoryDocument?.content_hash}<span class="status-pill">{memoryDocument.content_hash.slice(0, 8)}</span>{/if}
       </div>
       <div class="proposal-summary">
         <strong>{activeMemoryChange.change_id}</strong>
-        <p>{activeMemoryChange.summary}</p>
+        <p>{activeMemoryChange.summary ?? '(no summary)'}</p>
       </div>
+      {#if activeMemoryChange.edits?.length}
       <div class="proposal-list">
         {#each activeMemoryChange.edits as edit}
           <label class="proposal-card memory-edit-card">
@@ -741,6 +785,9 @@
           </label>
         {/each}
       </div>
+      {:else}
+      <div class="banner error inline-banner">Memory change has no edits. Dismiss or reject to recover.</div>
+      {/if}
       <div class="approval-actions">
         <button on:click={approveSelectedMemoryEdits} disabled={approving || selectedMemoryEditIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMemoryEditIds.length} memory edit(s)`}</button>
         <button class="secondary" on:click={rejectMemoryChange} disabled={sending}>Reject</button>
@@ -753,12 +800,13 @@
     <div class="approval-section">
       <div class="approval-header">
         <h3>GitHub sync</h3>
-        <span class="status-pill">{activeGitHubSync.issue.repo} #{activeGitHubSync.issue.issue_number}</span>
+        {#if activeGitHubSync.issue}<span class="status-pill">{activeGitHubSync.issue.repo} #{activeGitHubSync.issue.issue_number}</span>{/if}
       </div>
       <div class="proposal-summary">
         <strong>{activeGitHubSync.sync_id}</strong>
-        <p>{activeGitHubSync.summary}</p>
+        <p>{activeGitHubSync.summary ?? '(no summary)'}</p>
       </div>
+      {#if activeGitHubSync.operations?.length}
       <div class="proposal-list">
         {#each activeGitHubSync.operations as operation}
           <label class="proposal-card github-sync-card">
@@ -771,13 +819,18 @@
             </div>
             <strong>{operation.summary}</strong>
             <p>{operation.rationale}</p>
+            {#if operation.preview}
             <div class="sync-preview-grid">
               <div><div class="muted">Current block</div><pre>{operation.preview.before}</pre></div>
               <div><div class="muted">Proposed block</div><pre>{operation.preview.after}</pre></div>
             </div>
+            {/if}
           </label>
         {/each}
       </div>
+      {:else}
+      <div class="banner error inline-banner">GitHub sync has no operations. Dismiss or reject to recover.</div>
+      {/if}
       <div class="approval-actions">
         <button on:click={approveSelectedGitHubOperations} disabled={approving || selectedGitHubOperationIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedGitHubOperationIds.length} sync operation(s)`}</button>
         <button class="secondary" on:click={rejectGitHubSync} disabled={sending}>Reject</button>
@@ -812,6 +865,48 @@
     padding: 1.25rem;
     display: grid;
     gap: 1.25rem;
+  }
+
+  .approval-modal-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: -0.5rem;
+  }
+
+  .dismiss-btn {
+    font-size: 0.8rem;
+    padding: 0.25rem 0.65rem;
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .dismiss-btn:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.25);
+  }
+
+  .close-btn {
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0.2rem 0.5rem;
+    background: transparent;
+    color: #94a3b8;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .close-btn:hover {
+    background: rgba(148, 163, 184, 0.1);
+    color: #e2e8f0;
+  }
+
+  .approval-error-banner {
+    margin: 0;
   }
 
   .approval-section {

@@ -41,6 +41,14 @@ export function approveMutationProposal(payload) {
   });
 }
 
+export function dismissActiveProposals() {
+  return request("/api/agent/proposals/dismiss", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+}
+
 export function approveMemoryChange(payload) {
   return request("/api/agent/memory/approve", {
     method: "POST",
