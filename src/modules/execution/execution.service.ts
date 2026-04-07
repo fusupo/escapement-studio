@@ -448,6 +448,10 @@ export class ExecutionService {
     this.pushActivity(run.run_id, "status_change", `Worktree created at ${run.worktree_path}`, `Branch: ${run.branch}, Base: ${run.base_ref}`);
     this.appendEvent(run, { type: "worktree_created", worktree_path: run.worktree_path, branch: run.branch, base_ref: run.base_ref });
 
+    const scratchpadPath = this.writeScratchpad(run, node);
+    this.pushActivity(run.run_id, "status_change", `Scratchpad written to ${scratchpadPath}`);
+    this.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
+
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: run.worktree_path,
       sessionManager: SessionManager.inMemory(run.worktree_path),
@@ -776,7 +780,72 @@ export class ExecutionService {
       forbidden,
       "",
       "If you must go beyond the predicted scope, explain why in the final summary.",
+      "",
+      "A SCRATCHPAD.md file has been created in your worktree with structured context.",
+      "Update it as you work: check off progress items, add work-log notes, and record any blockers.",
+      "Do not commit SCRATCHPAD.md — it is a local working document.",
     ].join("\n");
+  }
+
+  /** Build a structured scratchpad markdown document for the execution worktree. */
+  buildScratchpad(run: ExecutionRunRecord, node: ExecutionDispatchNodePreview): string {
+    const owned = node.files_owned.length
+      ? node.files_owned.map((path) => `- ${path}`).join("\n")
+      : "- (none predicted)";
+    const shared = node.files_shared.length
+      ? node.files_shared.map((file) => `- ${file.path} (${file.assessment}/${file.confidence})`).join("\n")
+      : "- (none)";
+    const forbidden = node.files_forbidden.length
+      ? node.files_forbidden.map((path) => `- ${path}`).join("\n")
+      : "- (none)";
+
+    return [
+      `# Scratchpad: ${run.work_item_id} — ${run.work_item_name}`,
+      "",
+      "## Context",
+      `- **Repo:** ${run.repo ?? "(not set)"}`,
+      `- **Issue:** ${run.issue_url ?? "(not linked)"}`,
+      `- **Branch:** ${run.branch}`,
+      `- **Base ref:** ${run.base_ref}`,
+      `- **Scope hint:** ${node.scope_hint ?? "(not set)"}`,
+      `- **Created:** ${run.created_at}`,
+      "",
+      "## File Ownership",
+      "",
+      "### Owned",
+      owned,
+      "",
+      "### Shared",
+      shared,
+      "",
+      "### Forbidden",
+      forbidden,
+      "",
+      "## Implementation Plan",
+      "<!-- Fill in concrete implementation steps before starting work -->",
+      "",
+      "- [ ] Analyze scope and identify changes needed",
+      "- [ ] Implement changes",
+      "- [ ] Run tests / verify",
+      "- [ ] Summarize results",
+      "",
+      "## Work Log",
+      "<!-- Append notes and decisions as you work -->",
+      "",
+      "## Blockers",
+      "<!-- Record any issues encountered -->",
+      "",
+    ].join("\n");
+  }
+
+  /** Write the scratchpad to the execution worktree; returns the file path. */
+  private writeScratchpad(run: ExecutionRunRecord, node: ExecutionDispatchNodePreview): string {
+    const content = this.buildScratchpad(run, node);
+    const scratchpadPath = join(run.worktree_path, "SCRATCHPAD.md");
+    writeFileSync(scratchpadPath, content, "utf8");
+    // Also persist a copy in the artifact directory for post-run review
+    writeFileSync(join(run.artifact_dir, "scratchpad-initial.md"), content, "utf8");
+    return scratchpadPath;
   }
 
   private createRunRecord(input: {
