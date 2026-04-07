@@ -244,7 +244,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       // Trim start and end points to circle edge
       const trimmed = [...pts];
       trimmed[0] = shortenPoint(trimmed[0], trimmed[1], srcR);
-      trimmed[trimmed.length - 1] = shortenPoint(trimmed[trimmed.length - 1], trimmed[trimmed.length - 2], tgtR + 4);
+      trimmed[trimmed.length - 1] = shortenPoint(trimmed[trimmed.length - 1], trimmed[trimmed.length - 2], tgtR);
       const line = d3.line().x((p) => p.x).y((p) => p.y).curve(d3.curveBasis);
       return line(trimmed);
     }
