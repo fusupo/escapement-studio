@@ -1042,6 +1042,27 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     return nextProposal;
   }
 
+  dismissAllProposals(): { dismissed_proposal_ids: string[]; dismissed_memory_change_ids: string[]; dismissed_github_sync_ids: string[] } {
+    const dismissedProposalIds = this.activeProposalId ? [this.activeProposalId] : [];
+    const dismissedMemoryChangeIds = this.activeMemoryChangeId ? [this.activeMemoryChangeId] : [];
+    const dismissedGitHubSyncIds = this.activeGitHubSyncId ? [this.activeGitHubSyncId] : [];
+
+    this.activeProposalId = null;
+    this.lastCommitResult = null;
+    this.activeMemoryChangeId = null;
+    this.lastMemoryWriteResult = null;
+    this.activeGitHubSyncId = null;
+    this.lastGitHubSyncResult = null;
+
+    this.logger.log(`Dismissed proposals: ${dismissedProposalIds.length} mutation, ${dismissedMemoryChangeIds.length} memory, ${dismissedGitHubSyncIds.length} GitHub sync`);
+
+    return {
+      dismissed_proposal_ids: dismissedProposalIds,
+      dismissed_memory_change_ids: dismissedMemoryChangeIds,
+      dismissed_github_sync_ids: dismissedGitHubSyncIds,
+    };
+  }
+
   private getActiveProposal(): PlanningMutationProposal | null {
     return this.activeProposalId ? this.proposals.get(this.activeProposalId) ?? null : null;
   }

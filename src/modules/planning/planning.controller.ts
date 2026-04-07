@@ -27,6 +27,11 @@ export class PlanningController {
     return this.planningService.approveProposal(body);
   }
 
+  @Post("proposals/dismiss")
+  dismissProposals() {
+    return this.planningService.dismissAllProposals();
+  }
+
   @Post("memory/approve")
   approveMemoryChange(@Body() body: ApprovePlanningMemoryChangeDto) {
     return this.planningService.approveMemoryChange(body);
