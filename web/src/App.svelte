@@ -2,6 +2,7 @@
   import PlannerChatAdapter from "./components/PlannerChatAdapter.svelte";
   import ExecutionDispatchPanel from "./components/ExecutionDispatchPanel.svelte";
   import ReconciliationPanel from "./components/ReconciliationPanel.svelte";
+  import SettingsPanel from "./components/SettingsPanel.svelte";
   import GraphView from "./components/GraphView.svelte";
   import FiltersToolbar from "./components/FiltersToolbar.svelte";
   import Sidebar from "./components/Sidebar.svelte";
@@ -78,6 +79,7 @@
     { id: "planning", label: "Planning", icon: "plan" },
     { id: "execute", label: "Execute", icon: "execute" },
     { id: "reconciliation", label: "Reconcile", icon: "reconcile" },
+    { id: "settings", label: "Settings", icon: "settings" },
   ];
 
   $: selectedItem = graph.items.find((item) => item.id === selectedId) ?? null;
@@ -253,6 +255,11 @@
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
             </svg>
+          {:else if item.icon === "settings"}
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
           {/if}
         </button>
       {/each}
@@ -388,6 +395,15 @@
         </div>
         <div class="pane-body fullpane-body">
           <ReconciliationPanel />
+        </div>
+      </div>
+    {:else if activeTab === "settings"}
+      <div class="fullpane-viewport">
+        <div class="pane-header">
+          <span class="pane-title">SETTINGS</span>
+        </div>
+        <div class="pane-body fullpane-body">
+          <SettingsPanel {health} />
         </div>
       </div>
     {/if}

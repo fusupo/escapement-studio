@@ -208,3 +208,15 @@ export function deleteEdge(id) {
     method: "DELETE",
   });
 }
+
+export function getSettings() {
+  return request("/api/settings");
+}
+
+export function updateSettings(payload) {
+  return request("/api/settings", {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
