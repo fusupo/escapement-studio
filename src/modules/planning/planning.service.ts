@@ -8,14 +8,15 @@ import { getConfig } from "../../config.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { GraphWriterService } from "../graph/graph-writer.service.js";
-import type {
-  CreateEdgeDto,
-  CreateWorkItemDto,
-  DeleteEdgeMutation,
-  DeleteWorkItemMutation,
-  EdgeRel,
-  GraphMutation,
-  UpdateWorkItemDto,
+import {
+  deriveIssueWorkItemId,
+  type CreateEdgeDto,
+  type CreateWorkItemDto,
+  type DeleteEdgeMutation,
+  type DeleteWorkItemMutation,
+  type EdgeRel,
+  type GraphMutation,
+  type UpdateWorkItemDto,
 } from "../graph/types.js";
 import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
@@ -60,6 +61,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private readonly proposals = new Map<string, PlanningMutationProposal>();
   private readonly memoryChanges = new Map<string, PlanningMemoryChange>();
   private readonly githubSyncs = new Map<string, GitHubSyncProposal>();
+  private readonly issueIdAliases = new Map<string, string>();
 
   private session?: AgentSession;
   private sessionPromise?: Promise<AgentSession>;
@@ -322,6 +324,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private handleSessionEvent(event: AgentSessionEvent) {
     if (event.type === "turn_start") {
       this.currentTurnId = `turn_${String(++this.turnCounter).padStart(4, "0")}`;
+      this.issueIdAliases.clear();
     }
 
     if (!this.isStreamableEvent(event.type)) {
@@ -346,6 +349,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
 
     if (event.type === "turn_end") {
       this.currentTurnId = null;
+      this.issueIdAliases.clear();
     }
   }
 
@@ -628,8 +632,17 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
           labels: params.labels,
         });
 
-        const workItemId = params.work_item_id?.trim() || `studio-${created.number}`;
+        const existingProposal = this.getActiveProposalForAccumulation();
+        const stagedWorkItemIds = this.getStagedWorkItemIds(existingProposal);
+        const requestedWorkItemId = params.work_item_id?.trim();
+        const workItemId = deriveIssueWorkItemId(created.number);
+        this.rememberIssueIdAlias(requestedWorkItemId, workItemId);
+
         const groupId = `issue-${created.number}`;
+        const parentId = this.resolveIssueIdAlias(params.parent_id, stagedWorkItemIds);
+        const dependsOnIds = params.depends_on_ids
+          ?.map((depId) => this.resolveIssueIdAlias(depId, stagedWorkItemIds))
+          .filter((depId): depId is string => Boolean(depId));
 
         const mutations: ProposeMutationsToolInput["mutations"] = [
           {
@@ -651,39 +664,36 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
           },
         ];
 
-        if (params.parent_id?.trim()) {
+        if (parentId) {
           mutations.push({
             type: "create_edge",
             group_id: groupId,
             payload: {
               from_id: workItemId,
               rel: "is_part_of",
-              to_id: params.parent_id.trim(),
+              to_id: parentId,
             },
-            rationale: `Attach ${workItemId} under parent ${params.parent_id.trim()}.`,
+            rationale: `Attach ${workItemId} under parent ${parentId}.`,
           });
         }
 
-        if (params.depends_on_ids) {
-          for (const depId of params.depends_on_ids) {
-            if (depId?.trim()) {
-              mutations.push({
-                type: "create_edge",
-                group_id: groupId,
-                payload: {
-                  from_id: workItemId,
-                  rel: "depends_on",
-                  to_id: depId.trim(),
-                },
-                rationale: `${workItemId} depends on ${depId.trim()}.`,
-              });
-            }
+        if (dependsOnIds) {
+          for (const depId of dependsOnIds) {
+            mutations.push({
+              type: "create_edge",
+              group_id: groupId,
+              payload: {
+                from_id: workItemId,
+                rel: "depends_on",
+                to_id: depId,
+              },
+              rationale: `${workItemId} depends on ${depId}.`,
+            });
           }
         }
 
         // Accumulate into existing active proposal from the same turn,
         // so multi-issue creation produces one reviewable proposal.
-        const existingProposal = this.getActiveProposalForAccumulation();
         let proposal: PlanningMutationProposal;
 
         if (existingProposal) {
@@ -698,6 +708,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
             mutations,
           });
         }
+
+        proposal = this.rewriteProposalIssueAliases(proposal);
 
         this.proposals.set(proposal.proposal_id, proposal);
         this.activeProposalId = proposal.proposal_id;
@@ -1111,6 +1123,103 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       ...existing,
       summary: `${existing.summary} ${summaryAppendix}`,
       mutations: [...existing.mutations, ...normalized],
+    };
+  }
+
+  private rememberIssueIdAlias(requestedId: string | null | undefined, finalId: string) {
+    const placeholderId = requestedId?.trim();
+    if (!placeholderId || placeholderId === finalId) {
+      return;
+    }
+    this.issueIdAliases.set(placeholderId, finalId);
+  }
+
+  private resolveIssueIdAlias(id: string | null | undefined, stopIds: ReadonlySet<string> = new Set()): string {
+    const trimmed = id?.trim();
+    if (!trimmed) {
+      return "";
+    }
+    if (stopIds.has(trimmed)) {
+      return trimmed;
+    }
+
+    let resolved = trimmed;
+    const seen = new Set<string>();
+
+    while (this.issueIdAliases.has(resolved) && !seen.has(resolved)) {
+      seen.add(resolved);
+      const next = this.issueIdAliases.get(resolved) ?? resolved;
+      resolved = next;
+      if (stopIds.has(resolved)) {
+        break;
+      }
+    }
+
+    return resolved;
+  }
+
+  private getStagedWorkItemIds(proposal: PlanningMutationProposal | null | undefined): Set<string> {
+    const ids = new Set<string>();
+    if (!proposal) {
+      return ids;
+    }
+
+    for (const mutation of proposal.mutations) {
+      if (mutation.type !== "create_work_item") {
+        continue;
+      }
+      if (mutation.entity_id) {
+        ids.add(mutation.entity_id);
+      }
+      if (typeof mutation.payload?.id === "string") {
+        ids.add(mutation.payload.id);
+      }
+    }
+
+    return ids;
+  }
+
+  private rewriteProposalIssueAliases(proposal: PlanningMutationProposal): PlanningMutationProposal {
+    const stagedWorkItemIds = this.getStagedWorkItemIds(proposal);
+    return {
+      ...proposal,
+      mutations: proposal.mutations.map((mutation) => this.rewriteProposalMutationIssueAliases(mutation, stagedWorkItemIds)),
+    };
+  }
+
+  private rewriteProposalMutationIssueAliases(
+    mutation: PlanningMutationProposalMutation,
+    stagedWorkItemIds: ReadonlySet<string>,
+  ): PlanningMutationProposalMutation {
+    const payload = mutation.payload && typeof mutation.payload === "object"
+      ? { ...mutation.payload }
+      : undefined;
+
+    const entityId = mutation.entity_id ? this.resolveIssueIdAlias(mutation.entity_id, stagedWorkItemIds) : mutation.entity_id;
+
+    if (mutation.type === "create_work_item" || mutation.type === "update_work_item") {
+      if (typeof payload?.id === "string") {
+        payload.id = this.resolveIssueIdAlias(payload.id, stagedWorkItemIds);
+      }
+    }
+
+    if (mutation.type === "create_edge") {
+      if (typeof payload?.from_id === "string") {
+        payload.from_id = this.resolveIssueIdAlias(payload.from_id, stagedWorkItemIds);
+      }
+      if (typeof payload?.to_id === "string") {
+        payload.to_id = this.resolveIssueIdAlias(payload.to_id, stagedWorkItemIds);
+      }
+    }
+
+    const rewrittenEntityId = mutation.type === "create_edge" && payload?.from_id && payload?.rel && payload?.to_id
+      ? `${String(payload.from_id)}:${String(payload.rel)}:${String(payload.to_id)}`
+      : entityId;
+
+    return {
+      ...mutation,
+      entity_id: rewrittenEntityId,
+      payload,
     };
   }
 
