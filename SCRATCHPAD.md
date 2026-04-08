@@ -1,12 +1,12 @@
-# Scratchpad: studio-99 — Studio: persist scratchpad and checklist state across refreshes and follow-up runs
+# Scratchpad: studio-108 — Studio: Execute tab 3-column layout — run list, run detail, worktree sidebar
 
 ## Context
 - **Repo:** fusupo/escapement-studio
-- **Issue:** https://github.com/fusupo/escapement-studio/issues/99
-- **Branch:** studio-99-branch
+- **Issue:** https://github.com/fusupo/escapement-studio/issues/108
+- **Branch:** studio-108-branch
 - **Base ref:** develop
-- **Scope hint:** Durably persist scratchpad, checklist, and disambiguation state for execution runs and follow-up turns.
-- **Created:** 2026-04-08T04:47:02.708Z
+- **Scope hint:** Restructure the Execute tab into a fixed three-column workspace with run list, selected run detail, and worktree/safety context.
+- **Created:** 2026-04-08T04:47:55.933Z
 
 ## File Ownership
 
@@ -19,12 +19,15 @@
 ### Forbidden
 - README.md
 - docs/contracts/github-sync.md
+- docs/contracts/run-artifacts.md
+- src/modules/execution
 - src/modules/git
 - src/modules/github
 - src/modules/graph
 - src/modules/planning
 - web/src/App.svelte
 - web/src/components
+- web/src/components/ExecutionDispatchPanel.svelte
 - web/src/components/GraphView.svelte
 - web/src/components/PlannerChatAdapter.svelte
 - web/src/components/Sidebar.svelte
