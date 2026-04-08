@@ -1,15 +1,48 @@
-# SCRATCHPAD — studio-116
+# Scratchpad: studio-108 — Studio: Execute tab 3-column layout — run list, run detail, worktree sidebar
 
-## Status: COMPLETE
+## Context
+- **Repo:** fusupo/escapement-studio
+- **Issue:** https://github.com/fusupo/escapement-studio/issues/108
+- **Branch:** studio-108-branch
+- **Base ref:** develop
+- **Scope hint:** Restructure the Execute tab into a fixed three-column workspace with run list, selected run detail, and worktree/safety context.
+- **Created:** 2026-04-08T04:47:55.933Z
 
-## Changes Made
-- [x] Created `web/public/favicon.svg` — gear/escapement silhouette (dark body, light spokes, blue anchor fork)
-- [x] Added `<link rel="icon" type="image/svg+xml" href="/favicon.svg" />` to `web/index.html`
+## File Ownership
 
-## Verification
-- [x] `vite build` succeeds — favicon copied to `web-dist/favicon.svg`, referenced in built HTML
-- [x] All 71 tests pass
-- [x] SVG is well-formed, ~1KB
+### Owned
+- (none predicted)
+
+### Shared
+- (none)
+
+### Forbidden
+- README.md
+- docs/contracts/github-sync.md
+- docs/contracts/run-artifacts.md
+- src/modules/execution
+- src/modules/git
+- src/modules/github
+- src/modules/graph
+- src/modules/planning
+- web/src/App.svelte
+- web/src/components
+- web/src/components/ExecutionDispatchPanel.svelte
+- web/src/components/GraphView.svelte
+- web/src/components/PlannerChatAdapter.svelte
+- web/src/components/Sidebar.svelte
+- web/src/lib/api.js
+
+## Implementation Plan
+<!-- Fill in concrete implementation steps before starting work -->
+
+- [ ] Analyze scope and identify changes needed
+- [ ] Implement changes
+- [ ] Run tests / verify
+- [ ] Summarize results
+
+## Work Log
+<!-- Append notes and decisions as you work -->
 
 ## Blockers
-None.
+<!-- Record any issues encountered -->
