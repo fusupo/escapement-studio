@@ -100,7 +100,7 @@ This runs the server TypeScript check plus the production frontend build.
 20. Review the execution dispatch panel and confirm it loads a dispatch preview from `GET /api/execution/preview`.
 21. Confirm each dispatchable node shows worktree/branch safety checks before launch.
 22. Launch a dispatchable execution run and confirm status updates stream into the browser from `GET /api/execution/stream`.
-23. Confirm the launched run creates an isolated worktree under `/home/marc/escapement-studio-ctx/worktrees/` and artifacts under `/home/marc/escapement-studio-ctx/runs/`.
+23. Confirm the launched run creates an isolated worktree under the configured repo artifact root (for example `/home/marc/escapement-studio-ctx/worktrees/`) and artifacts under the matching repo artifact root `runs/` directory.
 24. Trigger a blocked launch condition (for example, reuse an existing branch/worktree) and confirm the browser shows a blocked execution run with clear safety errors.
 25. Confirm the completed execution run auto-populates the related work item `actual_files` from the recorded `changed_files`.
 26. Open the reconciliation panel and confirm `GET /api/reconciliation/reports` shows matches, missed predicted files, unpredicted actual files, and drift summaries for reconciled work items.
@@ -294,22 +294,24 @@ curl -X POST http://localhost:3000/api/execution/launch \
   }'
 ```
 
-A successful launch returns an accepted execution run record and starts work in an isolated git worktree under:
+A successful launch returns an accepted execution run record and starts work in an isolated git worktree under the configured repo artifact root:
 
 ```text
-/home/marc/escapement-studio-ctx/worktrees/<branch>/
+<artifact-root>/worktrees/<branch>/
 ```
 
 Execution artifacts are persisted under:
 
 ```text
-/home/marc/escapement-studio-ctx/runs/<run_id>/
+<artifact-root>/runs/<run_id>/
   metadata.json
   status.json
   events.jsonl
   summary.md
   outputs/
 ```
+
+Studio's repo discovery model treats a local checkout as the primary repo identity. GitHub `owner/repo` should be derived from `git remote get-url origin`, and a suggested artifact root can be read from `**context-path**` in `AGENTS.md` or `CLAUDE.md`.
 
 Blocked launches return `accepted: false` plus a run record with `status: "blocked"` and explicit safety check failures.
 
@@ -351,7 +353,7 @@ curl http://localhost:3000/api/agent/session
 Each completed run should also persist artifacts under:
 
 ```text
-/home/marc/escapement-studio-ctx/runs/<run_id>/
+<artifact-root>/runs/<run_id>/
   metadata.json
   status.json
   events.jsonl
