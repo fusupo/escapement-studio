@@ -27,7 +27,7 @@ export class GitService {
       throw new BadRequestException("path is required");
     }
 
-    const requestedPath = expandUserPath(normalizedInput);
+    const requestedPath = resolve(expandUserPath(normalizedInput));
     const repoRoot = this.resolveGitRoot(requestedPath);
     const remote = this.readOriginRemote(repoRoot);
     const repo = parseGitHubRepoSlug(remote);
@@ -152,7 +152,7 @@ export function expandUserPath(value: string): string {
   if (trimmed.startsWith("~/")) {
     return join(homedir(), trimmed.slice(2));
   }
-  return resolve(trimmed);
+  return trimmed;
 }
 
 export function resolveConfiguredPath(baseDir: string, configuredPath: string): string {
