@@ -476,6 +476,31 @@ export class ExecutionService {
     return { resolved: true, run_id: runId };
   }
 
+  /** Fetch issue body via gh CLI. Returns body text or null. */
+  private fetchIssueBody(repo: string | null, issueNumber: number | null): string | null {
+    if (!repo || !issueNumber) return null;
+    try {
+      const raw = execFileSync("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "body", "--jq", ".body"], {
+        encoding: "utf8",
+        timeout: 15000,
+      }).trim();
+      return raw || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Read AGENTS.md or CLAUDE.md from a directory if it exists. */
+  private readProjectContext(dir: string): string | null {
+    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+      const p = join(dir, name);
+      if (existsSync(p)) {
+        try { return readFileSync(p, "utf8"); } catch { /* ignore */ }
+      }
+    }
+    return null;
+  }
+
   private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview, disambiguate = true) {
     let run = this.updateRun(initialRun.run_id, {
       status: "preparing",
@@ -485,16 +510,26 @@ export class ExecutionService {
       return;
     }
     this.appendEvent(run, { type: "run_preparing" });
+    this.emitRun("execution_status", run);
 
+    // --- Create worktree ---
     this.runGit(["worktree", "add", run.worktree_path, "-b", run.branch, run.base_ref]);
     this.pushActivity(run.run_id, "status_change", `Worktree created at ${run.worktree_path}`, `Branch: ${run.branch}, Base: ${run.base_ref}`);
     this.appendEvent(run, { type: "worktree_created", worktree_path: run.worktree_path, branch: run.branch, base_ref: run.base_ref });
 
+    // --- Gather context ---
+    const workItem = this.workItemsService.get(run.work_item_id);
+    const issueBody = this.fetchIssueBody(workItem.repo, workItem.issue_number);
+    const projectContext = this.readProjectContext(run.worktree_path);
+    this.pushActivity(run.run_id, "status_change", `Context gathered: issue body ${issueBody ? "found" : "not found"}, project conventions ${projectContext ? "found" : "not found"}`);
+
+    // --- Write initial scratchpad (skeleton — agent will fill it in during setup) ---
     const scratchpadPath = this.writeScratchpad(run, node);
     this.pushActivity(run.run_id, "status_change", `Scratchpad written to ${scratchpadPath}`);
     this.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.emitChecklistIfChanged(run);
 
+    // --- Create agent session ---
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: run.worktree_path,
       sessionManager: SessionManager.inMemory(run.worktree_path),
@@ -509,65 +544,72 @@ export class ExecutionService {
       status: "running",
       started_at: this.now(),
       session_id: session.sessionId,
-      progress_message: "Execution agent running in isolated worktree.",
+      progress_message: "Agent session started — setup phase.",
     })!;
     this.pushActivity(run.run_id, "status_change", "Agent session started.");
     this.appendEvent(run, { type: "session_started", session_id: session.sessionId });
+    this.emitRun("execution_status", run);
 
-    // Store session so follow-up messages can reach it while the run is active
     this.activeSessions.set(run.run_id, session);
-
     const runId = run.run_id;
     const unsubscribe = session.subscribe((event) => {
       this.handleSessionEvent(runId, event);
     });
 
     try {
-      // --- Disambiguation gate ---
+      // ============================================================
+      // PHASE 1: SETUP (like setup-work skill)
+      // Agent reads issue, analyzes codebase, writes implementation
+      // plan into SCRATCHPAD.md, surfaces questions
+      // ============================================================
       if (disambiguate) {
         run = this.updateRun(runId, {
           status: "disambiguating",
-          progress_message: "Disambiguation phase — agent is identifying questions before coding.",
+          progress_message: "Setup phase — agent is analyzing the issue and planning implementation.",
         })!;
-        this.pushActivity(runId, "status_change", "Disambiguation phase started.");
-        this.appendEvent(run, { type: "disambiguation_started" });
+        this.pushActivity(runId, "status_change", "Setup phase started.");
+        this.appendEvent(run, { type: "setup_phase_started" });
+        this.emitRun("execution_status", run);
 
-        const disambiguationPrompt = this.buildDisambiguationPrompt(run, node);
-        await session.prompt(disambiguationPrompt);
+        const setupPrompt = this.buildSetupPrompt(run, node, workItem, issueBody, projectContext);
+        await session.prompt(setupPrompt);
 
-        const disambiguationText = session.getLastAssistantText()?.trim() ?? "";
-        this.pushChatMessage(runId, { timestamp: this.now(), role: "assistant", text: disambiguationText });
-        this.pushActivity(runId, "info", "Disambiguation questions generated — waiting for user resolution.");
-        this.appendEvent(run, { type: "disambiguation_questions_ready" });
-        this.updateRun(runId, { progress_message: "Waiting for disambiguation resolution." });
+        this.emitChecklistIfChanged(run);
+        this.pushActivity(runId, "info", "Setup complete — implementation plan written. Waiting for user approval.");
+        this.appendEvent(run, { type: "setup_phase_complete" });
+        this.updateRun(runId, { progress_message: "Setup complete. Review the plan and approve or provide feedback." });
+        this.emitRun("execution_status", this.getRun(runId)!);
 
-        // Block until the user resolves disambiguation
+        // Block until the user approves
         const additionalContext = await new Promise<string | undefined>((resolve) => {
           this.disambiguationGates.set(runId, { resolve });
         });
+        this.appendEvent(run, { type: "setup_approved" });
 
-        this.appendEvent(run, { type: "disambiguation_resolved" });
-
-        // Feed additional context if provided, before the main coding prompt
         if (additionalContext) {
           await session.prompt(
-            `The user provided the following additional context before coding starts:\n\n${additionalContext}\n\nAcknowledge briefly, then wait for the coding instructions.`
+            `The user provided feedback on your plan:\n\n${additionalContext}\n\nUpdate the SCRATCHPAD.md implementation plan accordingly, then confirm you're ready to start coding.`
           );
-          const ackText = session.getLastAssistantText()?.trim() ?? "";
-          if (ackText) {
-            this.pushChatMessage(runId, { timestamp: this.now(), role: "assistant", text: ackText });
-          }
+          this.emitChecklistIfChanged(run);
         }
 
         run = this.updateRun(runId, {
           status: "running",
-          progress_message: "Disambiguation resolved — coding phase started.",
+          progress_message: "Plan approved — coding phase started.",
         })!;
-        this.pushActivity(runId, "status_change", "Coding phase started after disambiguation.");
+        this.pushActivity(runId, "status_change", "Plan approved. Coding phase started.");
+        this.emitRun("execution_status", run);
       }
-      // --- End disambiguation gate ---
 
-      await session.prompt(run.prompt);
+      // ============================================================
+      // PHASE 2: DO-WORK (like do-work skill)
+      // Agent works through the scratchpad checklist task by task,
+      // committing after each, updating the scratchpad as it goes
+      // ============================================================
+      const doWorkPrompt = this.buildDoWorkPrompt(run, node, workItem, projectContext);
+      await session.prompt(doWorkPrompt);
+
+      this.emitChecklistIfChanged(run);
     } finally {
       unsubscribe();
       this.disambiguationGates.delete(run.run_id);
@@ -575,10 +617,8 @@ export class ExecutionService {
       session.dispose();
     }
 
-    const assistantText = session.getLastAssistantText()?.trim() ?? "Execution run completed without a terminal summary.";
-    // Record the initial run response in chat history so follow-up has context
-    this.pushChatMessage(run.run_id, { timestamp: this.now(), role: "assistant", text: assistantText });
-    // Extract a short reasoning summary from the assistant's final text
+    // --- Completion ---
+    const assistantText = session.getLastAssistantText()?.trim() ?? "Execution run completed.";
     const reasoningSummary = this.extractReasoningSummary(assistantText);
     if (reasoningSummary) {
       this.pushActivity(run.run_id, "reasoning", reasoningSummary);
@@ -587,6 +627,12 @@ export class ExecutionService {
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
     writeFileSync(join(run.artifact_dir, "outputs", "response.json"), JSON.stringify({ assistant_text: assistantText, changed_files: changedFiles, actual_files_sync: actualFilesSync }, null, 2), "utf8");
+
+    // Copy final scratchpad to artifacts
+    const finalScratchpad = join(run.worktree_path, "SCRATCHPAD.md");
+    if (existsSync(finalScratchpad)) {
+      writeFileSync(join(run.artifact_dir, "scratchpad-final.md"), readFileSync(finalScratchpad, "utf8"), "utf8");
+    }
 
     this.pushActivity(run.run_id, "status_change", `Execution completed. ${changedFiles.length} file(s) changed.`);
     run = this.updateRun(initialRun.run_id, {
@@ -798,7 +844,14 @@ export class ExecutionService {
     }
 
     if (event.type === "message_end") {
-      this.appendEvent(run, { type: event.type });
+      const message = "message" in event ? event.message : null;
+      const text = this.extractTextFromMessage(message);
+      this.appendEvent(run, { type: event.type, text: text?.slice(0, 2000) ?? null });
+      if (text) {
+        this.pushChatMessage(runId, { timestamp: this.now(), role: "assistant", text });
+        this.pushActivity(runId, "info", text.length > 200 ? text.slice(0, 200) + "…" : text);
+        this.emitRun("execution_status", run);
+      }
       return;
     }
 
@@ -945,50 +998,56 @@ export class ExecutionService {
       : { code: "worktree_path_bounded", status: "fail", message: "Target worktree path escaped the configured execution worktree root." };
   }
 
-  private buildDisambiguationPrompt(run: ExecutionRunRecord, node: ExecutionDispatchNodePreview): string {
-    const lines = [
-      `You are about to execute Studio work item ${run.work_item_id}: ${run.work_item_name}.`,
-      "",
-      "Before coding begins, review the work item scope and identify any ambiguities, missing information, or decisions that should be resolved first.",
-      "",
-      `Repo: ${run.repo ?? "(not set)"}`,
-      `Issue URL: ${run.issue_url ?? "(not set)"}`,
-      `Scope hint: ${node.scope_hint ?? "(not set)"}`,
-      `Branch: ${node.branch}`,
-      `Base ref: ${node.default_base_ref}`,
-      "",
-      "Files owned:",
-      ...(node.files_owned.length ? node.files_owned.map((p) => `- ${p}`) : ["- (none predicted)"]),
-      "",
-      "Please:",
-      "1. List any clarifying questions about scope, approach, or constraints.",
-      "2. Call out any assumptions you would make if no answer is given.",
-      "3. If everything is clear, say so explicitly.",
-      "",
-      "Do NOT start coding yet. This is a disambiguation-only phase.",
-    ];
-    return lines.join("\n");
-  }
-
-  private buildPrompt(workItem: WorkItemRecord, node: ExecutionDispatchNodePreview): string {
-    const owned = node.files_owned.length ? node.files_owned.map((path) => `- ${path}`).join("\n") : "- (none predicted)";
+  private buildSetupPrompt(
+    run: ExecutionRunRecord,
+    node: ExecutionDispatchNodePreview,
+    workItem: WorkItemRecord,
+    issueBody: string | null,
+    projectContext: string | null,
+  ): string {
+    const owned = node.files_owned.length ? node.files_owned.map((p) => `- ${p}`).join("\n") : "- (none predicted)";
     const shared = node.files_shared.length
-      ? node.files_shared.map((file) => `- ${file.path} (${file.assessment}/${file.confidence})`).join("\n")
+      ? node.files_shared.map((f) => `- ${f.path} (${f.assessment}/${f.confidence})`).join("\n")
       : "- (none)";
-    const forbidden = node.files_forbidden.length ? node.files_forbidden.map((path) => `- ${path}`).join("\n") : "- (none)";
+    const forbidden = node.files_forbidden.length ? node.files_forbidden.map((p) => `- ${p}`).join("\n") : "- (none)";
 
-    return [
-      `You are executing Studio work item ${workItem.id}: ${workItem.name}.`,
-      "You are running inside a dedicated git worktree created by Escapement Studio.",
-      "Make concrete implementation progress for this work item while staying inside the predicted scope.",
-      "Prefer focused changes over broad refactors.",
-      "At the end, summarize what you changed, any tests/run checks you performed, and any remaining blockers.",
+    const lines = [
+      `# Setup Phase for ${run.work_item_id}: ${run.work_item_name}`,
+      "",
+      "You are an execution agent running inside a dedicated git worktree created by Escapement Studio.",
+      "This is the SETUP PHASE. Do NOT write any code yet.",
+      "",
+      "## Your task",
+      "",
+      "1. Read and understand the issue scope below",
+      "2. Read relevant source files in the codebase to understand the implementation surface",
+      "3. Update SCRATCHPAD.md with a detailed implementation plan:",
+      "   - Fill in the Summary section with your understanding",
+      "   - Fill in Acceptance Criteria from the issue",
+      "   - Replace the placeholder Implementation Plan checklist with specific, concrete tasks",
+      "   - Each task should name the files it will touch",
+      "   - Fill in the Affected Files section",
+      "4. Surface any questions or concerns in the Questions / Concerns section",
+      "5. If everything is clear, say so explicitly",
+      "",
+      "## Issue context",
       "",
       `Repo: ${workItem.repo ?? "(not set)"}`,
       `Issue URL: ${workItem.issue_url ?? "(not set)"}`,
       `Scope hint: ${workItem.scope_hint ?? "(not set)"}`,
-      `Suggested execution branch: ${node.branch}`,
-      `Default working base branch: ${node.default_base_ref}`,
+      `Branch: ${node.branch}`,
+      `Base ref: ${node.default_base_ref}`,
+    ];
+
+    if (issueBody) {
+      lines.push("", "### Issue body", "", issueBody);
+    } else {
+      lines.push("", "(Issue body not available — use `gh issue view` or read from the issue URL if needed)");
+    }
+
+    lines.push(
+      "",
+      "## File ownership",
       "",
       "Files owned:",
       owned,
@@ -996,15 +1055,81 @@ export class ExecutionService {
       "Files shared:",
       shared,
       "",
-      "Files forbidden:",
+      "Files forbidden (do NOT modify these):",
       forbidden,
+    );
+
+    if (projectContext) {
+      lines.push("", "## Project conventions (from AGENTS.md / CLAUDE.md)", "", projectContext);
+    }
+
+    lines.push(
       "",
-      "If you must go beyond the predicted scope, explain why in the final summary.",
+      "## Important",
       "",
-      "A SCRATCHPAD.md file has been created in your worktree with structured context.",
-      "Update it as you work: check off progress items, add work-log notes, and record any blockers.",
-      "Do not commit SCRATCHPAD.md — it is a local working document.",
-    ].join("\n");
+      "- Do NOT start coding. This is setup only.",
+      "- Update SCRATCHPAD.md with your detailed plan.",
+      "- The user will review your plan before coding begins.",
+    );
+
+    return lines.join("\n");
+  }
+
+  private buildDoWorkPrompt(
+    run: ExecutionRunRecord,
+    node: ExecutionDispatchNodePreview,
+    workItem: WorkItemRecord,
+    projectContext: string | null,
+  ): string {
+    const lines = [
+      `# Coding Phase for ${run.work_item_id}: ${run.work_item_name}`,
+      "",
+      "Your implementation plan in SCRATCHPAD.md has been approved. Now execute it.",
+      "",
+      "## Workflow",
+      "",
+      "For each unchecked task in the ## Implementation Plan section of SCRATCHPAD.md:",
+      "",
+      "1. **Implement** the change",
+      "2. **Update SCRATCHPAD.md**: check off the task (`- [x]`), add a note to ## Work Log",
+      "3. **Commit** your changes:",
+      "   - Stage specific files (never `git add .`, never stage SCRATCHPAD.md)",
+      "   - Write a descriptive commit message",
+      "   - Use conventional format: `type(scope): description`",
+      "4. **Run quality checks** after each significant change:",
+      "   - `npm run check` (TypeScript)",
+      "   - `npm test` (if tests exist)",
+      "   - `npm run build:web` (if frontend changes)",
+      "5. Move to the next unchecked task",
+      "",
+      "## Rules",
+      "",
+      "- Work through tasks IN ORDER from the scratchpad",
+      "- Commit after each logical task (not everything at the end)",
+      "- NEVER commit or stage SCRATCHPAD.md — it is a local working document",
+      "- NEVER use `git add .` or `git add -A` — always stage specific files",
+      "- Stay within your owned/shared files. Do NOT touch forbidden files.",
+      "- If blocked on a task, note it in SCRATCHPAD.md ## Blockers and move on",
+      "",
+      "## When finished",
+      "",
+      "After all tasks are complete:",
+      "1. Run final quality checks (type check, tests, build)",
+      "2. Update SCRATCHPAD.md ## Work Log with a completion summary",
+      "3. Provide a structured final summary:",
+      "   - What you changed (files and purpose)",
+      "   - Tests/checks you ran and their results",
+      "   - Any remaining blockers or follow-up items",
+    ];
+
+    return lines.join("\n");
+  }
+
+  /** Legacy compat — delegates to buildDoWorkPrompt */
+  private buildPrompt(workItem: WorkItemRecord, node: ExecutionDispatchNodePreview): string {
+    const run = this.recentRuns[this.recentRuns.length - 1];
+    if (run) return this.buildDoWorkPrompt(run, node, workItem, null);
+    return `Execute work item ${workItem.id}: ${workItem.name}`;
   }
 
   /** Build a structured scratchpad markdown document for the execution worktree. */
@@ -1041,19 +1166,37 @@ export class ExecutionService {
       "### Forbidden",
       forbidden,
       "",
+      "## Acceptance Criteria",
+      "<!-- Fill in from the issue body during setup phase -->",
+      "",
+      "- [ ] (to be filled by setup phase)",
+      "",
       "## Implementation Plan",
-      "<!-- Fill in concrete implementation steps before starting work -->",
+      "<!-- The setup phase agent will replace these with specific, concrete tasks -->",
       "",
       "- [ ] Analyze scope and identify changes needed",
       "- [ ] Implement changes",
       "- [ ] Run tests / verify",
       "- [ ] Summarize results",
       "",
+      "## Affected Files",
+      "<!-- List specific files that will be modified, with what changes -->",
+      "",
+      "## Quality Checks",
+      "- [ ] TypeScript compilation passes (`npm run check`)",
+      "- [ ] Tests pass (`npm test`)",
+      "- [ ] Build succeeds (`npm run build:web`)",
+      "",
+      "## Questions / Concerns",
+      "<!-- Surface any ambiguities during setup — resolve with user before coding -->",
+      "",
       "## Work Log",
-      "<!-- Append notes and decisions as you work -->",
+      "",
+      `### ${new Date().toISOString().slice(0, 10)} - Setup`,
+      "- Scratchpad created by Studio execution service",
+      `- Branch: ${run.branch}`,
       "",
       "## Blockers",
-      "<!-- Record any issues encountered -->",
       "",
     ].join("\n");
   }
@@ -1201,6 +1344,22 @@ export class ExecutionService {
     ];
 
     writeFileSync(join(run.artifact_dir, "summary.md"), lines.join("\n"), "utf8");
+  }
+
+  private extractTextFromMessage(message: unknown): string | null {
+    if (!message || typeof message !== "object") return null;
+    const msg = message as Record<string, unknown>;
+    // AgentMessage has content: ContentBlock[] where text blocks have { type: "text", text: string }
+    const content = msg.content;
+    if (Array.isArray(content)) {
+      const texts = content
+        .filter((block: unknown) => typeof block === "object" && block !== null && (block as Record<string, unknown>).type === "text")
+        .map((block: unknown) => ((block as Record<string, unknown>).text as string) || "")
+        .filter(Boolean);
+      return texts.length > 0 ? texts.join("\n") : null;
+    }
+    if (typeof content === "string") return content || null;
+    return null;
   }
 
   private appendEvent(run: ExecutionRunRecord, payload: Record<string, unknown>) {
