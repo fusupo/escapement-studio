@@ -151,7 +151,7 @@
       runs = nextRuns;
       // Auto-expand chat for any disambiguating runs
       for (const run of nextRuns) {
-        if (run.status === "disambiguating" && !expandedChat[run.run_id]) {
+        if ((run.status === "disambiguating" || run.status === "running") && !expandedChat[run.run_id]) {
           expandedChat = { ...expandedChat, [run.run_id]: true };
           loadChatHistory(run.run_id);
         }
@@ -324,7 +324,7 @@
   function startDisambiguationPolling() {
     if (disambiguationPollTimer) return;
     disambiguationPollTimer = setInterval(() => {
-      const disambRuns = runs.filter((r) => r.status === "disambiguating" && expandedChat[r.run_id]);
+      const disambRuns = runs.filter((r) => (r.status === "disambiguating" || r.status === "running") && expandedChat[r.run_id]);
       for (const run of disambRuns) {
         loadChatHistory(run.run_id);
       }
@@ -335,8 +335,8 @@
     }, 2000);
   }
 
-  // Reactive: start polling when disambiguating runs exist
-  $: if (disambiguatingRuns.length > 0) {
+  // Reactive: start polling when disambiguating or running runs exist
+  $: if (disambiguatingRuns.length > 0 || activeRuns.length > 0) {
     startDisambiguationPolling();
   }
 
@@ -673,7 +673,7 @@
                     <button class="secondary small" on:click={() => copyValue(run.worktree_path, `Copied worktree for ${run.work_item_id}`)}>Copy worktree</button>
                     {#if isDisambiguating(run)}
                       <button class="secondary small disambiguation-chat-btn" on:click={() => toggleChat(run.run_id)}>
-                        {expandedChat[run.run_id] ? 'Hide Q&A' : '🔍 Open Q&A gate'}
+                        {expandedChat[run.run_id] ? 'Hide plan review' : '📋 Review plan'}
                       </button>
                     {:else if canSendFollowUp(run)}
                       <button class="secondary small" on:click={() => toggleChat(run.run_id)}>
@@ -698,10 +698,10 @@
                     {#if expandedChat[run.run_id]}
                       <div class="follow-up-chat disambiguating-chat">
                         <div class="disambiguation-banner">
-                          <span class="disambiguation-icon">🔍</span>
+                          <span class="disambiguation-icon">📋</span>
                           <div class="disambiguation-banner-text">
-                            <strong>Disambiguation in progress</strong>
-                            <span>The agent is identifying questions about this work item. Review the questions below, send answers or clarifications, then confirm to proceed to coding.</span>
+                            <strong>Setup phase — Review implementation plan</strong>
+                            <span>The agent has analyzed the issue and codebase. Review the plan and checklist below, answer any questions, then approve to start coding.</span>
                           </div>
                         </div>
                         {#if chatHistories[run.run_id]?.length}
@@ -752,7 +752,8 @@
                         </div>
                       </div>
                     {/if}
-                  {:else if checklistData[run.run_id]?.items?.length}
+                  {/if}
+                  {#if checklistData[run.run_id]?.items?.length}
                     <ExecutionChecklist items={checklistData[run.run_id].items} />
                   {/if}
 
