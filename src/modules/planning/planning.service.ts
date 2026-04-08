@@ -632,14 +632,16 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
           labels: params.labels,
         });
 
+        const existingProposal = this.getActiveProposalForAccumulation();
+        const stagedWorkItemIds = this.getStagedWorkItemIds(existingProposal);
         const requestedWorkItemId = params.work_item_id?.trim();
         const workItemId = deriveIssueWorkItemId(created.number);
         this.rememberIssueIdAlias(requestedWorkItemId, workItemId);
 
         const groupId = `issue-${created.number}`;
-        const parentId = this.resolveIssueIdAlias(params.parent_id);
+        const parentId = this.resolveIssueIdAlias(params.parent_id, stagedWorkItemIds);
         const dependsOnIds = params.depends_on_ids
-          ?.map((depId) => this.resolveIssueIdAlias(depId))
+          ?.map((depId) => this.resolveIssueIdAlias(depId, stagedWorkItemIds))
           .filter((depId): depId is string => Boolean(depId));
 
         const mutations: ProposeMutationsToolInput["mutations"] = [
@@ -692,7 +694,6 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
 
         // Accumulate into existing active proposal from the same turn,
         // so multi-issue creation produces one reviewable proposal.
-        const existingProposal = this.getActiveProposalForAccumulation();
         let proposal: PlanningMutationProposal;
 
         if (existingProposal) {
@@ -1130,13 +1131,16 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     if (!placeholderId || placeholderId === finalId) {
       return;
     }
-    this.issueIdAliases.set(placeholderId, this.resolveIssueIdAlias(finalId));
+    this.issueIdAliases.set(placeholderId, finalId);
   }
 
-  private resolveIssueIdAlias(id: string | null | undefined): string {
+  private resolveIssueIdAlias(id: string | null | undefined, stopIds: ReadonlySet<string> = new Set()): string {
     const trimmed = id?.trim();
     if (!trimmed) {
       return "";
+    }
+    if (stopIds.has(trimmed)) {
+      return trimmed;
     }
 
     let resolved = trimmed;
@@ -1144,40 +1148,67 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
 
     while (this.issueIdAliases.has(resolved) && !seen.has(resolved)) {
       seen.add(resolved);
-      resolved = this.issueIdAliases.get(resolved) ?? resolved;
+      const next = this.issueIdAliases.get(resolved) ?? resolved;
+      resolved = next;
+      if (stopIds.has(resolved)) {
+        break;
+      }
     }
 
     return resolved;
   }
 
+  private getStagedWorkItemIds(proposal: PlanningMutationProposal | null | undefined): Set<string> {
+    const ids = new Set<string>();
+    if (!proposal) {
+      return ids;
+    }
+
+    for (const mutation of proposal.mutations) {
+      if (mutation.type !== "create_work_item") {
+        continue;
+      }
+      if (mutation.entity_id) {
+        ids.add(mutation.entity_id);
+      }
+      if (typeof mutation.payload?.id === "string") {
+        ids.add(mutation.payload.id);
+      }
+    }
+
+    return ids;
+  }
+
   private rewriteProposalIssueAliases(proposal: PlanningMutationProposal): PlanningMutationProposal {
+    const stagedWorkItemIds = this.getStagedWorkItemIds(proposal);
     return {
       ...proposal,
-      mutations: proposal.mutations.map((mutation) => this.rewriteProposalMutationIssueAliases(mutation)),
+      mutations: proposal.mutations.map((mutation) => this.rewriteProposalMutationIssueAliases(mutation, stagedWorkItemIds)),
     };
   }
 
   private rewriteProposalMutationIssueAliases(
     mutation: PlanningMutationProposalMutation,
+    stagedWorkItemIds: ReadonlySet<string>,
   ): PlanningMutationProposalMutation {
     const payload = mutation.payload && typeof mutation.payload === "object"
       ? { ...mutation.payload }
       : undefined;
 
-    const entityId = mutation.entity_id ? this.resolveIssueIdAlias(mutation.entity_id) : mutation.entity_id;
+    const entityId = mutation.entity_id ? this.resolveIssueIdAlias(mutation.entity_id, stagedWorkItemIds) : mutation.entity_id;
 
     if (mutation.type === "create_work_item" || mutation.type === "update_work_item") {
       if (typeof payload?.id === "string") {
-        payload.id = this.resolveIssueIdAlias(payload.id);
+        payload.id = this.resolveIssueIdAlias(payload.id, stagedWorkItemIds);
       }
     }
 
     if (mutation.type === "create_edge") {
       if (typeof payload?.from_id === "string") {
-        payload.from_id = this.resolveIssueIdAlias(payload.from_id);
+        payload.from_id = this.resolveIssueIdAlias(payload.from_id, stagedWorkItemIds);
       }
       if (typeof payload?.to_id === "string") {
-        payload.to_id = this.resolveIssueIdAlias(payload.to_id);
+        payload.to_id = this.resolveIssueIdAlias(payload.to_id, stagedWorkItemIds);
       }
     }
 
