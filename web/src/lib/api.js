@@ -220,3 +220,8 @@ export function updateSettings(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function discoverSettingsRepo(path) {
+  const query = new URLSearchParams({ path });
+  return request(`/api/settings/repos/discover?${query.toString()}`);
+}
