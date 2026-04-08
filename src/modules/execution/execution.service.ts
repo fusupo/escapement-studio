@@ -564,23 +564,27 @@ export class ExecutionService {
       // ============================================================
       if (disambiguate) {
         run = this.updateRun(runId, {
-          status: "disambiguating",
+          status: "running",
           progress_message: "Setup phase — agent is analyzing the issue and planning implementation.",
         })!;
-        this.pushActivity(runId, "status_change", "Setup phase started.");
+        this.pushActivity(runId, "status_change", "Setup phase started — agent analyzing issue and codebase.");
         this.appendEvent(run, { type: "setup_phase_started" });
         this.emitRun("execution_status", run);
 
         const setupPrompt = this.buildSetupPrompt(run, node, workItem, issueBody, projectContext);
         await session.prompt(setupPrompt);
 
+        // Setup prompt finished — now switch to disambiguating so the UI shows the approval gate
         this.emitChecklistIfChanged(run);
-        this.pushActivity(runId, "info", "Setup complete — implementation plan written. Waiting for user approval.");
+        run = this.updateRun(runId, {
+          status: "disambiguating",
+          progress_message: "Setup complete. Review the implementation plan and approve to start coding.",
+        })!;
+        this.pushActivity(runId, "info", "Setup complete — implementation plan ready for review.");
         this.appendEvent(run, { type: "setup_phase_complete" });
-        this.updateRun(runId, { progress_message: "Setup complete. Review the plan and approve or provide feedback." });
-        this.emitRun("execution_status", this.getRun(runId)!);
+        this.emitRun("execution_status", run);
 
-        // Block until the user approves
+        // Block until the user approves — gate is now ready
         const additionalContext = await new Promise<string | undefined>((resolve) => {
           this.disambiguationGates.set(runId, { resolve });
         });
@@ -1055,7 +1059,7 @@ export class ExecutionService {
       "Files shared:",
       shared,
       "",
-      "Files forbidden (do NOT modify these):",
+      "Files forbidden (you may READ these for context, but do NOT modify them):",
       forbidden,
     );
 
