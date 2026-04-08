@@ -547,6 +547,9 @@ export class ExecutionService {
     this.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.emitChecklistIfChanged(run);
 
+    // Ensure SCRATCHPAD.md is gitignored so the agent can't accidentally commit it
+    this.ensureScratchpadIgnored(run.worktree_path);
+
     // --- Create agent session ---
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: run.worktree_path,
@@ -1221,6 +1224,25 @@ export class ExecutionService {
       "## Blockers",
       "",
     ].join("\n");
+  }
+
+  /** Ensure SCRATCHPAD.md is in the worktree's .gitignore so it can't be committed. */
+  private ensureScratchpadIgnored(worktreePath: string): void {
+    const gitignorePath = join(worktreePath, ".gitignore");
+    const entry = "SCRATCHPAD.md";
+    try {
+      if (existsSync(gitignorePath)) {
+        const content = readFileSync(gitignorePath, "utf8");
+        if (content.includes(entry)) return;
+        writeFileSync(gitignorePath, content.trimEnd() + "\n" + entry + "\n", "utf8");
+      } else {
+        writeFileSync(gitignorePath, entry + "\n", "utf8");
+      }
+      // Stage the .gitignore change immediately so it's not left untracked
+      this.runGitIn(worktreePath, ["add", ".gitignore"]);
+    } catch {
+      // Non-fatal — the prompt still tells the agent not to commit it
+    }
   }
 
   /** Write the scratchpad to the execution worktree; returns the file path. */
