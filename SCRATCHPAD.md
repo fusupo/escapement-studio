@@ -16,7 +16,9 @@
 ## File Ownership
 
 ### Owned
-- (none predicted)
+- web/src/lib/api.js
+- src/modules/git
+- README.md
 
 ### Shared
 - (none)
@@ -27,7 +29,6 @@
 - src/modules/execution
 - src/modules/settings
 - web/src/App.svelte
-- web/src/components
 - web/src/components/ExecutionDispatchPanel.svelte
 - web/src/components/GraphView.svelte
 - web/src/components/SettingsPanel.svelte
