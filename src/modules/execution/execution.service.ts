@@ -517,6 +517,24 @@ export class ExecutionService {
     this.pushActivity(run.run_id, "status_change", `Worktree created at ${run.worktree_path}`, `Branch: ${run.branch}, Base: ${run.base_ref}`);
     this.appendEvent(run, { type: "worktree_created", worktree_path: run.worktree_path, branch: run.branch, base_ref: run.base_ref });
 
+    // --- Install dependencies in worktree ---
+    if (existsSync(join(run.worktree_path, "package.json"))) {
+      this.pushActivity(run.run_id, "status_change", "Installing dependencies in worktree...");
+      this.emitRun("execution_status", run);
+      try {
+        execFileSync("npm", ["ci", "--ignore-scripts"], { cwd: run.worktree_path, encoding: "utf8", timeout: 120000, stdio: "pipe" });
+        this.pushActivity(run.run_id, "status_change", "Dependencies installed.");
+      } catch (npmErr) {
+        this.pushActivity(run.run_id, "info", `npm ci failed, trying npm install: ${this.getErrorMessage(npmErr).slice(0, 200)}`);
+        try {
+          execFileSync("npm", ["install", "--ignore-scripts"], { cwd: run.worktree_path, encoding: "utf8", timeout: 120000, stdio: "pipe" });
+          this.pushActivity(run.run_id, "status_change", "Dependencies installed (via npm install).");
+        } catch {
+          this.pushActivity(run.run_id, "info", "Dependency installation failed — agent may not be able to run quality checks.");
+        }
+      }
+    }
+
     // --- Gather context ---
     const workItem = this.workItemsService.get(run.work_item_id);
     const issueBody = this.fetchIssueBody(workItem.repo, workItem.issue_number);
