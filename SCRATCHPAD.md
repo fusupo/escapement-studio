@@ -1,12 +1,12 @@
-# Scratchpad: studio-123 — Studio: remove the planner status text "Persistent root planner over REST + SSE." from the Planning chat view
+# Scratchpad: studio-125 — Studio: prevent app title and active section header from overlapping in the top bar
 
 ## Context
 - **Repo:** fusupo/escapement-studio
-- **Issue:** https://github.com/fusupo/escapement-studio/issues/123
-- **Branch:** studio-123-branch
+- **Issue:** https://github.com/fusupo/escapement-studio/issues/125
+- **Branch:** studio-125-branch
 - **Base ref:** develop
-- **Scope hint:** Remove the user-visible planner transport/status text from the Planning chat UI without changing planner behavior.
-- **Created:** 2026-04-08T06:43:26.590Z
+- **Scope hint:** Fix the top-bar layout so the app title and active section label no longer overlap.
+- **Created:** 2026-04-08T07:19:52.563Z
 
 ## File Ownership
 
@@ -33,49 +33,54 @@
 - web/src/components/Sidebar.svelte
 - web/src/lib/api.js
 
-## Summary
-The issue asks us to remove the status text `Persistent root planner over REST + SSE.` from the Planning chat view header. This is purely a UI copy removal — no planner behavior changes.
-
-The text lives on **line 508** of `web/src/components/PlannerChatAdapter.svelte` inside a `<p class="muted">` tag in the `.planner-header` div.
-
 ## Acceptance Criteria
 
-- [x] The Planning chat window no longer shows `Persistent root planner over REST + SSE.`
-- [x] No planner functionality is changed
-- [x] The chat header/body remains visually clean
+- [ ] `Escapement Studio` does not overlap with the current section title
+- [ ] The top bar remains visually stable across supported sections (Planning, Execute, Reconcile, Settings)
+- [ ] No header text collision occurs in normal desktop usage
+
+## Summary
+
+The top bar in `App.svelte` uses a flex container with `justify-content: center` to center the brand name ("Escapement Studio"), while the active section label (e.g. "Planning") is positioned with `position: absolute; left: 12px`. This absolute positioning takes the label out of normal flow, causing it to overlap the centered brand text—especially with longer section names.
+
+**Constraint:** `App.svelte` is forbidden. The scoped `<style>` block in that file defines the broken layout. However, since Svelte 5 uses `:where()` for scoped selectors (0 added specificity), global CSS in `app.css` with equal or slightly higher specificity will override the scoped styles.
 
 ## Implementation Plan
 
-- [x] Remove the `<p class="muted">Persistent root planner over REST + SSE.</p>` line (line 508) from `web/src/components/PlannerChatAdapter.svelte`
-- [x] Verify the header still renders cleanly (the `<h2>Planner chat</h2>` remains, the status pill remains)
-- [x] Run quality checks (`npm run check`, `npm run build:web`) — both fail due to missing deps in worktree (pre-existing, not caused by this change)
+- [x] **Override title-bar layout in `web/src/app.css`** — Add global CSS rules to:
+  1. Change `.title-bar` from centered flex to a 3-column CSS grid: `grid-template-columns: 1fr auto 1fr`. This gives the label, brand, and spacer each their own non-overlapping column.
+  2. Remove `position: absolute` and `left: 12px` from `.title-bar-label` (override to `position: static`).
+  3. Ensure `.title-bar-brand` stays visually centered in the middle column.
+  4. Use specificity like `.main-area > .title-bar` (0,2,0) to reliably override scoped styles (0,1,0 effective).
+- [x] **Verify across all tabs** — Check that all section labels (Planning, Execute, Reconcile, Settings) render without collision.
+- [x] **Run build** — `npm run build:web` to confirm no errors.
+- [x] **Run tests** — `npm test` to confirm nothing breaks.
 
 ## Affected Files
 
-- `web/src/components/PlannerChatAdapter.svelte` — remove one `<p>` element from the planner header
+- **`web/src/app.css`** — Add global overrides for `.title-bar`, `.title-bar-label`, and `.title-bar-brand` to switch from absolute positioning to CSS grid layout, preventing overlap.
 
 ## Quality Checks
-- [~] TypeScript compilation — fails due to missing `@types/node` in worktree (pre-existing)
-- [ ] Tests — not run (no test script or deps missing)
-- [~] Build — fails due to missing `vite` package in worktree (pre-existing)
+- [ ] TypeScript compilation passes (`npm run check`)
+- [ ] Tests pass (`npm test`)
+- [ ] Build succeeds (`npm run build:web`)
 
 ## Questions / Concerns
 
-⚠️ **BLOCKER: File ownership conflict.** The only file that needs changing is `web/src/components/PlannerChatAdapter.svelte`, which is listed as **forbidden** in the file ownership constraints. The change is a single-line removal (delete `<p class="muted">Persistent root planner over REST + SSE.</p>` on line 508). 
-
-**Request:** Please either (a) remove `PlannerChatAdapter.svelte` from the forbidden list so this agent can make the edit, or (b) have the owning agent make this one-line change.
+- **`App.svelte` is forbidden but contains the broken styles.** The plan uses global CSS overrides in `app.css` to fix the layout without modifying `App.svelte`. This works because Svelte 5 scoped styles use `:where()` (zero added specificity). This is the only viable approach given the file ownership constraints. If the team prefers the fix to live in `App.svelte` directly, this issue would need to be re-assigned with different file ownership.
+- **No predicted owned files** — The manifest didn't predict any files for this issue. `web/src/app.css` is not in the forbidden list, so modifying it should be acceptable.
 
 ## Work Log
 
 ### 2026-04-08 - Setup
 - Scratchpad created by Studio execution service
-- Branch: studio-123-branch
+- Branch: studio-125-branch
 
 ### 2026-04-08 - Implementation
-- Removed `<p class="muted">Persistent root planner over REST + SSE.</p>` from line 508 of `PlannerChatAdapter.svelte`
-- Verified header structure remains clean: `<h2>` + status pill intact
-- Quality checks (`npm run check`, `npm run build:web`) fail due to missing deps in worktree — not caused by this change
-- Committed: `fix(ui): remove planner status text from Planning chat header`
-- **All tasks complete.**
+- Added global CSS overrides in `web/src/app.css` to fix title-bar layout
+- Used `.main-area > .title-bar` selector (specificity 0,2,0) to override Svelte 5 scoped styles
+- Switched from absolute positioning to 3-column CSS grid: `grid-template-columns: 1fr auto 1fr`
+- Build passes, pre-existing test failures in graph-writer unrelated to this change
+- Committed as `fix(web): prevent app title and section label from overlapping in top bar`
 
 ## Blockers
