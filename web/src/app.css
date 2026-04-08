@@ -1207,6 +1207,26 @@ a:hover {
   background: transparent;
 }
 
+/* ── Title-bar overlap fix (overrides scoped styles in App.svelte) ── */
+.main-area > .title-bar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+}
+
+.main-area > .title-bar .title-bar-label {
+  position: static;
+  text-align: left;
+}
+
+.main-area > .title-bar .title-bar-brand {
+  text-align: center;
+}
+
+.main-area > .title-bar .title-bar-spacer {
+  /* occupies right column to keep brand centered */
+}
+
 /* ── Responsive ── */
 @media (max-width: 1100px) {
   .toolbar {
