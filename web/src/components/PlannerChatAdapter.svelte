@@ -505,7 +505,6 @@
   <div class="planner-header">
     <div>
       <h2>Planner chat</h2>
-      <p class="muted">Persistent root planner over REST + SSE.</p>
     </div>
     <div class="planner-status">
       <span class:healthy={connected} class="status-pill">{connected ? "stream connected" : "stream reconnecting"}</span>
