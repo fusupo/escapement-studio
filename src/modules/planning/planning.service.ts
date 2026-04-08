@@ -8,14 +8,15 @@ import { getConfig } from "../../config.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { GraphWriterService } from "../graph/graph-writer.service.js";
-import type {
-  CreateEdgeDto,
-  CreateWorkItemDto,
-  DeleteEdgeMutation,
-  DeleteWorkItemMutation,
-  EdgeRel,
-  GraphMutation,
-  UpdateWorkItemDto,
+import {
+  deriveIssueWorkItemId,
+  type CreateEdgeDto,
+  type CreateWorkItemDto,
+  type DeleteEdgeMutation,
+  type DeleteWorkItemMutation,
+  type EdgeRel,
+  type GraphMutation,
+  type UpdateWorkItemDto,
 } from "../graph/types.js";
 import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
@@ -628,7 +629,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
           labels: params.labels,
         });
 
-        const workItemId = params.work_item_id?.trim() || `studio-${created.number}`;
+        const workItemId = deriveIssueWorkItemId(created.number);
         const groupId = `issue-${created.number}`;
 
         const mutations: ProposeMutationsToolInput["mutations"] = [
