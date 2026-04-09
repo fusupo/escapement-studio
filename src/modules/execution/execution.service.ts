@@ -1,13 +1,16 @@
 import { BadRequestException, Inject, Injectable, Logger, MessageEvent } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import {
+  archiveDir,
+  archivesRoot,
   canonicalScratchpadPath,
   ensurePlanDir,
+  planDir,
   readPlanMetadata,
   runDir,
   workItemSlug,
@@ -2060,6 +2063,168 @@ export class ExecutionService {
       );
     }
     return this.workItemsService.update(workItemId, { state: "drafting" });
+  }
+
+  /**
+   * ADR 014 step 7: disposition flow for `merged_pr → done`.
+   *
+   * Close variant — transitions the work item to `done` without creating an
+   * archive. Plan dir is left in place at `plans/<slug>/`. Used when the user
+   * decides the plan and scratchpad are still useful for reference and doesn't
+   * want them swept into `archives/`.
+   *
+   * Guards (checked in order):
+   *   1. Work item must exist and be in `merged_pr` state
+   *   2. No run for this work item may be active (`queued | preparing |
+   *      disambiguating | running`)
+   *
+   * Both guards throw `BadRequestException` on failure. The state guard
+   * prevents bypassing the state machine (the prior raw-PUT path from the
+   * frontend "Close issue" button is the side channel this endpoint replaces).
+   * The active-run guard prevents disposing work items that still have live
+   * runs — see `assertNoActiveRunForWorkItem` for the session-scope caveat.
+   */
+  closeMergedPullRequest(workItemId: string): WorkItemRecord {
+    this.assertWorkItemInMergedPr(workItemId);
+    this.assertNoActiveRunForWorkItem(workItemId);
+    return this.workItemsService.update(workItemId, { state: "done" });
+  }
+
+  /**
+   * ADR 014 step 7: disposition flow for `merged_pr → done` with archival.
+   *
+   * Archive-and-close variant — moves `plans/<slug>/` to `archives/<slug>/`
+   * via `fs.renameSync`, writes the canonical archive path onto the work item,
+   * and transitions to `done`. If the plan dir is already gone (e.g. a prior
+   * partial archive attempt), the filesystem step is a no-op and the state
+   * transition still happens.
+   *
+   * Guard order matters: state + active-run checks BEFORE touching the
+   * filesystem. The filesystem move happens BEFORE the state update so a
+   * failed `renameSync` leaves the work item in `merged_pr` (retryable). If
+   * the state update fails after a successful move, a retry will find the
+   * plan dir already gone, observe the move as a no-op, and complete the
+   * state transition cleanly.
+   *
+   * If `archives/<slug>/` already exists, the move refuses rather than
+   * clobbering — operators must manually resolve the collision.
+   */
+  archiveAndCloseMergedPullRequest(workItemId: string): WorkItemRecord {
+    this.assertWorkItemInMergedPr(workItemId);
+    this.assertNoActiveRunForWorkItem(workItemId);
+    const moveResult = this.movePlanDirToArchives(workItemId);
+    return this.workItemsService.update(workItemId, {
+      state: "done",
+      archive_path: moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path,
+    });
+  }
+
+  /**
+   * ADR 014 step 7: cancellation path with plan dir archival.
+   *
+   * Handles the `* → cancelled` human transition. Moves the plan dir into
+   * `archives/<slug>/` before updating state (same order-of-operations as
+   * archive-and-close). Called by `WorkItemsController.transition` when the
+   * target is `cancelled`, analogous to how `in_progress → ready` delegates
+   * to `transitionInProgressToReady`.
+   *
+   * The source-state validity check is already enforced by
+   * `isValidHumanTransition` upstream in the controller — this method only
+   * guards active runs and performs the move. Source states that reach here:
+   * `planned`, `drafting`, `ready`, `in_progress`, `open_pr` (the `cancelled`
+   * row in `VALID_HUMAN_TRANSITIONS`).
+   */
+  cancelWorkItem(workItemId: string): WorkItemRecord {
+    this.assertNoActiveRunForWorkItem(workItemId);
+    const moveResult = this.movePlanDirToArchives(workItemId);
+    return this.workItemsService.update(workItemId, {
+      state: "cancelled",
+      archive_path: moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path,
+    });
+  }
+
+  /**
+   * Guard: refuse disposition unless the work item is in `merged_pr`.
+   *
+   * `workItemsService.get` throws `NotFoundException` if the work item doesn't
+   * exist — we let that propagate.
+   */
+  private assertWorkItemInMergedPr(workItemId: string): WorkItemRecord {
+    const workItem = this.workItemsService.get(workItemId);
+    if (workItem.state !== "merged_pr") {
+      throw new BadRequestException(
+        `work_item_not_in_merged_pr: cannot dispose ${workItemId} (state is ${workItem.state}, requires merged_pr)`,
+      );
+    }
+    return workItem;
+  }
+
+  /**
+   * Guard: refuse plan dir moves and disposition transitions if any run for
+   * this work item is currently active.
+   *
+   * Active set: `queued | preparing | disambiguating | running`. These are
+   * the statuses in `ExecutionRunStatus` that indicate the run has not yet
+   * finished (successfully or otherwise).
+   *
+   * Limitation: `listRecentRuns` reads from the in-memory `recentRuns` array
+   * capped at 16 entries. On server restart this array is empty, so a
+   * previously-active run is undetectable by this guard. This is acceptable
+   * for ADR 014 V1 because disposition requires `merged_pr`, which requires
+   * the run to have reached `open_pr` successfully — meaning any run this
+   * guard would flag is effectively "stuck but shouldn't be blocking
+   * disposition anyway". If a run is genuinely in progress when the server
+   * restarts and the operator immediately calls disposition, they'll get
+   * a silent pass. Document the restart gap and move on.
+   */
+  private assertNoActiveRunForWorkItem(workItemId: string): void {
+    const activeStatuses = ["queued", "preparing", "disambiguating", "running"] as const;
+    const activeRun = this.listRecentRuns().find(
+      (run) =>
+        run.work_item_id === workItemId &&
+        (activeStatuses as readonly string[]).includes(run.status),
+    );
+    if (activeRun) {
+      throw new BadRequestException(
+        `cannot_dispose_work_item_active_run: run ${activeRun.run_id} is ${activeRun.status} for work item ${workItemId}. ` +
+          `Wait for the run to finish or clean it up first.`,
+      );
+    }
+  }
+
+  /**
+   * Move the plan dir for a work item into `archives/<slug>/`.
+   *
+   * Returns `{ moved: true, archive_path }` on a successful move,
+   * `{ moved: false, archive_path: null }` if the plan dir didn't exist
+   * (warning logged).
+   *
+   * Throws `BadRequestException("archive_already_exists")` if the
+   * destination already exists — we refuse to clobber an existing archive.
+   *
+   * Called by `archiveAndCloseMergedPullRequest` and (eventually) the
+   * `cancelled` disposition path.
+   */
+  private movePlanDirToArchives(workItemId: string): { moved: boolean; archive_path: string | null } {
+    const src = planDir(this.artifactRoot, workItemId);
+    const dest = archiveDir(this.artifactRoot, workItemId);
+
+    if (!existsSync(src)) {
+      this.logger.warn(
+        `movePlanDirToArchives: plan dir ${src} does not exist for work item ${workItemId}; archive step is a no-op`,
+      );
+      return { moved: false, archive_path: null };
+    }
+
+    if (existsSync(dest)) {
+      throw new BadRequestException(
+        `archive_already_exists: refusing to move plan dir for ${workItemId} — destination ${dest} already exists. Resolve the collision manually before retrying.`,
+      );
+    }
+
+    mkdirSync(archivesRoot(this.artifactRoot), { recursive: true });
+    renameSync(src, dest);
+    return { moved: true, archive_path: dest };
   }
 
   private async resolvePullRequestFromWorkItem(workItem: WorkItemRecord) {
