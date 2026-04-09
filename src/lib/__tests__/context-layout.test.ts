@@ -10,6 +10,7 @@ import {
   WORKTREES_DIR,
   archiveDir,
   archivesRoot,
+  canonicalScratchpadPath,
   ensurePlanDir,
   planDir,
   plansRoot,
@@ -85,6 +86,27 @@ describe("path builders", () => {
 
   it("builds an archive dir path from a work item id", () => {
     expect(archiveDir(root, "studio-1234")).toBe(join(root, ARCHIVES_DIR, "studio_1234"));
+  });
+
+  it("builds a canonical scratchpad path from a work item id", () => {
+    expect(canonicalScratchpadPath(root, "studio-1234")).toBe(
+      join(root, PLANS_DIR, "studio_1234", "SCRATCHPAD_studio_1234.md"),
+    );
+  });
+
+  it("places the canonical scratchpad inside the plan dir", () => {
+    const workItemId = "studio-42";
+    const scratchpad = canonicalScratchpadPath(root, workItemId);
+    expect(scratchpad.startsWith(planDir(root, workItemId) + "/")).toBe(true);
+  });
+
+  it("normalizes the slug inside canonical scratchpad filename", () => {
+    expect(canonicalScratchpadPath(root, "Studio Foo")).toBe(
+      join(root, PLANS_DIR, "Studio_Foo", "SCRATCHPAD_Studio_Foo.md"),
+    );
+    expect(canonicalScratchpadPath(root, "123-abc")).toBe(
+      join(root, PLANS_DIR, "123_abc", "SCRATCHPAD_123_abc.md"),
+    );
   });
 });
 
