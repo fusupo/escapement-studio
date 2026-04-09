@@ -5,7 +5,13 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
-import { runDir, worktreesRoot } from "../../lib/context-layout.js";
+import {
+  canonicalScratchpadPath,
+  ensurePlanDir,
+  runDir,
+  workItemSlug,
+  worktreesRoot,
+} from "../../lib/context-layout.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
@@ -662,7 +668,7 @@ export class ExecutionService {
     this.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.emitChecklistIfChanged(run);
 
-    // Ensure SCRATCHPAD.md is gitignored so the agent can't accidentally commit it
+    // Ensure SCRATCHPAD_*.md is gitignored so the agent can't accidentally commit it
     this.ensureScratchpadIgnored(run.worktree_path);
 
     // --- Create agent session ---
@@ -696,8 +702,9 @@ export class ExecutionService {
       // ============================================================
       // PHASE 1: SETUP (like setup-work skill)
       // Agent reads issue, analyzes codebase, writes implementation
-      // plan into SCRATCHPAD.md, surfaces questions
+      // plan into the canonical scratchpad, surfaces questions
       // ============================================================
+      const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
       if (disambiguate) {
         run = this.updateRun(runId, {
           status: "running",
@@ -709,6 +716,10 @@ export class ExecutionService {
 
         const setupPrompt = this.buildSetupPrompt(run, node, workItem, issueBody, projectContext);
         await session.prompt(setupPrompt);
+
+        // Sync the agent's scratchpad edits back to the canonical plan file
+        // (end of setup phase, before the approval gate).
+        this.syncScratchpadToCanonical(run);
 
         // Setup prompt finished — now switch to disambiguating so the UI shows the approval gate
         this.emitChecklistIfChanged(run);
@@ -728,8 +739,9 @@ export class ExecutionService {
 
         if (additionalContext) {
           await session.prompt(
-            `The user provided feedback on your plan:\n\n${additionalContext}\n\nUpdate the SCRATCHPAD.md implementation plan accordingly, then confirm you're ready to start coding.`
+            `The user provided feedback on your plan:\n\n${additionalContext}\n\nUpdate the ${scratchpadName} implementation plan accordingly, then confirm you're ready to start coding.`
           );
+          this.syncScratchpadToCanonical(run);
           this.emitChecklistIfChanged(run);
         }
 
@@ -748,6 +760,10 @@ export class ExecutionService {
       // ============================================================
       const doWorkPrompt = this.buildDoWorkPrompt(run, node, workItem, projectContext);
       await session.prompt(doWorkPrompt);
+
+      // Sync the agent's final scratchpad state back to canonical
+      // (end of do-work phase).
+      this.syncScratchpadToCanonical(run);
 
       this.emitChecklistIfChanged(run);
     } finally {
@@ -768,11 +784,9 @@ export class ExecutionService {
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
     writeFileSync(join(run.artifact_dir, "outputs", "response.json"), JSON.stringify({ assistant_text: assistantText, changed_files: changedFiles, actual_files_sync: actualFilesSync }, null, 2), "utf8");
 
-    // Copy final scratchpad to artifacts
-    const finalScratchpad = join(run.worktree_path, "SCRATCHPAD.md");
-    if (existsSync(finalScratchpad)) {
-      writeFileSync(join(run.artifact_dir, "scratchpad-final.md"), readFileSync(finalScratchpad, "utf8"), "utf8");
-    }
+    // The canonical scratchpad at plans/<slug>/SCRATCHPAD_<slug>.md is the
+    // post-run snapshot — synced above at each phase boundary. No separate
+    // scratchpad-final.md is written under the run artifact dir anymore.
 
     this.pushActivity(run.run_id, "status_change", `Execution completed. ${changedFiles.length} file(s) changed.`);
     run = this.updateRun(initialRun.run_id, {
@@ -818,25 +832,26 @@ export class ExecutionService {
     };
   }
 
-  getRunScratchpad(runId: string): { run_id: string; content: string | null; source: "worktree" | "artifact" | null } {
+  getRunScratchpad(runId: string): { run_id: string; content: string | null } {
     const run = this.getRun(runId);
     if (!run) {
-      return { run_id: runId, content: null, source: null };
+      return { run_id: runId, content: null };
     }
 
-    // Prefer the live scratchpad in the worktree
-    const worktreePath = join(run.worktree_path, "SCRATCHPAD.md");
+    // Prefer the canonical plan file (source of truth, synced at each phase boundary)
+    const canonicalPath = canonicalScratchpadPath(this.artifactRoot, run.work_item_id);
+    if (existsSync(canonicalPath)) {
+      return { run_id: runId, content: readFileSync(canonicalPath, "utf8") };
+    }
+
+    // Fall back to the live worktree copy (active run before first sync-back)
+    const slug = workItemSlug(run.work_item_id);
+    const worktreePath = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
     if (existsSync(worktreePath)) {
-      return { run_id: runId, content: readFileSync(worktreePath, "utf8"), source: "worktree" };
+      return { run_id: runId, content: readFileSync(worktreePath, "utf8") };
     }
 
-    // Fall back to the initial snapshot in the artifact directory
-    const artifactPath = join(run.artifact_dir, "scratchpad-initial.md");
-    if (existsSync(artifactPath)) {
-      return { run_id: runId, content: readFileSync(artifactPath, "utf8"), source: "artifact" };
-    }
-
-    return { run_id: runId, content: null, source: null };
+    return { run_id: runId, content: null };
   }
 
   async sendFollowUp(input: FollowUpMessageDto): Promise<FollowUpMessageResult> {
@@ -1036,7 +1051,8 @@ export class ExecutionService {
   }
 
   private readChecklistFromWorktree(run: ExecutionRunRecord): ChecklistItem[] {
-    const scratchpadPath = join(run.worktree_path, "SCRATCHPAD.md");
+    const slug = workItemSlug(run.work_item_id);
+    const scratchpadPath = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
     if (!existsSync(scratchpadPath)) {
       return [];
     }
@@ -1223,6 +1239,7 @@ export class ExecutionService {
     issueBody: string | null,
     projectContext: string | null,
   ): string {
+    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
     const owned = node.files_owned.length ? node.files_owned.map((p) => `- ${p}`).join("\n") : "- (none predicted)";
     const shared = node.files_shared.length
       ? node.files_shared.map((f) => `- ${f.path} (${f.assessment}/${f.confidence})`).join("\n")
@@ -1239,7 +1256,7 @@ export class ExecutionService {
       "",
       "1. Read and understand the issue scope below",
       "2. Read relevant source files in the codebase to understand the implementation surface",
-      "3. Update SCRATCHPAD.md with a detailed implementation plan:",
+      `3. Update ${scratchpadName} with a detailed implementation plan:`,
       "   - Fill in the Summary section with your understanding",
       "   - Fill in Acceptance Criteria from the issue",
       "   - Replace the placeholder Implementation Plan checklist with specific, concrete tasks",
@@ -1286,7 +1303,7 @@ export class ExecutionService {
       "## Important",
       "",
       "- Do NOT start coding. This is setup only.",
-      "- Update SCRATCHPAD.md with your detailed plan.",
+      `- Update ${scratchpadName} with your detailed plan.`,
       "- The user will review your plan before coding begins.",
     );
 
@@ -1299,19 +1316,20 @@ export class ExecutionService {
     workItem: WorkItemRecord,
     projectContext: string | null,
   ): string {
+    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
     const lines = [
       `# Coding Phase for ${run.work_item_id}: ${run.work_item_name}`,
       "",
-      "Your implementation plan in SCRATCHPAD.md has been approved. Now execute it.",
+      `Your implementation plan in ${scratchpadName} has been approved. Now execute it.`,
       "",
       "## Workflow",
       "",
-      "For each unchecked task in the ## Implementation Plan section of SCRATCHPAD.md:",
+      `For each unchecked task in the ## Implementation Plan section of ${scratchpadName}:`,
       "",
       "1. **Implement** the change",
-      "2. **Update SCRATCHPAD.md**: check off the task (`- [x]`), add a note to ## Work Log",
+      `2. **Update ${scratchpadName}**: check off the task (\`- [x]\`), add a note to ## Work Log`,
       "3. **Commit** your changes:",
-      "   - Stage specific files (never `git add .`, never stage SCRATCHPAD.md)",
+      `   - Stage specific files (never \`git add .\`, never stage ${scratchpadName})`,
       "   - Write a descriptive commit message",
       "   - Use conventional format: `type(scope): description`",
       "4. **Run quality checks** after each significant change:",
@@ -1324,16 +1342,16 @@ export class ExecutionService {
       "",
       "- Work through tasks IN ORDER from the scratchpad",
       "- Commit after each logical task (not everything at the end)",
-      "- NEVER commit or stage SCRATCHPAD.md — it is a local working document",
+      `- NEVER commit or stage ${scratchpadName} — it is a local working document`,
       "- NEVER use `git add .` or `git add -A` — always stage specific files",
       "- Stay within your owned/shared files. Do NOT touch forbidden files.",
-      "- If blocked on a task, note it in SCRATCHPAD.md ## Blockers and move on",
+      `- If blocked on a task, note it in ${scratchpadName} ## Blockers and move on`,
       "",
       "## When finished",
       "",
       "After all tasks are complete:",
       "1. Run final quality checks (type check, tests, build)",
-      "2. Update SCRATCHPAD.md ## Work Log with a completion summary",
+      `2. Update ${scratchpadName} ## Work Log with a completion summary`,
       "3. Provide a structured final summary:",
       "   - What you changed (files and purpose)",
       "   - Tests/checks you ran and their results",
@@ -1419,10 +1437,10 @@ export class ExecutionService {
     ].join("\n");
   }
 
-  /** Ensure SCRATCHPAD.md is in the worktree's .gitignore so it can't be committed. */
+  /** Ensure `SCRATCHPAD_*.md` is in the worktree's .gitignore so canonical scratchpads can't be committed. */
   private ensureScratchpadIgnored(worktreePath: string): void {
     const gitignorePath = join(worktreePath, ".gitignore");
-    const entry = "SCRATCHPAD.md";
+    const entry = "SCRATCHPAD_*.md";
     try {
       if (existsSync(gitignorePath)) {
         const content = readFileSync(gitignorePath, "utf8");
@@ -1438,14 +1456,58 @@ export class ExecutionService {
     }
   }
 
-  /** Write the scratchpad to the execution worktree; returns the file path. */
+  /**
+   * Sync the agent's worktree scratchpad back to the canonical plan file.
+   *
+   * Called at each phase boundary in executeRun. If the worktree copy is
+   * missing (e.g. the agent deleted it), logs a warning and leaves the
+   * canonical file unchanged — the canonical retains its last-known-good
+   * state.
+   */
+  private syncScratchpadToCanonical(run: ExecutionRunRecord): void {
+    const slug = workItemSlug(run.work_item_id);
+    const worktreeScratchpad = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
+    const canonical = canonicalScratchpadPath(this.artifactRoot, run.work_item_id);
+    if (!existsSync(worktreeScratchpad)) {
+      this.logger.warn(
+        `syncScratchpadToCanonical: worktree scratchpad missing for run ${run.run_id} ` +
+          `at ${worktreeScratchpad}; canonical left unchanged.`,
+      );
+      return;
+    }
+    writeFileSync(canonical, readFileSync(worktreeScratchpad, "utf8"), "utf8");
+  }
+
+  /**
+   * Seed the worktree scratchpad from the canonical plan file.
+   *
+   * ADR 014 step 2: the canonical scratchpad lives at
+   * `plans/<slug>/SCRATCHPAD_<slug>.md` and is the source of truth. On first
+   * run for a work item the skeleton is generated and written to canonical;
+   * on subsequent runs the existing canonical content is carried forward
+   * (so plan edits from prior runs survive). The worktree always receives a
+   * copy named `SCRATCHPAD_<slug>.md`.
+   *
+   * Returns the worktree scratchpad path.
+   */
   private writeScratchpad(run: ExecutionRunRecord, node: ExecutionDispatchNodePreview): string {
-    const content = this.buildScratchpad(run, node);
-    const scratchpadPath = join(run.worktree_path, "SCRATCHPAD.md");
-    writeFileSync(scratchpadPath, content, "utf8");
-    // Also persist a copy in the artifact directory for post-run review
-    writeFileSync(join(run.artifact_dir, "scratchpad-initial.md"), content, "utf8");
-    return scratchpadPath;
+    ensurePlanDir(this.artifactRoot, run.work_item_id);
+    const canonicalPath = canonicalScratchpadPath(this.artifactRoot, run.work_item_id);
+
+    let content: string;
+    if (existsSync(canonicalPath)) {
+      // Carry existing plan forward — edits from prior runs survive.
+      content = readFileSync(canonicalPath, "utf8");
+    } else {
+      // First run for this work item — generate skeleton and persist to canonical.
+      content = this.buildScratchpad(run, node);
+      writeFileSync(canonicalPath, content, "utf8");
+    }
+
+    const slug = workItemSlug(run.work_item_id);
+    const worktreeScratchpad = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
+    writeFileSync(worktreeScratchpad, content, "utf8");
+    return worktreeScratchpad;
   }
 
   private createRunRecord(input: {
