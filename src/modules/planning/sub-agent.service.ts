@@ -10,6 +10,7 @@ import {
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
+import { runDir } from "../../lib/context-layout.js";
 import type {
   DelegateSubAgentToolInput,
   SubAgentResultEnvelope,
@@ -37,7 +38,7 @@ export class SubAgentService {
   async runDelegation(input: DelegateSubAgentToolInput, hooks: RunHooks = {}): Promise<SubAgentRunRecord> {
     const runId = `sub_${Date.now()}`;
     const createdAt = this.now();
-    const artifactDir = join(this.artifactRoot, "runs", runId);
+    const artifactDir = runDir(this.artifactRoot, runId);
     mkdirSync(artifactDir, { recursive: true });
 
     let run: SubAgentRunRecord = {

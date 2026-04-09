@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
+import { runDir, worktreesRoot } from "../../lib/context-layout.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
@@ -45,7 +46,7 @@ export class ExecutionService {
   private readonly streamId = "execution-runs";
   private readonly eventSubject = new Subject<MessageEvent>();
   private readonly artifactRoot = resolve(getConfig().artifactRoot);
-  private readonly worktreeRoot = join(this.artifactRoot, "worktrees");
+  private readonly worktreeRoot = worktreesRoot(this.artifactRoot);
   private readonly recentRuns: ExecutionRunRecord[] = [];
   private readonly recentRunLimit = 16;
   // No cap on activity log — full history preserved in status.json
@@ -1473,7 +1474,7 @@ export class ExecutionService {
       branch: input.branch,
       base_ref: input.baseRef,
       worktree_path: input.worktreePath,
-      artifact_dir: join(this.artifactRoot, "runs", runId),
+      artifact_dir: runDir(this.artifactRoot, runId),
       prompt: input.prompt,
       progress_message: input.resultSummary ?? (input.status === "queued" ? "Execution run queued." : undefined),
       result_summary: input.resultSummary,
