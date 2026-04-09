@@ -212,7 +212,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     .attr("patternUnits", "userSpaceOnUse")
     .attr("width", 8)
     .attr("height", 8)
-    .attr("patternTransform", "rotate(135)");
+    .attr("patternTransform", "rotate(45)");
 
   frontierPattern.append("rect")
     .attr("width", 8)
@@ -225,7 +225,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     .attr("x2", 0)
     .attr("y2", 8)
     .attr("stroke", "rgba(240, 246, 252, 0.92)")
-    .attr("stroke-width", 2);
+    .attr("stroke-width", 8);
 
   // Swap marker-end to marker-start on all edge paths
   inner.selectAll("g.edgePath path.path").each(function () {
