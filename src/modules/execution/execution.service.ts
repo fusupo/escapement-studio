@@ -422,8 +422,11 @@ export class ExecutionService {
     const nextArchivePath = this.hasOwn(input, "archive_path") ? (input.archive_path ?? null) : workItem.archive_path;
     const nextMeta = this.buildMergedWorkItemMeta(workItem, pullRequest, matchedRun?.run_id ?? null, actualFilesSelection.source);
 
+    // ADR 014 step 3: post-merge sync lands on 'merged_pr', not 'done'.
+    // 'merged_pr' is a stable resting state that the disposition flow
+    // (ADR 014 step 7) will transition to 'done' after archival completes.
     this.workItemsService.update(workItem.id, {
-      state: "done",
+      state: "merged_pr",
       actual_files: actualFilesSelection.files,
       branch: nextBranch,
       archive_path: nextArchivePath,
@@ -1826,7 +1829,10 @@ export class ExecutionService {
   }
 
   private markWorkItemInProgressOnLaunch(workItem: WorkItemRecord): { workItem: WorkItemRecord; transitioned: boolean } {
-    if (workItem.state !== "planned") {
+    // Both 'planned' and 'ready' are launchable under ADR 014 step 3:
+    // 'planned' items launch directly (upstream behavior) and 'ready' items
+    // launch after a human reviewer has approved a plan.
+    if (workItem.state !== "planned" && workItem.state !== "ready") {
       return { workItem, transitioned: false };
     }
 
@@ -1834,6 +1840,29 @@ export class ExecutionService {
       workItem: this.workItemsService.update(workItem.id, { state: "in_progress" }),
       transitioned: true,
     };
+  }
+
+  /**
+   * Transition a work item from in_progress back to ready.
+   *
+   * ADR 014 assigns the `in_progress → ready` transition to the execution
+   * service (it's the service that owns launch and sees run results). For
+   * MVP we expose it as a callable helper instead of auto-invoking it from
+   * the run failure path — a human reviewer triggers it via the transition
+   * endpoint when they decide the plan is still valid after a failed run.
+   *
+   * Future work can add conditional auto-invocation once error classification
+   * is rich enough to distinguish "plan valid" from "plan needs rework"
+   * (the latter going to `drafting`).
+   */
+  transitionInProgressToReady(workItemId: string): WorkItemRecord {
+    const workItem = this.workItemsService.get(workItemId);
+    if (workItem.state !== "in_progress") {
+      throw new BadRequestException(
+        `Cannot transition ${workItemId} from ${workItem.state} to ready (requires in_progress)`,
+      );
+    }
+    return this.workItemsService.update(workItemId, { state: "ready" });
   }
 
   private async resolvePullRequestFromWorkItem(workItem: WorkItemRecord) {

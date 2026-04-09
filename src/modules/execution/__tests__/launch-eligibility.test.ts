@@ -274,6 +274,22 @@ describe("launch eligibility", () => {
     ]);
   });
 
+  it("marks ready work items in progress before launching execution (ADR 014 step 3)", async () => {
+    const workItem = makeWorkItem({ state: "ready" });
+    const harness = makeLaunchHarness(workItem);
+
+    const result = await harness.service.launch({ work_item_id: workItem.id, prompt: "Launch" });
+
+    expect(result.accepted).toBe(true);
+    expect(harness.updateCalls).toEqual([{ id: workItem.id, patch: { state: "in_progress" } }]);
+    expect(harness.getCurrentWorkItem().state).toBe("in_progress");
+    expect(harness.executionOrder).toEqual([
+      `update:${workItem.id}:in_progress`,
+      "activity:Execution run queued. Work item state updated to in_progress.",
+      "executeRun",
+    ]);
+  });
+
   it("does not re-mark work items already in progress when launching execution", async () => {
     const workItem = makeWorkItem({ state: "in_progress" });
     const harness = makeLaunchHarness(workItem);
@@ -300,5 +316,64 @@ describe("launch eligibility", () => {
     expect(harness.updateCalls).toEqual([]);
     expect(harness.getCurrentWorkItem().state).toBe("planned");
     expect(harness.executionOrder).toEqual([]);
+  });
+});
+
+describe("ExecutionService.transitionInProgressToReady", () => {
+  function makeTransitionHarness(workItem: WorkItemRecord) {
+    const service = Object.create(ExecutionService.prototype) as ExecutionService;
+    const updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }> = [];
+    let currentWorkItem = workItem;
+
+    (service as any).workItemsService = {
+      get: (id: string) => {
+        if (id !== currentWorkItem.id) {
+          throw new Error(`Unknown work item: ${id}`);
+        }
+        return currentWorkItem;
+      },
+      update: (id: string, patch: Partial<WorkItemRecord>) => {
+        updateCalls.push({ id, patch });
+        currentWorkItem = {
+          ...currentWorkItem,
+          ...patch,
+          updated_at: "2026-04-09T00:00:01.000Z",
+        };
+        return currentWorkItem;
+      },
+    };
+
+    return { service, updateCalls, getCurrentWorkItem: () => currentWorkItem };
+  }
+
+  it("transitions a work item from in_progress to ready", () => {
+    const workItem = makeWorkItem({ state: "in_progress" });
+    const harness = makeTransitionHarness(workItem);
+
+    const result = harness.service.transitionInProgressToReady(workItem.id);
+
+    expect(result.state).toBe("ready");
+    expect(harness.updateCalls).toEqual([{ id: workItem.id, patch: { state: "ready" } }]);
+    expect(harness.getCurrentWorkItem().state).toBe("ready");
+  });
+
+  it("throws when the current state is not in_progress", () => {
+    const workItem = makeWorkItem({ state: "planned" });
+    const harness = makeTransitionHarness(workItem);
+
+    expect(() => harness.service.transitionInProgressToReady(workItem.id)).toThrow(
+      /Cannot transition .* from planned to ready/,
+    );
+    expect(harness.updateCalls).toEqual([]);
+  });
+
+  it("throws when the current state is ready (no-op rejection)", () => {
+    const workItem = makeWorkItem({ state: "ready" });
+    const harness = makeTransitionHarness(workItem);
+
+    expect(() => harness.service.transitionInProgressToReady(workItem.id)).toThrow(
+      /Cannot transition .* from ready to ready/,
+    );
+    expect(harness.updateCalls).toEqual([]);
   });
 });
