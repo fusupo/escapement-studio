@@ -202,20 +202,27 @@ export class ExecutionService {
       return { accepted: false, run };
     }
 
+    const launchState = this.markWorkItemInProgressOnLaunch(workItem);
     const run = this.createRunRecord({
-      workItem,
+      workItem: launchState.workItem,
       branch: node.branch,
       baseRef,
       worktreePath: node.worktree_path,
       safetyChecks: eligibility.safety_checks,
-      prompt: input.prompt?.trim() || this.buildPrompt(workItem, node),
+      prompt: input.prompt?.trim() || this.buildPrompt(launchState.workItem, node),
       status: "queued",
       resultSummary: undefined,
       errors: [],
     });
 
     this.persistRun(run);
-    this.pushActivity(run.run_id, "status_change", "Execution run queued.");
+    this.pushActivity(
+      run.run_id,
+      "status_change",
+      launchState.transitioned
+        ? "Execution run queued. Work item state updated to in_progress."
+        : "Execution run queued.",
+    );
     void this.executeRun(run, node, input.disambiguate !== false).catch((error) => {
       this.pushActivity(run.run_id, "error", `Execution failed: ${this.getErrorMessage(error)}`);
       const failedRun = this.updateRun(run.run_id, {
@@ -1685,6 +1692,17 @@ export class ExecutionService {
       this.logger.warn(`Failed to sync actual_files for ${workItemId}: ${this.getErrorMessage(error)}`);
       return { ok: false, message: this.getErrorMessage(error) };
     }
+  }
+
+  private markWorkItemInProgressOnLaunch(workItem: WorkItemRecord): { workItem: WorkItemRecord; transitioned: boolean } {
+    if (workItem.state !== "planned") {
+      return { workItem, transitioned: false };
+    }
+
+    return {
+      workItem: this.workItemsService.update(workItem.id, { state: "in_progress" }),
+      transitioned: true,
+    };
   }
 
   private async resolvePullRequestFromWorkItem(workItem: WorkItemRecord) {

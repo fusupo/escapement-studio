@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ExecutionService } from "../execution.service.js";
 import type { ExecutionSafetyCheck } from "../types.js";
 import type { WorkItemRecord } from "../../graph/types.js";
@@ -80,6 +80,107 @@ function makeService(params: {
   return service;
 }
 
+function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: boolean } = {}) {
+  const service = Object.create(ExecutionService.prototype) as ExecutionService;
+  const updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }> = [];
+  const executionOrder: string[] = [];
+  let currentWorkItem = workItem;
+
+  (service as any).workItemsService = {
+    get: (id: string) => {
+      if (id !== currentWorkItem.id) {
+        throw new Error(`Unknown work item: ${id}`);
+      }
+      return currentWorkItem;
+    },
+    update: (id: string, patch: Partial<WorkItemRecord>) => {
+      updateCalls.push({ id, patch });
+      currentWorkItem = {
+        ...currentWorkItem,
+        ...patch,
+        updated_at: "2026-04-09T00:00:01.000Z",
+      };
+      executionOrder.push(`update:${id}:${patch.state ?? "unknown"}`);
+      return currentWorkItem;
+    },
+  };
+
+  (service as any).resolveLaunchEligibility = () => {
+    if (options.canLaunch === false) {
+      return {
+        can_launch: false,
+        safety_checks: [{ code: "not_dispatchable", status: "fail", message: "Blocked" }],
+        launch_unavailable_code: "not_dispatchable",
+        launch_unavailable_reason: "Blocked",
+        dispatch_node: null,
+      };
+    }
+
+    return {
+      can_launch: true,
+      safety_checks: [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }],
+      launch_unavailable_code: null,
+      launch_unavailable_reason: null,
+      dispatch_node: {
+        id: currentWorkItem.id,
+        name: currentWorkItem.name,
+        repo: currentWorkItem.repo,
+        branch: currentWorkItem.branch ?? `${currentWorkItem.id}-branch`,
+        issue_url: currentWorkItem.issue_url ?? undefined,
+        scope_hint: currentWorkItem.scope_hint,
+        default_base_ref: "develop",
+        files_owned: ["src/example.ts"],
+        files_shared: [],
+        files_forbidden: [],
+        worktree_path: `/tmp/studio-worktrees/${currentWorkItem.branch ?? `${currentWorkItem.id}-branch`}`,
+        safety_checks: [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }],
+        can_launch: true,
+        issue_backed: currentWorkItem.kind === "issue",
+        launch_unavailable_code: null,
+        launch_unavailable_reason: null,
+      },
+    };
+  };
+
+  (service as any).worktreeRoot = "/tmp/studio-worktrees";
+
+  (service as any).createRunRecord = vi.fn(({ workItem: nextWorkItem, branch, baseRef, worktreePath, prompt, status, safetyChecks, errors }) => ({
+    run_id: "exec_123",
+    run_type: "execution",
+    work_item_id: nextWorkItem.id,
+    work_item_name: nextWorkItem.name,
+    status,
+    created_at: "2026-04-09T00:00:00.000Z",
+    updated_at: "2026-04-09T00:00:00.000Z",
+    repo: nextWorkItem.repo,
+    issue_url: nextWorkItem.issue_url,
+    branch,
+    base_ref: baseRef,
+    worktree_path: worktreePath,
+    artifact_dir: "/tmp/runs/exec_123",
+    prompt,
+    activity_log: [],
+    safety_checks: safetyChecks,
+    errors,
+  }));
+  (service as any).persistRun = vi.fn();
+  (service as any).emitRun = vi.fn();
+  (service as any).pushActivity = vi.fn((_runId: string, _kind: string, message: string) => {
+    executionOrder.push(`activity:${message}`);
+  });
+  (service as any).executeRun = vi.fn(async () => {
+    executionOrder.push("executeRun");
+  });
+  (service as any).buildPrompt = vi.fn(() => "prompt");
+
+  return {
+    service,
+    updateCalls,
+    executionOrder,
+    getCurrentWorkItem: () => currentWorkItem,
+  };
+}
+
 describe("launch eligibility", () => {
   it("allows launch for issue-backed frontier work items", () => {
     const workItem = makeWorkItem();
@@ -155,5 +256,49 @@ describe("launch eligibility", () => {
     expect(node.issue_backed).toBe(false);
     expect(node.launch_unavailable_code).toBeNull();
     expect(node.launch_unavailable_reason).toBeNull();
+  });
+
+  it("marks planned work items in progress before launching execution", async () => {
+    const workItem = makeWorkItem();
+    const harness = makeLaunchHarness(workItem);
+
+    const result = await harness.service.launch({ work_item_id: workItem.id, prompt: "Launch" });
+
+    expect(result.accepted).toBe(true);
+    expect(harness.updateCalls).toEqual([{ id: workItem.id, patch: { state: "in_progress" } }]);
+    expect(harness.getCurrentWorkItem().state).toBe("in_progress");
+    expect(harness.executionOrder).toEqual([
+      `update:${workItem.id}:in_progress`,
+      "activity:Execution run queued. Work item state updated to in_progress.",
+      "executeRun",
+    ]);
+  });
+
+  it("does not re-mark work items already in progress when launching execution", async () => {
+    const workItem = makeWorkItem({ state: "in_progress" });
+    const harness = makeLaunchHarness(workItem);
+
+    const result = await harness.service.launch({ work_item_id: workItem.id, prompt: "Launch" });
+
+    expect(result.accepted).toBe(true);
+    expect(harness.updateCalls).toEqual([]);
+    expect(harness.getCurrentWorkItem().state).toBe("in_progress");
+    expect(harness.executionOrder).toEqual([
+      "activity:Execution run queued.",
+      "executeRun",
+    ]);
+  });
+
+  it("does not change graph state for blocked launches", async () => {
+    const workItem = makeWorkItem();
+    const harness = makeLaunchHarness(workItem, { canLaunch: false });
+
+    const result = await harness.service.launch({ work_item_id: workItem.id, prompt: "Launch" });
+
+    expect(result.accepted).toBe(false);
+    expect(result.run.status).toBe("blocked");
+    expect(harness.updateCalls).toEqual([]);
+    expect(harness.getCurrentWorkItem().state).toBe("planned");
+    expect(harness.executionOrder).toEqual([]);
   });
 });
