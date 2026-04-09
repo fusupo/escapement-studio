@@ -1023,14 +1023,6 @@ export class ExecutionService {
     const safetyChecks: ExecutionSafetyCheck[] = [];
     const issueBacked = this.isIssueBacked(workItem);
 
-    if (!issueBacked) {
-      safetyChecks.push({
-        code: "not_issue_backed",
-        status: "fail",
-        message: "Launch execution is only available for issue-backed work items.",
-      });
-    }
-
     if (!groupedNode) {
       safetyChecks.push({
         code: "not_dispatchable",

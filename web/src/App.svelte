@@ -11,9 +11,11 @@
     createEdge,
     createWorkItem,
     deleteEdge,
+    getExecutionEligibility,
     getGitHubIssueDetails,
     getGraph,
     getHealth,
+    launchExecutionRun,
     listWorkItems,
     updateWorkItem,
   } from "./lib/api.js";
@@ -31,6 +33,11 @@
   let selectedIssueDetails = null;
   let activeTab = "planning";
   let closingIssue = false;
+  let launchingExecution = false;
+  let launchEligibilityById = {};
+  let launchEligibilityLoadingIds = {};
+  let launchEligibilityRequestTokenById = {};
+  let graphContextMenu = { open: false, x: 0, y: 0, item: null };
 
   // Panel collapse state
   let chatCollapsed = false;
@@ -83,6 +90,10 @@
   ];
 
   $: selectedItem = graph.items.find((item) => item.id === selectedId) ?? null;
+  $: selectedLaunchEligibility = selectedItem ? launchEligibilityById[selectedItem.id] ?? null : null;
+  $: selectedLaunchEligibilityLoading = selectedItem ? !!launchEligibilityLoadingIds[selectedItem.id] : false;
+  $: contextMenuLaunchEligibility = graphContextMenu.item ? launchEligibilityById[graphContextMenu.item.id] ?? null : null;
+  $: contextMenuLaunchEligibilityLoading = graphContextMenu.item ? !!launchEligibilityLoadingIds[graphContextMenu.item.id] : false;
   $: filterOptions = {
     repos: [...new Set(catalog.map((item) => item.repo).filter(Boolean))].sort(),
     states: [...new Set(catalog.map((item) => item.state).filter(Boolean))].sort(),
@@ -91,6 +102,56 @@
   };
 
   $: activeFilterCount = Object.values(filters).filter(Boolean).length;
+  $: if (selectedItem?.id) {
+    void ensureLaunchEligibility(selectedItem.id);
+  }
+
+  function closeGraphContextMenu() {
+    graphContextMenu = { open: false, x: 0, y: 0, item: null };
+  }
+
+  function normalizeLaunchEligibilityError(workItemId, message) {
+    return {
+      work_item_id: workItemId,
+      repo: null,
+      issue_url: null,
+      issue_backed: false,
+      can_launch: false,
+      safety_checks: [],
+      launch_unavailable_code: "eligibility_lookup_failed",
+      launch_unavailable_reason: message,
+      dispatch_node: null,
+    };
+  }
+
+  async function ensureLaunchEligibility(workItemId, { force = false } = {}) {
+    if (!workItemId) return null;
+    if (!force && launchEligibilityById[workItemId]) {
+      return launchEligibilityById[workItemId];
+    }
+
+    const token = (launchEligibilityRequestTokenById[workItemId] || 0) + 1;
+    launchEligibilityRequestTokenById = { ...launchEligibilityRequestTokenById, [workItemId]: token };
+    launchEligibilityLoadingIds = { ...launchEligibilityLoadingIds, [workItemId]: true };
+
+    try {
+      const eligibility = await getExecutionEligibility({ work_item_id: workItemId });
+      if (launchEligibilityRequestTokenById[workItemId] === token) {
+        launchEligibilityById = { ...launchEligibilityById, [workItemId]: eligibility };
+      }
+      return eligibility;
+    } catch (lookupError) {
+      const fallback = normalizeLaunchEligibilityError(workItemId, lookupError.message);
+      if (launchEligibilityRequestTokenById[workItemId] === token) {
+        launchEligibilityById = { ...launchEligibilityById, [workItemId]: fallback };
+      }
+      return fallback;
+    } finally {
+      if (launchEligibilityRequestTokenById[workItemId] === token) {
+        launchEligibilityLoadingIds = { ...launchEligibilityLoadingIds, [workItemId]: false };
+      }
+    }
+  }
 
   async function loadGraph() {
     loading = true;
@@ -104,8 +165,12 @@
       graph = graphResponse;
       health = healthResponse;
       catalog = catalogResponse;
+      launchEligibilityById = {};
+      launchEligibilityLoadingIds = {};
+      launchEligibilityRequestTokenById = {};
       if (selectedId && !graph.items.some((item) => item.id === selectedId)) {
         selectedId = null;
+        closeGraphContextMenu();
       }
     } catch (loadError) {
       error = loadError.message;
@@ -206,6 +271,66 @@
     }
   }
 
+  function handleGraphSelect(item) {
+    selectedId = item?.id ?? null;
+    closeGraphContextMenu();
+  }
+
+  async function handleGraphContextMenu(detail) {
+    if (!detail?.item?.id) {
+      closeGraphContextMenu();
+      return;
+    }
+
+    selectedId = detail.item.id;
+    const x = Math.min(detail.x, Math.max(16, window.innerWidth - 280));
+    const y = Math.min(detail.y, Math.max(16, window.innerHeight - 180));
+    graphContextMenu = {
+      open: true,
+      x,
+      y,
+      item: detail.item,
+    };
+    await ensureLaunchEligibility(detail.item.id);
+  }
+
+  function handleGlobalKeydown(event) {
+    if (event.key === "Escape") {
+      closeGraphContextMenu();
+    }
+  }
+
+  function handleGraphContextMenuKeydown(event) {
+    if (event.key === "Escape") {
+      closeGraphContextMenu();
+    }
+  }
+
+  async function handleLaunchExecution(item = selectedItem) {
+    const workItemId = item?.id;
+    if (!workItemId) return;
+
+    launchingExecution = true;
+    error = "";
+    try {
+      const eligibility = await ensureLaunchEligibility(workItemId, { force: true });
+      if (!eligibility?.can_launch) {
+        error = eligibility?.launch_unavailable_reason || "Launch execution is not available for this node.";
+        return;
+      }
+
+      const result = await launchExecutionRun({ work_item_id: workItemId, disambiguate: true });
+      closeGraphContextMenu();
+      if (result?.run) {
+        activeTab = "execute";
+      }
+    } catch (launchError) {
+      error = launchError.message;
+    } finally {
+      launchingExecution = false;
+    }
+  }
+
   function handleFilterChange(nextFilters) {
     filters = nextFilters;
     loadGraph();
@@ -222,6 +347,8 @@
 <svelte:head>
   <title>Escapement Studio</title>
 </svelte:head>
+
+<svelte:window on:click={closeGraphContextMenu} on:keydown={handleGlobalKeydown} on:scroll={closeGraphContextMenu} />
 
 <div class="app-shell">
   <!-- Activity Bar (far left icon rail) -->
@@ -335,7 +462,12 @@
               {#if loading}
                 <div class="empty-state">Loading graph…</div>
               {:else}
-                <GraphView {graph} {selectedId} onSelect={(item) => (selectedId = item?.id ?? null)} />
+                <GraphView
+                  {graph}
+                  {selectedId}
+                  onSelect={handleGraphSelect}
+                  onContextMenu={handleGraphContextMenu}
+                />
               {/if}
             </div>
           </div>
@@ -360,6 +492,10 @@
                 <Sidebar
                   {selectedItem}
                   issueDetails={selectedIssueDetails}
+                  launchEligibility={selectedLaunchEligibility}
+                  launchEligibilityLoading={selectedLaunchEligibilityLoading}
+                  launchingExecution={launchingExecution}
+                  onLaunchExecution={handleLaunchExecution}
                   {graph}
                   {saving}
                   {edgeSaving}
@@ -405,6 +541,35 @@
         <div class="pane-body fullpane-body">
           <SettingsPanel {health} />
         </div>
+      </div>
+    {/if}
+
+    {#if activeTab === "planning" && graphContextMenu.open && graphContextMenu.item}
+      <div
+        class="graph-context-menu"
+        style={`left:${graphContextMenu.x}px; top:${graphContextMenu.y}px;`}
+        role="menu"
+        tabindex="-1"
+        aria-label={`Actions for ${graphContextMenu.item.id}`}
+        on:click|stopPropagation
+        on:keydown|stopPropagation={handleGraphContextMenuKeydown}
+      >
+        <div class="graph-context-menu-title">{graphContextMenu.item.id}</div>
+        <div class="graph-context-menu-name">{graphContextMenu.item.name}</div>
+        {#if contextMenuLaunchEligibilityLoading}
+          <div class="graph-context-menu-reason muted">Checking launch eligibility…</div>
+        {:else}
+          <button
+            class="graph-context-menu-action"
+            on:click={() => handleLaunchExecution(graphContextMenu.item)}
+            disabled={!contextMenuLaunchEligibility?.can_launch || launchingExecution}
+          >
+            {launchingExecution ? "Launching…" : "Launch execution"}
+          </button>
+          {#if contextMenuLaunchEligibility?.launch_unavailable_reason}
+            <div class="graph-context-menu-reason">{contextMenuLaunchEligibility.launch_unavailable_reason}</div>
+          {/if}
+        {/if}
       </div>
     {/if}
 
@@ -748,6 +913,43 @@
     flex: 1;
     color: #6b7a94;
     font-size: 12px;
+  }
+
+  .graph-context-menu {
+    position: fixed;
+    z-index: 40;
+    min-width: 220px;
+    max-width: 280px;
+    display: grid;
+    gap: 6px;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid #2b3245;
+    background: #13171f;
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  }
+
+  .graph-context-menu-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #e2e8f0;
+  }
+
+  .graph-context-menu-name {
+    font-size: 11px;
+    color: #8b95a5;
+    overflow-wrap: anywhere;
+  }
+
+  .graph-context-menu-action {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .graph-context-menu-reason {
+    font-size: 11px;
+    color: #8b95a5;
+    line-height: 1.4;
   }
 
   /* ── Responsive ── */

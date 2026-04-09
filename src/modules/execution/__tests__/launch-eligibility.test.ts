@@ -97,7 +97,7 @@ describe("launch eligibility", () => {
     expect(eligibility.dispatch_node?.issue_backed).toBe(true);
   });
 
-  it("blocks launch for frontier capability items even when dispatchable", () => {
+  it("allows launch for frontier capability items when they are dispatchable", () => {
     const workItem = makeWorkItem({
       id: "capability-1",
       kind: "capability",
@@ -112,12 +112,11 @@ describe("launch eligibility", () => {
 
     const eligibility = service.getLaunchEligibility(workItem.id);
 
-    expect(eligibility.can_launch).toBe(false);
+    expect(eligibility.can_launch).toBe(true);
     expect(eligibility.issue_backed).toBe(false);
-    expect(eligibility.launch_unavailable_code).toBe("not_issue_backed");
-    expect(eligibility.launch_unavailable_reason).toContain("issue-backed");
-    expect(eligibility.dispatch_node?.can_launch).toBe(false);
-    expect(eligibility.dispatch_node?.launch_unavailable_code).toBe("not_issue_backed");
+    expect(eligibility.launch_unavailable_code).toBeNull();
+    expect(eligibility.launch_unavailable_reason).toBeNull();
+    expect(eligibility.dispatch_node?.can_launch).toBe(true);
   });
 
   it("blocks launch for non-frontier work items", () => {
@@ -152,9 +151,9 @@ describe("launch eligibility", () => {
     const node = preview.groups[0]?.nodes[0];
 
     expect(node).toBeTruthy();
-    expect(node.can_launch).toBe(false);
+    expect(node.can_launch).toBe(true);
     expect(node.issue_backed).toBe(false);
-    expect(node.launch_unavailable_code).toBe("not_issue_backed");
-    expect(node.launch_unavailable_reason).toContain("issue-backed");
+    expect(node.launch_unavailable_code).toBeNull();
+    expect(node.launch_unavailable_reason).toBeNull();
   });
 });

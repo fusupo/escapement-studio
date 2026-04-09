@@ -99,6 +99,18 @@ export function listExecutionRuns() {
   return request("/api/execution/runs");
 }
 
+export function getExecutionEligibility(params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) {
+      query.set(key, value);
+    }
+  }
+
+  const search = query.toString();
+  return request(`/api/execution/eligibility${search ? `?${search}` : ""}`);
+}
+
 export function launchExecutionRun(payload) {
   return request("/api/execution/launch", {
     method: "POST",
