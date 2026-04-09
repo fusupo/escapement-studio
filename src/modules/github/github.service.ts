@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { SQLiteService } from "../graph/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
+import type { WorkItemRecord } from "../graph/types.js";
 import type {
   GitHubIssueDetails,
   GitHubIssueAssignee,
@@ -176,25 +177,32 @@ export class GitHubService {
 
     const body = raw.body ?? "";
     const managedBlock = this.extractManagedBlock(body);
+    const labels = this.normalizeIssueLabels((raw.labels ?? []).map((label): GitHubIssueLabel => ({
+      name: label.name ?? "",
+      description: label.description,
+      color: label.color,
+    })).filter((label) => Boolean(label.name)));
+    const assignees = this.normalizeIssueAssignees((raw.assignees ?? []).map((assignee): GitHubIssueAssignee => ({
+      login: assignee.login ?? "",
+      name: assignee.name,
+    })).filter((assignee) => Boolean(assignee.login)));
 
-    return {
+    const details: GitHubIssueDetails = {
       repo,
       number: raw.number,
       title: raw.title,
       body,
       url: raw.url,
       state: raw.state,
-      labels: (raw.labels ?? []).map((label): GitHubIssueLabel => ({
-        name: label.name ?? "",
-        description: label.description,
-        color: label.color,
-      })).filter((label) => Boolean(label.name)),
-      assignees: (raw.assignees ?? []).map((assignee): GitHubIssueAssignee => ({
-        login: assignee.login ?? "",
-        name: assignee.name,
-      })).filter((assignee) => Boolean(assignee.login)),
+      labels,
+      assignees,
       body_hash: this.hash(body),
       managed_block: managedBlock,
+    };
+
+    return {
+      ...details,
+      reconciliation: this.reconcileIssueTruth(details),
     };
   }
 
@@ -361,6 +369,41 @@ export class GitHubService {
     };
   }
 
+  private reconcileIssueTruth(issue: GitHubIssueDetails): { updated_work_item_ids: string[]; work_items: WorkItemRecord[] } {
+    const linkedWorkItems = this.workItems.listByRepoIssueNumber(issue.repo, issue.number);
+    const updatedWorkItemIds: string[] = [];
+    const nextWorkItems = linkedWorkItems.map((workItem) => {
+      const existingMeta = this.readObject(workItem.meta);
+      const nextIssueMeta = {
+        ...this.readObject(existingMeta.github_issue),
+        title: issue.title,
+        url: issue.url,
+        state: issue.state,
+        labels: this.normalizeIssueLabels(issue.labels),
+        assignees: this.normalizeIssueAssignees(issue.assignees),
+        synced_at: this.now(),
+      };
+
+      if (workItem.issue_url === issue.url && this.sameIssueSnapshot(existingMeta.github_issue, issue)) {
+        return workItem;
+      }
+
+      updatedWorkItemIds.push(workItem.id);
+      return this.workItems.update(workItem.id, {
+        issue_url: issue.url,
+        meta: {
+          ...existingMeta,
+          github_issue: nextIssueMeta,
+        },
+      });
+    });
+
+    return {
+      updated_work_item_ids: updatedWorkItemIds,
+      work_items: nextWorkItems,
+    };
+  }
+
   private renderManagedBlock(workItemId: string): string {
     const workItem = this.workItems.get(workItemId);
     const dependsOn = this.listRelatedIds(workItemId, "depends_on", "to_id");
@@ -452,6 +495,71 @@ export class GitHubService {
     };
   }
 
+  private sameIssueSnapshot(stored: unknown, issue: GitHubIssueDetails): boolean {
+    const snapshot = this.readObject(stored);
+    return this.normalizeNullableString(snapshot.title) === issue.title
+      && this.normalizeNullableString(snapshot.url) === issue.url
+      && this.normalizeNullableString(snapshot.state) === issue.state
+      && JSON.stringify(this.normalizeIssueLabels(this.readIssueLabels(snapshot.labels))) === JSON.stringify(this.normalizeIssueLabels(issue.labels))
+      && JSON.stringify(this.normalizeIssueAssignees(this.readIssueAssignees(snapshot.assignees))) === JSON.stringify(this.normalizeIssueAssignees(issue.assignees));
+  }
+
+  private normalizeIssueLabels(labels: GitHubIssueLabel[]): GitHubIssueLabel[] {
+    return [...labels]
+      .map((label) => ({
+        name: label.name,
+        description: label.description,
+        color: label.color,
+      }))
+      .sort((left, right) => `${left.name}|${left.color ?? ""}|${left.description ?? ""}`.localeCompare(`${right.name}|${right.color ?? ""}|${right.description ?? ""}`));
+  }
+
+  private normalizeIssueAssignees(assignees: GitHubIssueAssignee[]): GitHubIssueAssignee[] {
+    return [...assignees]
+      .map((assignee) => ({
+        login: assignee.login,
+        name: assignee.name,
+      }))
+      .sort((left, right) => `${left.login}|${left.name ?? ""}`.localeCompare(`${right.login}|${right.name ?? ""}`));
+  }
+
+  private readIssueLabels(value: unknown): GitHubIssueLabel[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((item) => ({
+        name: typeof item.name === "string" ? item.name : "",
+        description: typeof item.description === "string" ? item.description : undefined,
+        color: typeof item.color === "string" ? item.color : undefined,
+      }))
+      .filter((label) => Boolean(label.name));
+  }
+
+  private readIssueAssignees(value: unknown): GitHubIssueAssignee[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((item) => ({
+        login: typeof item.login === "string" ? item.login : "",
+        name: typeof item.name === "string" ? item.name : undefined,
+      }))
+      .filter((assignee) => Boolean(assignee.login));
+  }
+
+  private readObject(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+  }
+
+  private normalizeNullableString(value: unknown): string | null {
+    return typeof value === "string" ? value : null;
+  }
+
   private toPullRequestDetails(repo: string, raw: RawPullRequestResponse): GitHubPullRequestDetails {
     return {
       repo,
@@ -484,6 +592,10 @@ export class GitHubService {
       const message = error instanceof Error ? error.message : String(error);
       throw new BadRequestException(`gh command failed: ${message}`);
     }
+  }
+
+  private now(): string {
+    return new Date().toISOString();
   }
 
   private hash(value: string): string {

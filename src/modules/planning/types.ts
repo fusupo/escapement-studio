@@ -1,5 +1,5 @@
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import type { ApplyGraphMutationsResult, EdgeRel, WorkItemKind, WorkItemState } from "../graph/types.js";
+import type { ApplyGraphMutationsResult, EdgeRel, WorkItemKind, WorkItemRecord, WorkItemState } from "../graph/types.js";
 
 export type PlanningContextGraphMode = "default" | "focused" | "full";
 export type PlanningMutationType = "create_work_item" | "update_work_item" | "create_edge" | "delete_edge" | "delete_work_item";
@@ -219,6 +219,10 @@ export interface GitHubIssueDetails {
     start_marker: string;
     end_marker: string;
   } | null;
+  reconciliation?: {
+    updated_work_item_ids: string[];
+    work_items: WorkItemRecord[];
+  };
 }
 
 export interface GitHubSyncOperation {
