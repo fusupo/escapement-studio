@@ -32,10 +32,13 @@
   export let onDeleteEdge = () => {};
   export let onCloseIssue = () => {};
   export let onLaunchExecution = () => {};
+  export let onGitHubTruthRefresh = () => {};
   export let closingIssue = false;
 
   let linkedPrDetails = null;
   let loadingPr = false;
+  let linkedPrLookupToken = 0;
+  let lastLinkedPrLookupKey = null;
 
   let editForm = { ...defaultWorkItem };
   let createForm = { ...defaultWorkItem };
@@ -65,20 +68,35 @@
     ?? null;
 
   // Fetch live PR details when the selected item has a linked PR
-  $: void loadLinkedPrDetails(selectedItem?.repo, linkedPrNumber);
+  $: linkedPrLookupKey = selectedItem?.repo && linkedPrNumber
+    ? `${selectedItem.repo}#${linkedPrNumber}`
+    : null;
+  $: if (linkedPrLookupKey !== lastLinkedPrLookupKey) {
+    lastLinkedPrLookupKey = linkedPrLookupKey;
+    void loadLinkedPrDetails(selectedItem?.repo, linkedPrNumber);
+  }
 
   async function loadLinkedPrDetails(repo, prNumber) {
+    const token = ++linkedPrLookupToken;
     if (!repo || !prNumber) {
       linkedPrDetails = null;
       return;
     }
     loadingPr = true;
     try {
-      linkedPrDetails = await getPullRequestDetails({ repo, pull_request_number: prNumber });
+      const details = await getPullRequestDetails({ repo, pull_request_number: prNumber });
+      if (token === linkedPrLookupToken) {
+        linkedPrDetails = details;
+        onGitHubTruthRefresh(details);
+      }
     } catch {
-      linkedPrDetails = null;
+      if (token === linkedPrLookupToken) {
+        linkedPrDetails = null;
+      }
     } finally {
-      loadingPr = false;
+      if (token === linkedPrLookupToken) {
+        loadingPr = false;
+      }
     }
   }
 
