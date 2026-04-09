@@ -1,17 +1,22 @@
-# Scratchpad: studio-139 — Studio: add graph node context menu with launch execution action
+# Scratchpad: studio-147 — Studio: mark work items in_progress when execution is launched
 
 ## Context
 - **Repo:** fusupo/escapement-studio
-- **Issue:** https://github.com/fusupo/escapement-studio/issues/139
-- **Branch:** studio-139-branch
+- **Issue:** https://github.com/fusupo/escapement-studio/issues/147
+- **Branch:** studio-147-branch
 - **Base ref:** develop
-- **Scope hint:** Add a graph-node context menu with issue actions, including launching execution directly from the graph.
-- **Created:** 2026-04-09T03:37:06.696Z
+- **Scope hint:** Update the work item's graph state from planned to in_progress when execution is launched so graph details and styling reflect active work.
+- **Created:** 2026-04-09T04:00:58.392Z
+
+## Summary
+Launching an execution run currently creates the Studio run and starts orchestration, but the backing work item can remain in `planned` state in the graph store. Because the planning graph, hover/details UI, frontier styling, and execution preview all read from that shared work-item state, active work can continue to render as `planned` even after launch.
+
+The implementation should make the execution launch path in `src/modules/execution/execution.service.ts` transition the launched work item itself from `planned` to `in_progress` as part of accepting the launch, before the asynchronous execution work proceeds. That keeps the source-of-truth graph state aligned with active execution, removes the item from planned/frontier-only views as appropriate, and ensures only the requested work item is marked active.
 
 ## File Ownership
 
 ### Owned
-- (none predicted)
+- src/modules/execution/execution.service.ts
 
 ### Shared
 - (none)
@@ -21,42 +26,35 @@
 - docs/contracts/run-artifacts.md
 - src/modules/execution
 - src/modules/github
-- src/modules/graph
 - src/modules/planning
 - src/modules/settings
+- web/src/App.svelte
+- web/src/components
 - web/src/components/ExecutionDispatchPanel.svelte
 - web/src/components/PlannerChatAdapter.svelte
 - web/src/components/SettingsPanel.svelte
 - web/src/components/Sidebar.svelte
-
-## Summary
-- The planning graph already exposes node right-click events from the D3 renderer (`web/src/lib/graph.js`) up through `GraphView.svelte` into `web/src/App.svelte`, and `App.svelte` currently contains an inline graph context menu plus launch-eligibility lookup/launch handlers.
-- For #139, the implementation work appears to be about hardening and polishing that graph-node action surface so it behaves like a real extensible context menu: anchored to the cursor/node, clear about which actions are available, and routed through the existing execution flow rather than inventing a parallel path.
-- The most likely frontend surface is the planning view (`web/src/App.svelte`) plus the graph interaction layer (`web/src/components/GraphView.svelte` and `web/src/lib/graph.js`). If the menu is meant to grow, it would be cleaner to extract it into its own component instead of keeping all action rendering inline in `App.svelte`.
+- web/src/lib/api.js
+- web/src/lib/graph.js
 
 ## Acceptance Criteria
-- [ ] Right-clicking an eligible graph node opens a context menu anchored to the node/cursor.
-- [ ] Eligible issues expose a **Launch execution** action from that menu.
-- [ ] The launch action routes into the existing execution flow instead of creating a separate special-case path.
-- [ ] Ineligible nodes show disabled or omitted actions with clear affordances.
-- [ ] The menu can grow to support additional node actions over time.
-- [ ] The menu dismisses cleanly and does not interfere with normal graph selection/pan behavior.
+
+- [ ] Launching execution for a planned work item advances its Studio graph state to `in_progress`.
+- [ ] Graph hover/details surfaces show `in_progress` for active runs.
+- [ ] The state transition happens early enough that active execution is reflected promptly after launch.
+- [ ] The change does not incorrectly mark unrelated items in progress.
+- [ ] In-progress graph styling can rely on this state being accurate.
 
 ## Implementation Plan
-- [x] Audit the existing graph right-click plumbing and identify the exact acceptance gaps versus the current inline implementation. Files: `web/src/App.svelte`, `web/src/components/GraphView.svelte`, `web/src/lib/graph.js`, plus read-only context from `src/modules/execution/execution.service.ts` and `src/modules/execution/types.ts`.
-- [x] Extract or reshape the graph-node context menu into a reusable/extensible UI surface so future node actions can be added without growing `App.svelte` further. Files: `web/src/App.svelte`; likely new `web/src/components/GraphNodeContextMenu.svelte`; optional new helper such as `web/src/lib/graph-node-actions.js`.
-- [x] Reuse the existing launch-eligibility and launch-execution flow from the planning screen so the menu action follows the same execution path, tab switch, and error handling used elsewhere. Files: `web/src/App.svelte`, and `web/src/lib/api.js` only if a small helper/API wrapper adjustment is needed.
-- [x] Tighten menu interaction behavior: anchor/clamp placement, outside-click/Escape dismissal, disabled-state messaging for ineligible nodes, and right-click behavior that does not break normal graph selection or pan/zoom. Files: `web/src/App.svelte`, `web/src/components/GraphView.svelte`, `web/src/lib/graph.js`, and menu styling in component-local CSS or `web/src/app.css`.
-- [x] Add targeted coverage for any extracted pure helper logic (if introduced) and then verify the end-to-end UX manually in the planning graph: open menu, launch an eligible node, confirm blocked affordances for ineligible nodes, and confirm dismissal behavior. Files: likely new test file for any helper plus the touched web files above.
+
+- [x] Update `src/modules/execution/execution.service.ts` launch acceptance flow so a successful launch mutates the targeted work item from `planned` to `in_progress` before `executeRun(...)` is kicked off.
+- [x] Keep the mutation scoped to the launched `work_item_id` in `src/modules/execution/execution.service.ts`, and ensure blocked / rejected launches do not change graph state for this or any other item.
+- [x] Preserve existing run creation and orchestration behavior in `src/modules/execution/execution.service.ts` while making the state transition happen early enough that subsequent graph/preview reads observe `in_progress` promptly after launch.
+- [x] Verify the backend state flow against the read-only graph consumers (`src/modules/graph/work-items.service.ts`, `src/modules/graph/graph.service.ts`, `web/src/lib/graph.js`, `web/src/App.svelte`, `web/src/components/ExecutionDispatchPanel.svelte`) and run `npm run check` plus targeted tests to confirm the launch path still behaves correctly.
 
 ## Affected Files
-- `SCRATCHPAD.md` — setup-phase plan and implementation notes.
-- `web/src/App.svelte` — primary planning-screen state for selected node, context-menu open/close behavior, launch-eligibility lookup, and routing into the existing execution flow.
-- `web/src/components/GraphView.svelte` — graph wrapper that passes right-click events and frontier-derived metadata into the renderer.
-- `web/src/lib/graph.js` — low-level D3 node interaction handling for click/right-click/tooltip/pan behavior.
-- `web/src/components/GraphNodeContextMenu.svelte` *(likely new)* — dedicated graph-node actions menu so the surface can grow beyond a single inline button.
-- `web/src/lib/graph-node-actions.js` *(possible new helper)* — pure action-model helper for enabled/disabled/hidden menu items and user-facing reasons.
-- `web/src/app.css` *(maybe)* — shared menu/overlay styling if it is not kept component-local.
+- `src/modules/execution/execution.service.ts` — mark the launched work item `in_progress` during the accepted launch flow, before async execution proceeds, without affecting unrelated work items.
+- `src/modules/execution/__tests__/launch-eligibility.test.ts` — cover launch-time state transitions so planned items move to `in_progress`, already-active items are not re-marked, and blocked launches do not mutate graph state.
 
 ## Quality Checks
 - [x] TypeScript compilation passes (`npm run check`)
@@ -64,28 +62,27 @@
 - [x] Build succeeds (`npm run build:web`)
 
 ## Questions / Concerns
-- **Scope ambiguity:** the issue text emphasizes eligible **issue-backed** nodes, but the current execution eligibility backend also allows dispatchable capability nodes. Please confirm whether the graph context menu should expose **Launch execution** only for issue-backed items, or for any work item that the existing execution flow considers launchable.
-- **Current-code overlap:** `web/src/App.svelte`, `web/src/components/GraphView.svelte`, and `web/src/lib/graph.js` already contain substantial context-menu and launch wiring on `develop`. I will treat #139 as refinement/completion of that surface unless you want a stricter rework.
-- **Test surface:** there is no existing frontend component test harness in `web/`. If needed, I can add lightweight Vitest coverage only for extracted pure helpers, then rely on manual UI verification for the actual Svelte interaction behavior.
-- Aside from the issue-only vs any-launchable-node question above, the implementation surface is clear.
+- Implementation scope is clear and fits the owned backend file.
+- One caveat: `web/src/App.svelte` does not appear to reload the planning graph immediately after launch, so this backend change will make the source-of-truth state accurate promptly, but already-rendered graph views may still depend on existing refresh/requery behavior to display the updated state instantly.
+- I only own `src/modules/execution/execution.service.ts`, so I am planning a backend-only fix and will rely on existing tests/checks unless ownership is expanded to allow test-file updates.
 
 ## Work Log
 
 ### 2026-04-09 - Setup
 - Scratchpad created by Studio execution service
-- Branch: studio-139-branch
+- Branch: studio-147-branch
 
 ### 2026-04-09 - Coding
-- Audited the current implementation: `GraphView.svelte` and `web/src/lib/graph.js` already emit node right-click events, and `web/src/App.svelte` already has an inline menu plus launch-eligibility lookup. The main remaining gaps are extensibility, clearer action modeling, and more robust menu positioning/dismissal behavior.
-- Extracted the inline planning-graph menu into `web/src/components/GraphNodeContextMenu.svelte` and introduced `web/src/lib/graph-node-actions.js` so actions are modeled separately from `App.svelte` rendering.
-- Kept launch execution routed through the existing `handleLaunchExecution()` path in `web/src/App.svelte`, and added an `Open issue` action when a node has a linked GitHub issue.
-- Quality checks after extraction/refactor: `npm run check` ✅, `npm run build:web` ✅ (existing Svelte a11y/CSS warnings only), `npm test` ⚠️ fails in existing `graph-writer.service.test.ts` because `better-sqlite3` native bindings are unavailable in this worktree.
-- Polished the menu behavior by clamping it to the viewport after render, focusing it so Escape works reliably, and closing it on outside click, outside right-click, scroll, or window resize.
-- Quality checks after menu-behavior polish: `npm run check` ✅, `npm run build:web` ✅ (same pre-existing Svelte warnings), `npm test` ⚠️ same existing `better-sqlite3` binding failure.
-- Added targeted helper coverage in `src/__tests__/graph-node-actions.test.ts` for action modeling and viewport clamping. `npx vitest run src/__tests__/graph-node-actions.test.ts` passes locally.
-- Final pre-summary checks: `npm run check` ✅, `npm run build:web` ✅ (same pre-existing Svelte warnings), `npm test` ⚠️ still blocked by the existing missing `better-sqlite3` native binding in `src/modules/graph/__tests__/graph-writer.service.test.ts`.
-- Confirmed the focused helper coverage still passes after the final import-typing fix: `npx vitest run src/__tests__/graph-node-actions.test.ts` ✅.
-- Completion summary: the graph context menu is now a dedicated component with a reusable action model, includes launch execution plus issue-link actions, clamps cleanly within the viewport, and continues to route launch requests through the existing execution flow in `App.svelte`.
+- Updated `src/modules/execution/execution.service.ts` so accepted launches transition the targeted work item from `planned` to `in_progress` before the async execution run starts.
+- Kept the mutation scoped to the launched work item only; blocked launches still return early without changing graph state.
+- Preserved existing run creation/orchestration flow and added a queued activity message that records when the work item was marked `in_progress`.
+- Verified related graph consumers are read-only over work-item state and should pick up the backend transition on their next refresh/requery.
+- Ran `npm run check` successfully.
+- Ran `npx vitest run src/modules/execution/__tests__/launch-eligibility.test.ts` successfully.
+- Ran `npm run build:web` successfully.
+- Ran `npm test`, but the suite is currently blocked by missing `better-sqlite3` native bindings in this worktree environment.
+- After test-file access was expanded, added targeted execution tests covering launch-time state mutation behavior and re-ran `npx vitest run src/modules/execution/__tests__/launch-eligibility.test.ts` successfully.
+- Re-ran `npm run check` successfully after adding the new tests.
 
 ## Blockers
-- Full `npm test` runs are blocked in this worktree by an existing environment issue: `better-sqlite3` native bindings are missing, causing `src/modules/graph/__tests__/graph-writer.service.test.ts` to fail before/independent of this change.
+- `npm test` fails in this worktree because `better-sqlite3` native bindings are missing (`Could not locate the bindings file`), which affects existing graph-writer tests unrelated to this change.
