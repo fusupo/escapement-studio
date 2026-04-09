@@ -323,12 +323,12 @@ a:hover {
   overflow: hidden;
 }
 
-.graph-legend > div:first-child .legend-row:nth-of-type(2) .legend-swatch {
+.graph-legend .legend-swatch.in-progress {
   border: 1px solid rgba(255, 244, 214, 0.4);
   box-shadow: inset 0 0 0 1px rgba(210, 153, 34, 0.14);
 }
 
-.graph-legend > div:first-child .legend-row:nth-of-type(2) .legend-swatch::after {
+.graph-legend .legend-swatch.in-progress::after {
   content: "";
   position: absolute;
   inset: 1px;

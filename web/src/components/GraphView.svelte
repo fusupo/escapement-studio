@@ -95,7 +95,7 @@
       <div>
         <h3>Node State</h3>
         <div class="legend-row"><span class="legend-swatch" style="background:#238636"></span><code>done</code></div>
-        <div class="legend-row"><span class="legend-swatch" style="background:#d29922"></span><code>in_progress</code></div>
+        <div class="legend-row"><span class="legend-swatch in-progress" style="background:#d29922"></span><code>in_progress</code><span class="legend-note">dashed inset</span></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#a371f7"></span><code>open_pr</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#58a6ff"></span><code>planned</code></div>
         <div class="legend-row"><span class="legend-swatch frontier"></span><code>frontier</code></div>
@@ -180,5 +180,10 @@
     font-family: inherit;
     font-size: 10.5px;
     color: #c9d1d9;
+  }
+
+  .legend-note {
+    color: var(--text-secondary, #8b95a5);
+    font-size: 10px;
   }
 </style>
