@@ -291,12 +291,10 @@
     }
 
     selectedId = detail.item.id;
-    const x = Math.min(detail.x, Math.max(16, window.innerWidth - 280));
-    const y = Math.min(detail.y, Math.max(16, window.innerHeight - 180));
     graphContextMenu = {
       open: true,
-      x,
-      y,
+      x: detail.x,
+      y: detail.y,
       item: detail.item,
     };
     await ensureLaunchEligibility(detail.item.id);
@@ -350,7 +348,13 @@
   <title>Escapement Studio</title>
 </svelte:head>
 
-<svelte:window on:click={closeGraphContextMenu} on:keydown={handleGlobalKeydown} on:scroll={closeGraphContextMenu} />
+<svelte:window
+  on:click={closeGraphContextMenu}
+  on:contextmenu={closeGraphContextMenu}
+  on:keydown={handleGlobalKeydown}
+  on:resize={closeGraphContextMenu}
+  on:scroll={closeGraphContextMenu}
+/>
 
 <div class="app-shell">
   <!-- Activity Bar (far left icon rail) -->

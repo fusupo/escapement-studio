@@ -1,11 +1,43 @@
 <script>
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, tick } from "svelte";
+  import { clampContextMenuPosition } from "../lib/graph-node-actions.js";
 
   export let menu = null;
   export let x = 0;
   export let y = 0;
 
   const dispatch = createEventDispatcher();
+
+  let menuEl;
+  let position = { x, y };
+
+  async function updatePlacement() {
+    await tick();
+    if (!menuEl || !menu) return;
+
+    const rect = menuEl.getBoundingClientRect();
+    const next = clampContextMenuPosition({
+      x,
+      y,
+      menuWidth: rect.width,
+      menuHeight: rect.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
+
+    if (position.x !== next.x || position.y !== next.y) {
+      position = next;
+    }
+
+    if (document.activeElement !== menuEl) {
+      menuEl.focus();
+    }
+  }
+
+  $: if (menu) {
+    position = { x, y };
+    void updatePlacement();
+  }
 
   function handleButtonAction(action) {
     if (action.disabled) return;
@@ -25,8 +57,9 @@
 
 {#if menu}
   <div
+    bind:this={menuEl}
     class="graph-context-menu"
-    style={`left:${x}px; top:${y}px;`}
+    style={`left:${position.x}px; top:${position.y}px;`}
     role="menu"
     tabindex="-1"
     aria-label={`Actions for ${menu.title}`}

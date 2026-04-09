@@ -1,3 +1,5 @@
+const DEFAULT_MENU_PADDING = 12;
+
 export function buildGraphNodeContextMenu({
   item,
   launchEligibility,
@@ -53,6 +55,24 @@ export function buildGraphNodeContextMenu({
         actions,
       },
     ],
+  };
+}
+
+export function clampContextMenuPosition({
+  x = 0,
+  y = 0,
+  menuWidth = 0,
+  menuHeight = 0,
+  viewportWidth = 0,
+  viewportHeight = 0,
+  padding = DEFAULT_MENU_PADDING,
+} = {}) {
+  const maxX = Math.max(padding, viewportWidth - menuWidth - padding);
+  const maxY = Math.max(padding, viewportHeight - menuHeight - padding);
+
+  return {
+    x: Math.max(padding, Math.min(x, maxX)),
+    y: Math.max(padding, Math.min(y, maxY)),
   };
 }
 
