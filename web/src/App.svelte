@@ -8,6 +8,7 @@
   import FiltersToolbar from "./components/FiltersToolbar.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import {
+    approvePlan,
     closeGitHubIssue,
     closeMergedPullRequest,
     createEdge,
@@ -17,8 +18,10 @@
     getGitHubIssueDetails,
     getGraph,
     getHealth,
+    getPlan,
     launchExecutionRun,
     listWorkItems,
+    preparePlan,
     syncMergedPullRequest,
     updateWorkItem,
   } from "./lib/api.js";
@@ -42,6 +45,14 @@
   let launchEligibilityLoadingIds = {};
   let launchEligibilityRequestTokenById = {};
   let graphContextMenu = { open: false, x: 0, y: 0, item: null };
+
+  // ADR 014 step 8 — plan state + plan review modal
+  let preparingPlan = false;
+  let approvingPlan = false;
+  let planStateById = {};
+  let planStateLoadingIds = {};
+  let planStateRequestTokenById = {};
+  let planReview = null; // { workItemId, scratchpadContent } | null
 
   // Panel collapse state
   let chatCollapsed = false;
@@ -98,11 +109,21 @@
   $: selectedLaunchEligibilityLoading = selectedItem ? !!launchEligibilityLoadingIds[selectedItem.id] : false;
   $: contextMenuLaunchEligibility = graphContextMenu.item ? launchEligibilityById[graphContextMenu.item.id] ?? null : null;
   $: contextMenuLaunchEligibilityLoading = graphContextMenu.item ? !!launchEligibilityLoadingIds[graphContextMenu.item.id] : false;
+  $: contextMenuPlanState = graphContextMenu.item
+    ? planStateById[graphContextMenu.item.id]?.metadata ?? null
+    : null;
+  $: contextMenuPlanStateLoading = graphContextMenu.item
+    ? !!planStateLoadingIds[graphContextMenu.item.id]
+    : false;
   $: graphContextMenuModel = buildGraphNodeContextMenu({
     item: graphContextMenu.item,
     launchEligibility: contextMenuLaunchEligibility,
     launchEligibilityLoading: contextMenuLaunchEligibilityLoading,
     launchingExecution,
+    planState: contextMenuPlanState,
+    planStateLoading: contextMenuPlanStateLoading,
+    preparingPlan,
+    approvingPlan,
   });
   $: filterOptions = {
     repos: [...new Set(catalog.map((item) => item.repo).filter(Boolean))].sort(),
@@ -114,6 +135,14 @@
   $: activeFilterCount = Object.values(filters).filter(Boolean).length;
   $: if (selectedItem?.id) {
     void ensureLaunchEligibility(selectedItem.id);
+  }
+  // Auto-fetch plan state for the selected item when it's in a state where
+  // a plan should exist. Terminal states (done, cancelled, deferred) and
+  // non-issue kinds are skipped to avoid pointless 404 round-trips.
+  $: if (selectedItem?.id
+    && selectedItem?.kind === "issue"
+    && ["drafting", "ready", "in_progress", "open_pr", "merged_pr"].includes(selectedItem.state)) {
+    void ensurePlanState(selectedItem.id);
   }
 
   function closeGraphContextMenu() {
@@ -132,6 +161,41 @@
       launch_unavailable_reason: message,
       dispatch_node: null,
     };
+  }
+
+  // ADR 014 step 8 — plan state fetcher. Returns null when no plan exists
+  // (GET /api/plans/:id returns 404 for planned items with no plan dir yet).
+  // Uses a per-work-item request token so stale responses can't clobber
+  // fresh selections, mirroring ensureLaunchEligibility above.
+  async function ensurePlanState(workItemId, { force = false } = {}) {
+    if (!workItemId) return null;
+    if (!force && planStateById[workItemId] !== undefined) {
+      return planStateById[workItemId];
+    }
+
+    const token = (planStateRequestTokenById[workItemId] || 0) + 1;
+    planStateRequestTokenById = { ...planStateRequestTokenById, [workItemId]: token };
+    planStateLoadingIds = { ...planStateLoadingIds, [workItemId]: true };
+
+    try {
+      const plan = await getPlan(workItemId);
+      if (planStateRequestTokenById[workItemId] === token) {
+        planStateById = { ...planStateById, [workItemId]: plan };
+      }
+      return plan;
+    } catch (lookupError) {
+      const message = lookupError?.message ?? "";
+      // 404 = no plan dir yet (expected for planned items). Cache null so
+      // we don't re-fetch on every reactive tick.
+      if (/No plan found/i.test(message) && planStateRequestTokenById[workItemId] === token) {
+        planStateById = { ...planStateById, [workItemId]: null };
+      }
+      return null;
+    } finally {
+      if (planStateRequestTokenById[workItemId] === token) {
+        planStateLoadingIds = { ...planStateLoadingIds, [workItemId]: false };
+      }
+    }
   }
 
   async function ensureLaunchEligibility(workItemId, { force = false } = {}) {
@@ -178,6 +242,9 @@
       launchEligibilityById = {};
       launchEligibilityLoadingIds = {};
       launchEligibilityRequestTokenById = {};
+      planStateById = {};
+      planStateLoadingIds = {};
+      planStateRequestTokenById = {};
       if (selectedId && !graph.items.some((item) => item.id === selectedId)) {
         selectedId = null;
         closeGraphContextMenu();
@@ -349,12 +416,86 @@
       item: detail.item,
     };
     await ensureLaunchEligibility(detail.item.id);
+    // Also prime plan state for issue kinds so the context menu can gate
+    // Prepare / Approve / Review correctly. Non-issue kinds skip the fetch.
+    if (detail.item.kind === "issue"
+      && ["drafting", "ready", "in_progress", "open_pr", "merged_pr", "planned"].includes(detail.item.state)) {
+      await ensurePlanState(detail.item.id);
+    }
   }
 
   function handleGlobalKeydown(event) {
     if (event.key === "Escape") {
       closeGraphContextMenu();
+      if (planReview) {
+        closePlanReview();
+      }
     }
+  }
+
+  // ADR 014 step 8 — plan action handlers.
+  async function handlePreparePlan(item = selectedItem) {
+    const workItemId = item?.id;
+    if (!workItemId) return;
+
+    preparingPlan = true;
+    error = "";
+    try {
+      await preparePlan(workItemId);
+      // Refresh plan cache + graph so the work item state reflects the
+      // `planned → drafting` transition that prepare triggers.
+      await ensurePlanState(workItemId, { force: true });
+      await loadGraph();
+    } catch (prepareError) {
+      error = prepareError.message;
+    } finally {
+      preparingPlan = false;
+    }
+  }
+
+  async function handleApprovePlan(item = selectedItem) {
+    const workItemId = item?.id;
+    if (!workItemId) return;
+
+    approvingPlan = true;
+    error = "";
+    try {
+      await approvePlan(workItemId, {});
+      // Approve transitions plan drafting → ready AND work item to ready.
+      await ensurePlanState(workItemId, { force: true });
+      await loadGraph();
+    } catch (approveError) {
+      error = approveError.message;
+    } finally {
+      approvingPlan = false;
+    }
+  }
+
+  async function handleReviewPlan(item = selectedItem, cachedPlan = null) {
+    const workItemId = item?.id;
+    if (!workItemId) return;
+
+    error = "";
+    try {
+      // Prefer the cached plan passed in from the Sidebar/context menu; fall
+      // back to a fresh fetch if we don't have one yet.
+      const plan = cachedPlan ?? planStateById[workItemId] ?? await ensurePlanState(workItemId, { force: true });
+      if (!plan) {
+        error = `No plan to review for ${workItemId}. Try Prepare plan first.`;
+        return;
+      }
+      planReview = {
+        workItemId,
+        scratchpadContent: plan.scratchpad_content ?? "",
+        planState: plan.metadata?.state ?? null,
+      };
+    } catch (reviewError) {
+      error = reviewError.message;
+    }
+  }
+
+  function closePlanReview() {
+    planReview = null;
   }
 
   async function handleLaunchExecution(item = selectedItem) {
@@ -364,6 +505,14 @@
     launchingExecution = true;
     error = "";
     try {
+      // ADR 014 step 8 — stricter UI gate than the backend: require work
+      // item state to be `ready` so users can't skip plan approval via the
+      // UI, even though the backend still accepts `planned` as a
+      // transitional fallback.
+      if (item?.state !== "ready") {
+        error = `Approve the plan first — work item state is ${item?.state ?? "unknown"}, expected ready.`;
+        return;
+      }
       const eligibility = await ensureLaunchEligibility(workItemId, { force: true });
       if (!eligibility?.can_launch) {
         error = eligibility?.launch_unavailable_reason || "Launch execution is not available for this node.";
@@ -554,6 +703,11 @@
                   launchingExecution={launchingExecution}
                   onLaunchExecution={handleLaunchExecution}
                   onGitHubTruthRefresh={handleGitHubTruthRefresh}
+                  onPreparePlan={handlePreparePlan}
+                  onApprovePlan={handleApprovePlan}
+                  onReviewPlan={handleReviewPlan}
+                  {preparingPlan}
+                  {approvingPlan}
                   {graph}
                   {saving}
                   {edgeSaving}
@@ -608,12 +762,50 @@
         x={graphContextMenu.x}
         y={graphContextMenu.y}
         on:action={(event) => {
+          const item = graphContextMenu.item;
           if (event.detail.id === "launch-execution") {
-            handleLaunchExecution(graphContextMenu.item);
+            handleLaunchExecution(item);
+          } else if (event.detail.id === "prepare-plan") {
+            handlePreparePlan(item);
+            closeGraphContextMenu();
+          } else if (event.detail.id === "approve-plan") {
+            handleApprovePlan(item);
+            closeGraphContextMenu();
+          } else if (event.detail.id === "review-plan") {
+            handleReviewPlan(item, planStateById[item.id] ?? null);
+            closeGraphContextMenu();
           }
         }}
         on:requestclose={closeGraphContextMenu}
       />
+    {/if}
+
+    <!-- ADR 014 step 8 — Plan review modal -->
+    {#if planReview}
+      <div
+        class="plan-review-overlay"
+        role="presentation"
+        on:click={closePlanReview}
+      >
+        <div
+          class="plan-review-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="plan-review-title"
+          on:click|stopPropagation
+        >
+          <header class="plan-review-header">
+            <h3 id="plan-review-title">
+              Plan — {planReview.workItemId}
+              {#if planReview.planState}
+                <span class="status-pill {planReview.planState === 'ready' ? 'healthy' : 'warn'}">{planReview.planState}</span>
+              {/if}
+            </h3>
+            <button class="small" on:click={closePlanReview} aria-label="Close plan review">×</button>
+          </header>
+          <pre class="plan-review-body">{planReview.scratchpadContent}</pre>
+        </div>
+      </div>
     {/if}
 
     <!-- Status bar -->
