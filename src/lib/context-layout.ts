@@ -111,22 +111,122 @@ export function canonicalScratchpadPath(artifactRoot: string, workItemId: string
   return join(planDir(artifactRoot, workItemId), `SCRATCHPAD_${slug}.md`);
 }
 
-/* ── Plan dir creation with collision detection ──────────────────────────── */
+/* ── Plan metadata schema ────────────────────────────────────────────────── */
 
-interface PlanMetadataMarker {
+/**
+ * ADR 014 plan state. Mirrors the prepared-plan phase of the work item
+ * lifecycle.
+ *
+ * - `null` — legacy or execution-launched plan dir that was created without
+ *   going through the prepare-plan flow. Step 4 introduces prepare/approve
+ *   as an explicit path; existing callers (ExecutionService) still create
+ *   plan dirs directly at launch time with a null state.
+ * - `"drafting"` — written by PlansService.prepare
+ * - `"ready"` — written by PlansService.approve
+ */
+export type PlanState = "drafting" | "ready" | null;
+
+/**
+ * Full plan metadata shape written to `plans/<slug>/metadata.json`.
+ *
+ * Introduced in ADR 014 step 4 (issue #154). Earlier steps wrote only a
+ * 3-field marker (`plan_id`, `work_item_id`, `created_at`); `readPlanMetadata`
+ * tolerates that legacy shape by filling in missing fields with defaults.
+ */
+export interface PlanMetadata {
   plan_id: string;
   work_item_id: string;
   created_at: string;
+  updated_at: string;
+  state: PlanState;
+  scratchpad_path: string;
+  approved_at: string | null;
+  approved_by: string | null;
+  run_ids: string[];
+}
+
+/** Path to the metadata.json sidecar for a work item's plan. */
+export function planMetadataPath(artifactRoot: string, workItemId: string): string {
+  return join(planDir(artifactRoot, workItemId), PLAN_METADATA_FILE);
 }
 
 /**
- * Ensure the plan directory for a work item exists, creating it (and a
- * minimal metadata sidecar) on first call. Idempotent when called repeatedly
- * for the same work item id.
+ * Read plan metadata from disk, tolerating the legacy 3-field marker shape.
+ * Returns `null` if the metadata file does not exist.
+ *
+ * Missing fields are filled with safe defaults: `state` is `null`,
+ * `updated_at` falls back to `created_at`, `scratchpad_path` is recomputed,
+ * approver fields are null, `run_ids` is empty. This lets new code assume the
+ * full shape without breaking plan dirs created by earlier steps.
+ *
+ * @throws if the file exists but cannot be parsed as JSON
+ */
+export function readPlanMetadata(artifactRoot: string, workItemId: string): PlanMetadata | null {
+  const path = planMetadataPath(artifactRoot, workItemId);
+  if (!existsSync(path)) return null;
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `readPlanMetadata: failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (!raw || typeof raw !== "object") {
+    throw new Error(`readPlanMetadata: ${path} did not contain a JSON object`);
+  }
+
+  const partial = raw as Partial<PlanMetadata>;
+  const slug = workItemSlug(workItemId);
+  const createdAt = typeof partial.created_at === "string" ? partial.created_at : new Date(0).toISOString();
+
+  return {
+    plan_id: typeof partial.plan_id === "string" ? partial.plan_id : slug,
+    work_item_id: typeof partial.work_item_id === "string" ? partial.work_item_id : workItemId,
+    created_at: createdAt,
+    updated_at: typeof partial.updated_at === "string" ? partial.updated_at : createdAt,
+    state: partial.state === "drafting" || partial.state === "ready" ? partial.state : null,
+    scratchpad_path:
+      typeof partial.scratchpad_path === "string"
+        ? partial.scratchpad_path
+        : canonicalScratchpadPath(artifactRoot, workItemId),
+    approved_at: typeof partial.approved_at === "string" ? partial.approved_at : null,
+    approved_by: typeof partial.approved_by === "string" ? partial.approved_by : null,
+    run_ids: Array.isArray(partial.run_ids)
+      ? partial.run_ids.filter((id): id is string => typeof id === "string")
+      : [],
+  };
+}
+
+/**
+ * Write plan metadata to disk. Caller is responsible for ensuring the plan
+ * dir exists (use `ensurePlanDir` first).
+ */
+export function writePlanMetadata(
+  artifactRoot: string,
+  workItemId: string,
+  metadata: PlanMetadata,
+): void {
+  const path = planMetadataPath(artifactRoot, workItemId);
+  writeFileSync(path, JSON.stringify(metadata, null, 2), "utf8");
+}
+
+/* ── Plan dir creation with collision detection ──────────────────────────── */
+
+/**
+ * Ensure the plan directory for a work item exists, creating it (and a full
+ * metadata sidecar) on first call. Idempotent when called repeatedly for the
+ * same work item id.
  *
  * Detects slug collisions: if another work item id already owns a plan dir at
  * the same slug path, throws with a clear error. This matches the collision
  * detection requirement in ADR 014 step 1.
+ *
+ * On first creation, writes the full `PlanMetadata` shape with `state: null`,
+ * `updated_at = created_at`, empty approver fields, and empty `run_ids`.
+ * PlansService.prepare overwrites with `state: "drafting"` afterwards.
  *
  * Returns the absolute path to the plan directory.
  *
@@ -138,9 +238,9 @@ export function ensurePlanDir(artifactRoot: string, workItemId: string): string 
   const metadataPath = join(dir, PLAN_METADATA_FILE);
 
   if (existsSync(metadataPath)) {
-    let existing: PlanMetadataMarker | null = null;
+    let existing: Partial<PlanMetadata> | null = null;
     try {
-      existing = JSON.parse(readFileSync(metadataPath, "utf8")) as PlanMetadataMarker;
+      existing = JSON.parse(readFileSync(metadataPath, "utf8")) as Partial<PlanMetadata>;
     } catch {
       // Corrupt marker — treat as a collision the caller must resolve manually.
       throw new Error(
@@ -161,12 +261,19 @@ export function ensurePlanDir(artifactRoot: string, workItemId: string): string 
 
   mkdirSync(dir, { recursive: true });
 
-  const marker: PlanMetadataMarker = {
+  const now = new Date().toISOString();
+  const metadata: PlanMetadata = {
     plan_id: slug,
     work_item_id: workItemId,
-    created_at: new Date().toISOString(),
+    created_at: now,
+    updated_at: now,
+    state: null,
+    scratchpad_path: canonicalScratchpadPath(artifactRoot, workItemId),
+    approved_at: null,
+    approved_by: null,
+    run_ids: [],
   };
-  writeFileSync(metadataPath, JSON.stringify(marker, null, 2), "utf8");
+  writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), "utf8");
 
   return dir;
 }

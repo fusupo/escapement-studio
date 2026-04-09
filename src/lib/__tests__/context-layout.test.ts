@@ -13,12 +13,16 @@ import {
   canonicalScratchpadPath,
   ensurePlanDir,
   planDir,
+  planMetadataPath,
   plansRoot,
+  readPlanMetadata,
   runDir,
   runsRoot,
   workItemSlug,
   worktreeDir,
   worktreesRoot,
+  writePlanMetadata,
+  type PlanMetadata,
 } from "../context-layout.js";
 
 describe("workItemSlug", () => {
@@ -121,7 +125,7 @@ describe("ensurePlanDir", () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it("creates the plan dir and writes a metadata marker on first call", () => {
+  it("creates the plan dir and writes the full metadata shape on first call", () => {
     const dir = ensurePlanDir(tmpRoot, "studio-1234");
 
     expect(dir).toBe(join(tmpRoot, PLANS_DIR, "studio_1234"));
@@ -134,6 +138,15 @@ describe("ensurePlanDir", () => {
     expect(marker.plan_id).toBe("studio_1234");
     expect(marker.work_item_id).toBe("studio-1234");
     expect(typeof marker.created_at).toBe("string");
+    // ADR 014 step 4: full PlanMetadata shape on first creation
+    expect(marker.updated_at).toBe(marker.created_at);
+    expect(marker.state).toBeNull();
+    expect(marker.scratchpad_path).toBe(
+      canonicalScratchpadPath(tmpRoot, "studio-1234"),
+    );
+    expect(marker.approved_at).toBeNull();
+    expect(marker.approved_by).toBeNull();
+    expect(marker.run_ids).toEqual([]);
   });
 
   it("is idempotent when called twice for the same work item id", () => {
@@ -169,5 +182,95 @@ describe("ensurePlanDir", () => {
 
   it("throws when the work item id would produce an empty slug", () => {
     expect(() => ensurePlanDir(tmpRoot, "!!!")).toThrow(/empty slug/);
+  });
+});
+
+describe("plan metadata helpers (ADR 014 step 4)", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "studio-154-metadata-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("planMetadataPath points at metadata.json inside the plan dir", () => {
+    expect(planMetadataPath(tmpRoot, "studio-1234")).toBe(
+      join(tmpRoot, PLANS_DIR, "studio_1234", PLAN_METADATA_FILE),
+    );
+  });
+
+  it("readPlanMetadata returns null when metadata does not exist", () => {
+    expect(readPlanMetadata(tmpRoot, "studio-1234")).toBeNull();
+  });
+
+  it("readPlanMetadata returns the full shape after ensurePlanDir", () => {
+    ensurePlanDir(tmpRoot, "studio-1234");
+    const metadata = readPlanMetadata(tmpRoot, "studio-1234");
+
+    expect(metadata).not.toBeNull();
+    expect(metadata!.plan_id).toBe("studio_1234");
+    expect(metadata!.work_item_id).toBe("studio-1234");
+    expect(metadata!.state).toBeNull();
+    expect(metadata!.scratchpad_path).toBe(
+      canonicalScratchpadPath(tmpRoot, "studio-1234"),
+    );
+    expect(metadata!.run_ids).toEqual([]);
+  });
+
+  it("readPlanMetadata tolerates the legacy 3-field marker shape", () => {
+    // Simulate a plan dir created by an earlier step that only wrote the
+    // legacy marker shape (plan_id / work_item_id / created_at).
+    const slug = "studio_1234";
+    const dir = join(tmpRoot, PLANS_DIR, slug);
+    mkdirSync(dir, { recursive: true });
+    const legacy = {
+      plan_id: slug,
+      work_item_id: "studio-1234",
+      created_at: "2026-01-01T00:00:00.000Z",
+    };
+    writeFileSync(join(dir, PLAN_METADATA_FILE), JSON.stringify(legacy), "utf8");
+
+    const metadata = readPlanMetadata(tmpRoot, "studio-1234");
+
+    expect(metadata).not.toBeNull();
+    // Legacy fields preserved
+    expect(metadata!.created_at).toBe("2026-01-01T00:00:00.000Z");
+    expect(metadata!.plan_id).toBe(slug);
+    // Missing fields defaulted
+    expect(metadata!.updated_at).toBe("2026-01-01T00:00:00.000Z");
+    expect(metadata!.state).toBeNull();
+    expect(metadata!.scratchpad_path).toBe(canonicalScratchpadPath(tmpRoot, "studio-1234"));
+    expect(metadata!.approved_at).toBeNull();
+    expect(metadata!.approved_by).toBeNull();
+    expect(metadata!.run_ids).toEqual([]);
+  });
+
+  it("writePlanMetadata persists changes that readPlanMetadata can round-trip", () => {
+    ensurePlanDir(tmpRoot, "studio-1234");
+    const before = readPlanMetadata(tmpRoot, "studio-1234")!;
+
+    const updated: PlanMetadata = {
+      ...before,
+      state: "drafting",
+      updated_at: "2026-04-09T12:00:00.000Z",
+    };
+    writePlanMetadata(tmpRoot, "studio-1234", updated);
+
+    const after = readPlanMetadata(tmpRoot, "studio-1234");
+    expect(after!.state).toBe("drafting");
+    expect(after!.updated_at).toBe("2026-04-09T12:00:00.000Z");
+    expect(after!.plan_id).toBe(before.plan_id);
+  });
+
+  it("readPlanMetadata throws when metadata is corrupt JSON", () => {
+    const slug = "studio_1234";
+    const dir = join(tmpRoot, PLANS_DIR, slug);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, PLAN_METADATA_FILE), "{ bad json", "utf8");
+
+    expect(() => readPlanMetadata(tmpRoot, "studio-1234")).toThrow(/failed to parse/);
   });
 });
