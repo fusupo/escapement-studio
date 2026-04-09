@@ -1,11 +1,11 @@
-import { Module } from "@nestjs/common";
+import { forwardRef, Module } from "@nestjs/common";
 import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
 import { ExecutionController } from "./execution.controller.js";
 import { ExecutionService } from "./execution.service.js";
 
 @Module({
-  imports: [GraphModule, GitHubModule],
+  imports: [forwardRef(() => GraphModule), GitHubModule],
   controllers: [ExecutionController],
   providers: [ExecutionService],
   exports: [ExecutionService],
