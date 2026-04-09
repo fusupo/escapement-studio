@@ -243,6 +243,38 @@ a:hover {
   background: rgba(13, 17, 23, 0.9);
   --graph-frontier-stripe-color: rgba(240, 246, 252, 0.24);
   --graph-frontier-glow: rgba(240, 246, 252, 0.16);
+  --graph-in-progress-outline: rgba(255, 244, 214, 0.92);
+  --graph-in-progress-shadow: rgba(210, 153, 34, 0.22);
+}
+
+/* In-progress styling uses an inset dashed outline so it remains distinct
+   from the node's base fill and coexists with outer selection/hover strokes. */
+.graph-canvas .node.graph-node--in-progress,
+.graph-canvas .node[data-state="in_progress"] {
+  filter: drop-shadow(0 0 0.28rem var(--graph-in-progress-shadow));
+}
+
+.graph-canvas .node.graph-node--in-progress .in-progress-overlay,
+.graph-canvas .node[data-state="in_progress"] .in-progress-overlay {
+  fill: none;
+  stroke: var(--graph-in-progress-outline);
+  stroke-width: 1.35px;
+  stroke-dasharray: 5 2;
+  stroke-linecap: round;
+  opacity: 0.95;
+  pointer-events: none;
+}
+
+.graph-canvas .node.graph-node--in-progress.selected .in-progress-overlay,
+.graph-canvas .node[data-state="in_progress"].selected .in-progress-overlay {
+  stroke-width: 1.5px;
+  opacity: 1;
+}
+
+.graph-canvas .node.graph-node--in-progress:hover .in-progress-overlay,
+.graph-canvas .node[data-state="in_progress"]:hover .in-progress-overlay {
+  stroke-width: 1.45px;
+  opacity: 1;
 }
 
 /* Frontier styling uses an interior overlay so it composes with the graph
@@ -251,6 +283,12 @@ a:hover {
 .graph-canvas .node.frontier,
 .graph-canvas .node[data-frontier="true"] {
   filter: drop-shadow(0 0 0.35rem var(--graph-frontier-glow));
+}
+
+.graph-canvas .node.graph-node--frontier.graph-node--in-progress,
+.graph-canvas .node.graph-node--frontier[data-state="in_progress"],
+.graph-canvas .node[data-frontier="true"][data-state="in_progress"] {
+  filter: drop-shadow(0 0 0.3rem var(--graph-frontier-glow)) drop-shadow(0 0 0.18rem var(--graph-in-progress-shadow));
 }
 
 .graph-canvas .node.graph-node--frontier rect,
@@ -278,6 +316,25 @@ a:hover {
 .graph-canvas .node.frontier:hover .frontier-overlay,
 .graph-canvas .node[data-frontier="true"]:hover .frontier-overlay {
   opacity: 0.4;
+}
+
+.graph-legend .legend-swatch {
+  position: relative;
+  overflow: hidden;
+}
+
+.graph-legend > div:first-child .legend-row:nth-of-type(2) .legend-swatch {
+  border: 1px solid rgba(255, 244, 214, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(210, 153, 34, 0.14);
+}
+
+.graph-legend > div:first-child .legend-row:nth-of-type(2) .legend-swatch::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 1px dashed rgba(255, 244, 214, 0.95);
+  border-radius: 1px;
+  pointer-events: none;
 }
 
 .graph-legend .legend-swatch.frontier {
