@@ -8,6 +8,7 @@ import { SQLiteService } from "../graph/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { EdgeRecord, WorkItemRecord } from "../graph/types.js";
 import { MemoryService } from "./memory.service.js";
+import { StudioIssueTemplateService } from "../github/studio-issue-template.service.js";
 import type {
   AssemblePlanningContextInput,
   PlanningContext,
@@ -31,18 +32,25 @@ export class ContextService {
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
     @Inject(EdgesService) private readonly edges: EdgesService,
     @Inject(MemoryService) private readonly memoryService: MemoryService,
+    @Inject(StudioIssueTemplateService) private readonly studioIssueTemplateService: StudioIssueTemplateService,
   ) {}
 
   assemble(input: AssemblePlanningContextInput = {}): PlanningContext {
     const graph = this.buildGraphContext(input);
+    const documents: PlanningContextDocument[] = [
+      this.readDocument("studio_overview", this.overviewPath),
+      this.readDocument("studio_architecture", this.architecturePath),
+      this.readPlanningMemoryDocument(),
+    ];
+    const issueTemplateDocument = this.readStudioIssueTemplateDocument(input.user_message);
+
+    if (issueTemplateDocument) {
+      documents.push(issueTemplateDocument);
+    }
 
     return {
       generated_at: this.now(),
-      documents: [
-        this.readDocument("studio_overview", this.overviewPath),
-        this.readDocument("studio_architecture", this.architecturePath),
-        this.readPlanningMemoryDocument(),
-      ],
+      documents,
       graph,
       conversation_window: this.buildConversationWindow(input.session),
     };
@@ -77,7 +85,7 @@ export class ContextService {
       `graph_summary: ${context.graph.item_count} items, ${context.graph.edge_count} edges, ${context.graph.triple_count} triples`,
       `graph_filters: ${filters || "none"}`,
       "",
-      "## Vision docs + planning memory",
+      "## Vision docs + planning memory + issue drafting guidance",
       documents,
       "",
       "## Graph triples",
@@ -290,6 +298,20 @@ export class ContextService {
     };
   }
 
+  private readStudioIssueTemplateDocument(userMessage?: string): PlanningContextDocument | null {
+    const document = this.studioIssueTemplateService.getPlanningDocument(userMessage);
+    if (!document) {
+      return null;
+    }
+
+    return {
+      kind: "studio_issue_templates",
+      label: this.getDocumentLabel("studio_issue_templates"),
+      path: document.path,
+      content: this.compact(document.content, this.documentCharLimit),
+    };
+  }
+
   private getDocumentLabel(kind: PlanningContextDocument["kind"]): string {
     switch (kind) {
       case "studio_overview":
@@ -298,6 +320,8 @@ export class ContextService {
         return "Studio architecture";
       case "planning_memory":
         return "Planning memory";
+      case "studio_issue_templates":
+        return "Canonical issue drafting templates";
     }
   }
 

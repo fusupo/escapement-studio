@@ -345,10 +345,11 @@ export interface AssemblePlanningContextInput {
   repo?: string;
   track?: string;
   session?: AgentSession;
+  user_message?: string;
 }
 
 export interface PlanningContextDocument {
-  kind: "studio_overview" | "studio_architecture" | "planning_memory";
+  kind: "studio_overview" | "studio_architecture" | "planning_memory" | "studio_issue_templates";
   label: string;
   path: string;
   content: string;

@@ -137,6 +137,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         repo: input.context?.repo,
         track: input.context?.track,
         session,
+        user_message: input.message,
       }),
       input.message,
     );
@@ -604,10 +605,14 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     return defineTool({
       name: "github_create_issue",
       label: "GitHub Create Issue",
-      description: "Create a GitHub issue and automatically stage a graph work item proposal for browser approval.",
-      promptSnippet: "github_create_issue: create a GitHub issue and auto-stage the corresponding graph work item proposal in one step.",
+      description: "Create a GitHub issue with a polished body and automatically stage a graph work item proposal for browser approval.",
+      promptSnippet: "github_create_issue: draft a rich GitHub issue body and auto-stage the corresponding graph work item proposal in one step.",
       promptGuidelines: [
         "Use github_create_issue when the user asks to create a new issue — it handles both GitHub issue creation and graph proposal staging.",
+        "Prefer richer issue bodies by default. Unless the user explicitly wants a quick capture, include background or motivation, the current problem, proposed behavior or expected vs actual behavior, scope or impact, and acceptance criteria.",
+        "For under-specified requests, draft the proposed title/body in chat and confirm before calling the tool.",
+        "Use lightweight repo context when it will materially improve the issue body — for example relevant docs, nearby module/file names, and any canonical Escapement Studio issue drafting template included in prompt context.",
+        "Keep issue text grounded in the user's request and repo evidence; do not invent repro steps, implementation details, or acceptance criteria.",
         "The graph mutation proposal is staged automatically for browser approval; no separate propose_mutations call is needed.",
         "Provide a work_item_id that follows the project's naming convention (e.g. 'studio-57').",
         "Include scope_hint and predicted_files when available to enrich the graph node.",
