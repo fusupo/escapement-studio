@@ -1,5 +1,17 @@
 <script>
-  import { getPullRequestDetails } from "../lib/api.js";
+  import { getPlan, getPullRequestDetails } from "../lib/api.js";
+
+  // ADR 014 step 8 — work item states where a plan should already exist on
+  // disk. For planned items the plan may not exist yet (GET 404). Terminal
+  // states (done, cancelled, deferred) are skipped to avoid pointless fetches.
+  const PLAN_FETCHABLE_STATES = new Set([
+    "drafting",
+    "ready",
+    "in_progress",
+    "open_pr",
+    "merged_pr",
+  ]);
+  const PLAN_SHOW_PREPARE_STATES = new Set(["planned", "drafting"]);
 
   const defaultWorkItem = {
     id: "",
@@ -33,12 +45,24 @@
   export let onCloseIssue = () => {};
   export let onLaunchExecution = () => {};
   export let onGitHubTruthRefresh = () => {};
+  export let onPreparePlan = () => {};
+  export let onApprovePlan = () => {};
+  export let onReviewPlan = () => {};
   export let closingIssue = false;
+  export let preparingPlan = false;
+  export let approvingPlan = false;
 
   let linkedPrDetails = null;
   let loadingPr = false;
   let linkedPrLookupToken = 0;
   let lastLinkedPrLookupKey = null;
+
+  // ADR 014 step 8 — plan state tracking for the Execution card.
+  let planStatus = null; // { work_item_id, metadata, scratchpad_content } | null
+  let planStatusLoading = false;
+  let planStatusError = null;
+  let planFetchToken = 0;
+  let lastPlanFetchKey = null;
 
   let editForm = { ...defaultWorkItem };
   let createForm = { ...defaultWorkItem };
@@ -104,6 +128,91 @@
   $: canCloseIssue = issueDetails
     && issueDetails.state?.toLowerCase() === "open"
     && linkedPrDetails?.merged_at != null;
+
+  // ADR 014 step 8 — fetch plan status when the selected item is in a state
+  // where a plan should exist. Use a token pattern (mirrors linkedPrLookupToken
+  // above) so stale responses can't clobber fresh selections.
+  $: planFetchKey = selectedItem?.id && selectedItem?.kind === "issue"
+    && PLAN_FETCHABLE_STATES.has(selectedItem.state)
+    ? `${selectedItem.id}:${selectedItem.state}`
+    : null;
+  $: if (planFetchKey !== lastPlanFetchKey) {
+    lastPlanFetchKey = planFetchKey;
+    if (planFetchKey) {
+      void loadPlanStatus(selectedItem.id);
+    } else {
+      planStatus = null;
+      planStatusError = null;
+      planStatusLoading = false;
+    }
+  }
+
+  async function loadPlanStatus(workItemId) {
+    const token = ++planFetchToken;
+    planStatusLoading = true;
+    planStatusError = null;
+    try {
+      const plan = await getPlan(workItemId);
+      if (token === planFetchToken) {
+        planStatus = plan;
+      }
+    } catch (err) {
+      if (token === planFetchToken) {
+        // 404 means no plan dir exists yet (expected for planned items).
+        // Anything else is surfaced so the user can see it.
+        planStatus = null;
+        const message = err?.message ?? "";
+        if (!/No plan found/i.test(message)) {
+          planStatusError = message || "Failed to load plan status";
+        }
+      }
+    } finally {
+      if (token === planFetchToken) {
+        planStatusLoading = false;
+      }
+    }
+  }
+
+  // Re-fetch plan status on demand (e.g., after Prepare or Approve).
+  export async function refreshPlanStatus() {
+    if (selectedItem?.id) {
+      await loadPlanStatus(selectedItem.id);
+    }
+  }
+
+  function planStatusTone(state) {
+    if (state === "ready") return "healthy";
+    if (state === "drafting") return "warn";
+    return "info";
+  }
+
+  async function handlePreparePlanClick() {
+    if (!selectedItem) return;
+    await onPreparePlan(selectedItem);
+    await loadPlanStatus(selectedItem.id);
+  }
+
+  async function handleApprovePlanClick() {
+    if (!selectedItem) return;
+    await onApprovePlan(selectedItem);
+    await loadPlanStatus(selectedItem.id);
+  }
+
+  function handleReviewPlanClick() {
+    if (!selectedItem) return;
+    onReviewPlan(selectedItem, planStatus);
+  }
+
+  $: planSubState = planStatus?.metadata?.state ?? null;
+  $: showPreparePlan = selectedItem?.kind === "issue"
+    && PLAN_SHOW_PREPARE_STATES.has(selectedItem?.state);
+  $: showApprovePlan = planSubState === "drafting";
+  $: showReviewPlan = planSubState === "drafting" || planSubState === "ready";
+  $: launchStateOk = selectedItem?.state === "ready";
+  $: launchDisabled = !launchEligibility?.can_launch
+    || launchEligibilityLoading
+    || launchingExecution
+    || !launchStateOk;
 
   $: if (!selectedItem && edgeForm.from_id && !graph.items.some((item) => item.id === edgeForm.from_id)) {
     edgeForm = { ...defaultEdge };
@@ -210,22 +319,72 @@
           <h3>Execution</h3>
         </div>
 
+        <!-- ADR 014 step 8 — plan status + plan actions -->
+        {#if selectedItem?.kind === "issue"}
+          <div class="plan-status-row">
+            <span class="plan-label">Plan</span>
+            {#if planStatusLoading}
+              <span class="status-pill">loading…</span>
+            {:else if planSubState}
+              <span class="status-pill {planStatusTone(planSubState)}">{planSubState}</span>
+            {:else if selectedItem?.state === "planned"}
+              <span class="status-pill">not prepared</span>
+            {:else}
+              <span class="status-pill">unknown</span>
+            {/if}
+          </div>
+          {#if planStatusError}
+            <p class="muted">Plan status error: {planStatusError}</p>
+          {/if}
+          <div class="plan-actions">
+            {#if showPreparePlan}
+              <button
+                class="small"
+                on:click={handlePreparePlanClick}
+                disabled={preparingPlan || planStatusLoading}
+              >
+                {preparingPlan ? "Preparing…" : "Prepare plan"}
+              </button>
+            {/if}
+            {#if showApprovePlan}
+              <button
+                class="small"
+                on:click={handleApprovePlanClick}
+                disabled={approvingPlan || planStatusLoading}
+              >
+                {approvingPlan ? "Approving…" : "Approve plan"}
+              </button>
+            {/if}
+            {#if showReviewPlan}
+              <button
+                class="small"
+                on:click={handleReviewPlanClick}
+                disabled={planStatusLoading}
+              >
+                Review plan
+              </button>
+            {/if}
+          </div>
+        {/if}
+
         {#if launchEligibilityLoading}
           <p class="muted">Checking frontier eligibility…</p>
         {:else if launchEligibility}
-          <span class="status-pill {launchEligibility.can_launch ? 'healthy' : 'warn'}">{launchEligibility.can_launch ? 'dispatchable' : 'blocked'}</span>
+          <span class="status-pill {launchEligibility.can_launch && launchStateOk ? 'healthy' : 'warn'}">{launchEligibility.can_launch && launchStateOk ? 'dispatchable' : 'blocked'}</span>
           {#if launchEligibility.dispatch_node}
             <p class="muted">
               Branch <code>{launchEligibility.dispatch_node.branch}</code>
               · Base <code>{launchEligibility.dispatch_node.default_base_ref}</code>
             </p>
           {/if}
-          {#if launchEligibility.launch_unavailable_reason}
+          {#if !launchEligibility.can_launch && launchEligibility.launch_unavailable_reason}
             <p class="muted">{launchEligibility.launch_unavailable_reason}</p>
-          {:else}
+          {:else if launchEligibility.can_launch && !launchStateOk}
+            <p class="muted">Approve the plan first — work item state is {selectedItem?.state ?? "unknown"}, expected <code>ready</code>.</p>
+          {:else if launchEligibility.can_launch && launchStateOk}
             <p class="muted">This node is currently on the frontier and can be launched into execution.</p>
           {/if}
-          <button on:click={() => onLaunchExecution(selectedItem)} disabled={!launchEligibility.can_launch || launchingExecution}>
+          <button on:click={() => onLaunchExecution(selectedItem)} disabled={launchDisabled}>
             {launchingExecution ? "Launching..." : "Launch execution"}
           </button>
         {:else}
@@ -255,8 +414,11 @@
           State
           <select bind:value={editForm.state}>
             <option value="planned">planned</option>
+            <option value="drafting">drafting</option>
+            <option value="ready">ready</option>
             <option value="in_progress">in_progress</option>
             <option value="open_pr">open_pr</option>
+            <option value="merged_pr">merged_pr</option>
             <option value="done">done</option>
             <option value="deferred">deferred</option>
             <option value="cancelled">cancelled</option>
@@ -309,8 +471,11 @@
         State
         <select bind:value={createForm.state}>
           <option value="planned">planned</option>
+          <option value="drafting">drafting</option>
+          <option value="ready">ready</option>
           <option value="in_progress">in_progress</option>
           <option value="open_pr">open_pr</option>
+          <option value="merged_pr">merged_pr</option>
           <option value="done">done</option>
           <option value="deferred">deferred</option>
           <option value="cancelled">cancelled</option>
