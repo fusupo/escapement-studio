@@ -1,6 +1,17 @@
 <script>
-  import { onMount } from "svelte";
-  import { getExecutionPreview, getRunChecklist, getRunChatHistory, getRunScratchpad, launchExecutionRun, listExecutionRuns, openPullRequest, resolveDisambiguation, sendFollowUpMessage } from "../lib/api.js";
+  import { onMount, afterUpdate } from "svelte";
+  import {
+    getExecutionPreview,
+    getRunChecklist,
+    getRunScratchpad,
+    launchExecutionRun,
+    listExecutionRuns,
+    openPullRequest,
+    resolveDisambiguation,
+    sendFollowUpMessage,
+  } from "../lib/api.js";
+  import ExecutionDispatchList from "./ExecutionDispatchList.svelte";
+  import ExecutionDetailPane from "./ExecutionDetailPane.svelte";
   import ExecutionChecklist from "./ExecutionChecklist.svelte";
   import { renderMarkdown } from "../lib/markdown.js";
 
@@ -18,16 +29,30 @@
   let prResults = {};
   let followUpTexts = {};
   let sendingFollowUp = {};
-  let chatHistories = {};
-  let expandedChat = {};
-
   let resolvingDisambiguation = {};
   let disambiguationContext = {};
-
   let scratchpadContent = {};
   let scratchpadLoading = {};
-
   let checklistData = {};
+
+  // Feed scroll + auto-scroll
+  let feedScrollEl;
+  let prevActivityCount = 0;
+
+  afterUpdate(() => {
+    if (!feedScrollEl || !selectedRun) return;
+    const count = selectedRun.activity_log?.length ?? 0;
+    if (count > prevActivityCount) {
+      prevActivityCount = count;
+      feedScrollEl.scrollTop = feedScrollEl.scrollHeight;
+    }
+  });
+
+  // Selection state
+  let selectedRunId = null;
+  let selectedDispatchId = null;
+  // Which column is active: "run" or "dispatch"
+  let activeSelection = "run";
 
   $: activeRuns = runs.filter((run) => ["queued", "preparing", "running", "disambiguating"].includes(run.status));
   $: disambiguatingRuns = runs.filter((run) => run.status === "disambiguating");
@@ -35,135 +60,80 @@
   $: blockedRuns = runs.filter((run) => run.status === "blocked");
   $: failedRuns = runs.filter((run) => run.status === "error");
 
+  $: dispatchNodes = preview?.groups?.flatMap((group) =>
+    group.nodes.map((node) => ({
+      ...node,
+      group_id: group.group_id,
+      repo: group.repo,
+      merge_order: group.merge_order || [],
+    }))
+  ) || [];
+
+  $: selectedRun = selectedRunId ? runs.find((r) => r.run_id === selectedRunId) ?? null : null;
+  $: selectedDispatch = selectedDispatchId ? dispatchNodes.find((n) => n.id === selectedDispatchId) ?? null : null;
+  $: selectedPullRequest = selectedRun ? selectedRun.pull_request || prResults[selectedRun.run_id] || null : null;
+
+  // Auto-select first run or dispatch if nothing selected
+  $: {
+    if (!selectedRunId && runs.length) {
+      const preferred = runs.find((r) => ["disambiguating", "running", "preparing", "queued"].includes(r.status)) || runs[0];
+      selectedRunId = preferred.run_id;
+      activeSelection = "run";
+    }
+    if (!selectedDispatchId && dispatchNodes.length) {
+      selectedDispatchId = dispatchNodes[0].id;
+    }
+  }
+
+  function selectRun(runId) {
+    selectedRunId = runId;
+    activeSelection = "run";
+  }
+
+  function selectDispatch(id) {
+    selectedDispatchId = id;
+    activeSelection = "dispatch";
+  }
+
   function mergeRun(run) {
-    if (!run) {
-      return;
-    }
-
-    const existingIndex = runs.findIndex((item) => item.run_id === run.run_id);
-    if (existingIndex >= 0) {
-      runs = runs.map((item, index) => (index === existingIndex ? run : item));
-      return;
-    }
-
-    runs = [run, ...runs].slice(0, 16);
-  }
-
-  function formatTimestamp(value) {
-    if (!value) {
-      return "—";
-    }
-
-    return new Date(value).toLocaleString();
-  }
-
-  function formatSafetySummary(checks = []) {
-    const failed = checks.filter((check) => check.status === "fail").length;
-    const warned = checks.filter((check) => check.status === "warn").length;
-
-    if (failed > 0) {
-      return `${failed} blocking check${failed === 1 ? "" : "s"}`;
-    }
-
-    if (warned > 0) {
-      return `${warned} warning${warned === 1 ? "" : "s"}`;
-    }
-
-    return "All safety checks passed";
-  }
-
-  function runStatusTone(status) {
-    if (status === "completed") {
-      return "healthy";
-    }
-
-    if (status === "running" || status === "preparing" || status === "queued") {
-      return "info";
-    }
-
-    if (status === "disambiguating") {
-      return "disambiguating";
-    }
-
-    if (status === "blocked") {
-      return "warn";
-    }
-
-    if (status === "error") {
-      return "danger";
-    }
-
-    return "";
-  }
-
-  function activityIcon(kind) {
-    if (kind === "tool_start") return "⚙️";
-    if (kind === "tool_end") return "✅";
-    if (kind === "turn_start" || kind === "turn_end") return "🔄";
-    if (kind === "reasoning") return "💡";
-    if (kind === "error") return "❌";
-    if (kind === "status_change") return "📌";
-    return "ℹ️";
-  }
-
-  function formatActivityTime(timestamp) {
-    if (!timestamp) return "";
-    try {
-      return new Date(timestamp).toLocaleTimeString();
-    } catch {
-      return "";
+    if (!run) return;
+    const idx = runs.findIndex((item) => item.run_id === run.run_id);
+    if (idx >= 0) {
+      runs = runs.map((item, i) => (i === idx ? run : item));
+    } else {
+      runs = [run, ...runs].slice(0, 16);
     }
   }
 
   async function copyValue(value, message) {
     if (!value || !window?.navigator?.clipboard) {
-      copiedMessage = "Clipboard unavailable in this browser.";
+      copiedMessage = "Clipboard unavailable.";
       return;
     }
-
     try {
       await window.navigator.clipboard.writeText(value);
       copiedMessage = message;
       window.clearTimeout(copyTimer);
-      copyTimer = window.setTimeout(() => {
-        copiedMessage = "";
-      }, 2000);
-    } catch (copyError) {
-      copiedMessage = copyError.message;
+      copyTimer = window.setTimeout(() => { copiedMessage = ""; }, 2000);
+    } catch (e) {
+      copiedMessage = e.message;
     }
-  }
-
-  function buildPrCommand(run) {
-    return `gh pr create --base ${run.base_ref} --head ${run.branch}`;
   }
 
   async function loadData({ quiet = false } = {}) {
-    if (quiet) {
-      refreshing = true;
-    } else {
-      loading = true;
-    }
+    if (quiet) { refreshing = true; } else { loading = true; }
     error = "";
-
     try {
       const [nextPreview, nextRuns] = await Promise.all([getExecutionPreview(), listExecutionRuns()]);
       preview = nextPreview;
       runs = nextRuns;
-      // Auto-expand chat for any disambiguating runs
       for (const run of nextRuns) {
-        if ((run.status === "disambiguating" || run.status === "running") && !expandedChat[run.run_id]) {
-          expandedChat = { ...expandedChat, [run.run_id]: true };
-          loadChatHistory(run.run_id);
-        }
-      }
-      // Load initial checklist for active runs
-      for (const run of nextRuns) {
-        if (["queued", "preparing", "running", "completed"].includes(run.status) && !checklistData[run.run_id]) {
+        if (["queued", "preparing", "running", "completed", "disambiguating"].includes(run.status) && !checklistData[run.run_id]) {
           loadChecklist(run.run_id);
         }
       }
-    } catch (loadError) {
-      error = loadError.message;
+    } catch (e) {
+      error = e.message;
     } finally {
       loading = false;
       refreshing = false;
@@ -177,8 +147,8 @@
       const result = await openPullRequest({ run_id: run.run_id, auto_commit: true });
       mergeRun(result.run);
       prResults = { ...prResults, [run.run_id]: result.pull_request };
-    } catch (prError) {
-      error = prError.message;
+    } catch (e) {
+      error = e.message;
     } finally {
       openingPrRunIds = openingPrRunIds.filter((id) => id !== run.run_id);
     }
@@ -188,66 +158,31 @@
     return ["running", "preparing", "completed", "disambiguating"].includes(run.status);
   }
 
-  function isDisambiguating(run) {
-    return run.status === "disambiguating";
-  }
-
   async function handleSendFollowUp(run) {
     const text = (followUpTexts[run.run_id] || "").trim();
     if (!text) return;
-
     sendingFollowUp = { ...sendingFollowUp, [run.run_id]: true };
     error = "";
-
-    // Optimistically add to local chat history
-    const userMsg = { timestamp: new Date().toISOString(), role: "user", text };
-    chatHistories = {
-      ...chatHistories,
-      [run.run_id]: [...(chatHistories[run.run_id] || []), userMsg],
-    };
     followUpTexts = { ...followUpTexts, [run.run_id]: "" };
-    expandedChat = { ...expandedChat, [run.run_id]: true };
-
     try {
       const delivery = ["running", "preparing"].includes(run.status) ? "followUp" : undefined;
-      const result = await sendFollowUpMessage({
-        run_id: run.run_id,
-        message: text,
-        ...(delivery ? { delivery } : {}),
-      });
-      if (!result.accepted) {
-        error = result.error || "Follow-up was not accepted.";
-      }
-    } catch (followUpError) {
-      error = followUpError.message;
+      const result = await sendFollowUpMessage({ run_id: run.run_id, message: text, ...(delivery ? { delivery } : {}) });
+      if (!result.accepted) error = result.error || "Follow-up was not accepted.";
+    } catch (e) {
+      error = e.message;
     } finally {
       sendingFollowUp = { ...sendingFollowUp, [run.run_id]: false };
     }
   }
 
-  async function loadChatHistory(runId) {
-    try {
-      const result = await getRunChatHistory(runId);
-      chatHistories = { ...chatHistories, [runId]: result.messages || [] };
-    } catch (chatError) {
-      console.error("Failed to load chat history", chatError);
-    }
-  }
-
-  function toggleChat(runId) {
-    const next = !expandedChat[runId];
-    expandedChat = { ...expandedChat, [runId]: next };
-    if (next && !chatHistories[runId]) {
-      loadChatHistory(runId);
-    }
-  }
+  // Chat history is now derived from run.activity_log (agent_message + user_message entries)
 
   async function loadChecklist(runId) {
     try {
       const result = await getRunChecklist(runId);
       checklistData = { ...checklistData, [runId]: result };
-    } catch (err) {
-      console.debug("Failed to load checklist", err);
+    } catch (e) {
+      console.debug("Failed to load checklist", e);
     }
   }
 
@@ -257,116 +192,150 @@
     try {
       const result = await getRunScratchpad(runId);
       scratchpadContent = { ...scratchpadContent, [runId]: result.content };
-    } catch (scratchpadError) {
+    } catch (e) {
       scratchpadContent = { ...scratchpadContent, [runId]: null };
-      console.error("Failed to load scratchpad", scratchpadError);
     } finally {
       scratchpadLoading = { ...scratchpadLoading, [runId]: false };
-    }
-  }
-
-  function handleScratchpadToggle(event, runId) {
-    if (event.target.open) {
-      loadScratchpad(runId);
-    }
-  }
-
-  function handleFollowUpKeydown(event, run) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      handleSendFollowUp(run);
     }
   }
 
   async function launchNode(node) {
     launchingIds = [...launchingIds, node.id];
     error = "";
-
     try {
       const result = await launchExecutionRun({ work_item_id: node.id, disambiguate: true });
       mergeRun(result.run);
-      // Auto-expand chat so user sees Q&A questions immediately
       if (result.run) {
-        expandedChat = { ...expandedChat, [result.run.run_id]: true };
+        selectedRunId = result.run.run_id;
+        activeSelection = "run";
       }
       await loadData({ quiet: true });
-    } catch (launchError) {
-      error = launchError.message;
+    } catch (e) {
+      error = e.message;
     } finally {
       launchingIds = launchingIds.filter((id) => id !== node.id);
     }
   }
 
+  function launchNodeById(id) {
+    const node = dispatchNodes.find((n) => n.id === id);
+    if (node) launchNode(node);
+  }
+
   async function handleResolveDisambiguation(run) {
     resolvingDisambiguation = { ...resolvingDisambiguation, [run.run_id]: true };
     error = "";
-
     try {
-      const additionalContext = (disambiguationContext[run.run_id] || "").trim() || undefined;
-      const result = await resolveDisambiguation({
-        run_id: run.run_id,
-        additional_context: additionalContext,
-      });
-      if (!result.resolved) {
-        error = result.error || "Failed to resolve disambiguation.";
-      } else {
-        disambiguationContext = { ...disambiguationContext, [run.run_id]: "" };
-      }
-    } catch (resolveError) {
-      error = resolveError.message;
+      const ctx = (disambiguationContext[run.run_id] || "").trim() || undefined;
+      const result = await resolveDisambiguation({ run_id: run.run_id, additional_context: ctx });
+      if (!result.resolved) error = result.error || "Failed to resolve.";
+      else disambiguationContext = { ...disambiguationContext, [run.run_id]: "" };
+    } catch (e) {
+      error = e.message;
     } finally {
       resolvingDisambiguation = { ...resolvingDisambiguation, [run.run_id]: false };
     }
   }
 
-  // Poll chat history for disambiguating runs so user sees questions as they arrive
-  let disambiguationPollTimer;
-  function startDisambiguationPolling() {
-    if (disambiguationPollTimer) return;
-    disambiguationPollTimer = setInterval(() => {
-      const disambRuns = runs.filter((r) => (r.status === "disambiguating" || r.status === "running") && expandedChat[r.run_id]);
-      for (const run of disambRuns) {
-        loadChatHistory(run.run_id);
-      }
-      if (disambRuns.length === 0) {
-        clearInterval(disambiguationPollTimer);
-        disambiguationPollTimer = null;
-      }
-    }, 2000);
+  // Activity log delivered via SSE — no polling needed
+
+  function runStatusTone(status) {
+    if (status === "completed") return "healthy";
+    if (["running", "preparing", "queued"].includes(status)) return "info";
+    if (status === "disambiguating") return "disambiguating";
+    if (status === "blocked") return "warn";
+    if (status === "error") return "danger";
+    return "";
   }
 
-  // Reactive: start polling when disambiguating or running runs exist
-  $: if (disambiguatingRuns.length > 0 || activeRuns.length > 0) {
-    startDisambiguationPolling();
+  function formatActivityTime(value) {
+    if (!value) return "";
+    try { return new Date(value).toLocaleTimeString(); } catch { return ""; }
+  }
+
+  function activityIcon(kind) {
+    if (kind === "tool_start") return "gear";
+    if (kind === "tool_end") return "check";
+    if (kind === "turn_start" || kind === "turn_end") return "loop";
+    if (kind === "reasoning") return "idea";
+    if (kind === "error") return "err";
+    if (kind === "status_change") return "pin";
+    return "info";
+  }
+
+  function activityKindColor(kind) {
+    if (kind === "error") return "var(--red, #f85149)";
+    if (kind === "tool_start" || kind === "tool_end") return "var(--accent, #2563eb)";
+    if (kind === "status_change") return "var(--green, #3fb950)";
+    if (kind === "reasoning") return "var(--yellow, #d29922)";
+    if (kind === "turn_start" || kind === "turn_end") return "var(--purple, #a371f7)";
+    if (kind === "follow_up") return "#58a6ff";
+    return "var(--text-muted, #566070)";
+  }
+
+  // Group activity_log entries by turn for color-banded rendering
+  const turnColors = [
+    "rgba(37, 99, 235, 0.04)",
+    "rgba(63, 185, 80, 0.04)",
+    "rgba(163, 113, 247, 0.04)",
+    "rgba(210, 153, 34, 0.04)",
+  ];
+
+  function groupByTurn(activityLog) {
+    if (!activityLog?.length) return [];
+    const groups = [];
+    let current = { turnIndex: 0, entries: [] };
+    for (const entry of activityLog) {
+      if (entry.kind === "turn_start" && current.entries.length > 0) {
+        groups.push(current);
+        current = { turnIndex: current.turnIndex + 1, entries: [] };
+      }
+      current.entries.push(entry);
+    }
+    if (current.entries.length > 0) groups.push(current);
+    return groups;
+  }
+
+  $: selectedRunTurnGroups = selectedRun ? groupByTurn(selectedRun.activity_log) : [];
+
+  const COLLAPSE_LINE_THRESHOLD = 6;
+  let expandedMessages = {};
+
+  function toggleMessageExpand(idx) {
+    expandedMessages = { ...expandedMessages, [idx]: !expandedMessages[idx] };
+  }
+
+  function shouldCollapse(text) {
+    return text ? text.split("\n").length > COLLAPSE_LINE_THRESHOLD : false;
+  }
+
+  function truncateText(text) {
+    return text.split("\n").slice(0, COLLAPSE_LINE_THRESHOLD).join("\n");
+  }
+
+  function handleFollowUpKeydown(event, run) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (canSendFollowUp(run)) handleSendFollowUp(run);
+    }
   }
 
   onMount(() => {
     loadData();
-
     stream = new EventSource("/api/execution/stream");
-    stream.addEventListener("open", () => {
-      connected = true;
-    });
-    stream.addEventListener("error", () => {
-      connected = false;
-    });
+    stream.addEventListener("open", () => { connected = true; });
+    stream.addEventListener("error", () => { connected = false; });
 
     const handleEnvelope = (event) => {
       try {
         const envelope = JSON.parse(event.data);
         const run = envelope.payload?.run;
         mergeRun(run);
-        // Auto-expand chat and load history when run enters disambiguating
-        if (run && run.status === "disambiguating") {
-          expandedChat = { ...expandedChat, [run.run_id]: true };
-          loadChatHistory(run.run_id);
-        }
-        // Load initial checklist when run starts running (if not already populated by SSE)
-        if (run && run.status === "running" && !checklistData[run.run_id]) {
+        if (run && ["running", "disambiguating"].includes(run.status) && !checklistData[run.run_id]) {
           loadChecklist(run.run_id);
         }
-      } catch (streamError) {
-        console.error("Failed to parse execution SSE event", streamError);
+      } catch (e) {
+        console.error("Failed to parse execution SSE event", e);
       }
     };
 
@@ -374,11 +343,9 @@
       try {
         const envelope = JSON.parse(event.data);
         const snapshot = envelope.payload;
-        if (snapshot?.run_id) {
-          checklistData = { ...checklistData, [snapshot.run_id]: snapshot };
-        }
-      } catch (err) {
-        console.error("Failed to parse checklist SSE event", err);
+        if (snapshot?.run_id) checklistData = { ...checklistData, [snapshot.run_id]: snapshot };
+      } catch (e) {
+        console.error("Failed to parse checklist SSE event", e);
       }
     };
 
@@ -388,1006 +355,670 @@
 
     return () => {
       window.clearTimeout(copyTimer);
-      if (disambiguationPollTimer) clearInterval(disambiguationPollTimer);
       stream?.close();
     };
   });
 </script>
 
 <section class="execution-panel">
-  <div class="panel-header execution-header">
-    <div>
-      <h2>Dispatch execution work</h2>
-      <p class="muted">Launch dispatchable work, track live runs, inspect worktree and branch context, and prep PR or sync follow-up without leaving the Execute tab.</p>
+  <!-- Top bar: status + summary -->
+  <div class="exec-topbar">
+    <div class="exec-topbar-left">
+      <span class:healthy={connected} class="status-pill">{connected ? "stream connected" : "reconnecting"}</span>
+      {#if preview}
+        <span class="exec-stat">{preview.summary.dispatchable_now} dispatchable</span>
+        <span class="exec-stat">{activeRuns.length} active</span>
+        <span class="exec-stat">{completedRuns.length} done</span>
+        {#if blockedRuns.length + failedRuns.length > 0}
+          <span class="exec-stat warn">{blockedRuns.length + failedRuns.length} failed</span>
+        {/if}
+      {/if}
     </div>
-    <div class="status-cluster execution-toolbar">
-      <span class:healthy={connected} class="status-pill">{connected ? "Execution stream connected" : "Execution stream reconnecting"}</span>
-      <button class="secondary" on:click={() => loadData({ quiet: true })} disabled={refreshing || loading}>{refreshing ? "Refreshing..." : "Refresh execute view"}</button>
-    </div>
+    <button class="secondary small" on:click={() => loadData({ quiet: true })} disabled={refreshing || loading}>{refreshing ? "Refreshing..." : "Refresh"}</button>
   </div>
 
   {#if copiedMessage}
     <div class="banner success inline-banner" aria-live="polite">{copiedMessage}</div>
   {/if}
-
   {#if error}
     <div class="banner error inline-banner">{error}</div>
   {/if}
 
   {#if loading}
-    <div class="empty-state">Loading execution dispatch preview…</div>
+    <div class="empty-state">Loading execution workspace...</div>
   {:else if !preview}
     <div class="empty-state">Execution preview unavailable.</div>
   {:else}
-    <div class="execution-summary-grid execute-summary-grid">
-      <div class="execution-summary-card">
-        <strong>Dispatchable now</strong>
-        <span>{preview.summary.dispatchable_now}</span>
+    <div class="exec-columns">
+      <!-- Left: Dispatch queue -->
+      <div class="exec-col-dispatch">
+        <ExecutionDispatchList
+          groups={preview.groups}
+          selectedDispatchId={activeSelection === "dispatch" ? selectedDispatchId : null}
+          {launchingIds}
+          on:select={(e) => selectDispatch(e.detail.id)}
+          on:launch={(e) => launchNodeById(e.detail.id)}
+        />
       </div>
-      <div class="execution-summary-card">
-        <strong>Active runs</strong>
-        <span>{activeRuns.length}{disambiguatingRuns.length ? ` (${disambiguatingRuns.length} Q&A)` : ''}</span>
-      </div>
-      <div class="execution-summary-card">
-        <strong>Completed runs</strong>
-        <span>{completedRuns.length}</span>
-      </div>
-      <div class="execution-summary-card">
-        <strong>Blocked / failed</strong>
-        <span>{blockedRuns.length + failedRuns.length}</span>
-      </div>
-    </div>
 
-    <div class="execute-layout">
-      <div class="execute-primary-column">
-        {#if preview.assumptions?.length}
-          <details class="execution-assumptions dispatch-group-card">
-            <summary>Dispatch assumptions and limits</summary>
-            <ul>
-              {#each preview.assumptions as assumption}
-                <li>{assumption}</li>
-              {/each}
-            </ul>
-            <p class="muted small-text execution-policy-note">
-              Heavy task concurrency cap: {preview.validation_policy.max_concurrent_node_heavy_tasks}
-            </p>
-          </details>
+      <!-- Middle: Details/context for selected item -->
+      <div class="exec-col-details">
+        <ExecutionDetailPane
+          kind={activeSelection}
+          run={activeSelection === "run" ? selectedRun : null}
+          dispatchNode={activeSelection === "dispatch" ? selectedDispatch : null}
+          pullRequest={selectedPullRequest}
+          openingPr={selectedRun ? openingPrRunIds.includes(selectedRun.run_id) : false}
+          assumptions={preview.assumptions || []}
+          validationPolicy={preview.validation_policy}
+          on:copybranch={() => {
+            if (activeSelection === "run" && selectedRun) copyValue(selectedRun.branch, `Copied branch ${selectedRun.branch}`);
+            else if (activeSelection === "dispatch" && selectedDispatch) copyValue(selectedDispatch.branch, `Copied branch ${selectedDispatch.branch}`);
+          }}
+          on:copyworktree={() => {
+            if (activeSelection === "run" && selectedRun) copyValue(selectedRun.worktree_path, `Copied worktree`);
+            else if (activeSelection === "dispatch" && selectedDispatch) copyValue(selectedDispatch.worktree_path, `Copied worktree`);
+          }}
+          on:openpr={() => selectedRun && handleOpenPR(selectedRun)}
+          on:launch={() => selectedDispatch && launchNode(selectedDispatch)}
+          scratchpadContent={selectedRun ? scratchpadContent[selectedRun.run_id] : undefined}
+          scratchpadLoading={selectedRun ? !!scratchpadLoading[selectedRun.run_id] : false}
+          on:scratchpadtoggle={() => selectedRun && loadScratchpad(selectedRun.run_id)}
+        />
+      </div>
+
+      <!-- Right: Workspace (run pills + active run content) -->
+      <div class="exec-col-workspace">
+        <!-- Run pill strip -->
+        {#if runs.length > 0}
+          <div class="run-pill-strip">
+            {#each runs as run}
+              <button
+                class="run-pill"
+                class:active={selectedRunId === run.run_id && activeSelection === "run"}
+                on:click={() => selectRun(run.run_id)}
+                title="{run.work_item_id} — {run.status}"
+              >
+                <span class="run-pill-dot {runStatusTone(run.status)}"></span>
+                <span class="run-pill-label">{run.work_item_id}</span>
+              </button>
+            {/each}
+          </div>
         {/if}
 
-        <section class="dispatch-group-card">
-          <div class="dispatch-group-header">
-            <div>
-              <h3>Dispatch queue</h3>
-              <p class="muted">Review launchable work, owned scope, and worktree safety before starting a run.</p>
+        <!-- Workspace content for selected run -->
+        {#if activeSelection === "run" && selectedRun}
+          {@const run = selectedRun}
+          {@const checklist = checklistData[run.run_id]}
+          {@const followUp = followUpTexts[run.run_id] || ""}
+          {@const isSending = !!sendingFollowUp[run.run_id]}
+          {@const isDisambiguating = run.status === "disambiguating"}
+          {@const disambigCtx = disambiguationContext[run.run_id] || ""}
+          {@const isResolving = !!resolvingDisambiguation[run.run_id]}
+
+          <!-- Fixed header -->
+          <div class="workspace-top">
+            <div class="workspace-header">
+              <div>
+                <h3>{run.work_item_id}</h3>
+                <span class="muted">{run.work_item_name}</span>
+              </div>
+              <span class="status-pill {runStatusTone(run.status)}">{run.status}</span>
             </div>
-            <span class="proposal-type">{preview.groups.length} group(s)</span>
+
+            {#if run.progress_message}
+              <div class="workspace-progress">{run.progress_message}</div>
+            {/if}
+
+            <!-- Checklist (collapsible, open by default) -->
+            {#if checklist?.items?.length}
+              <details class="workspace-expandable" open>
+                <summary>Checklist ({checklist.items.filter(i => i.checked).length}/{checklist.items.length})</summary>
+                <ExecutionChecklist items={checklist.items} />
+              </details>
+            {/if}
+
+            <!-- Disambiguation banner -->
+            {#if isDisambiguating}
+              <div class="disambig-banner">
+                <strong>Setup phase</strong>
+                <span class="muted">Review the plan, answer questions, then approve to start coding.</span>
+              </div>
+            {/if}
           </div>
 
-          {#if preview.groups.length === 0}
-            <p class="muted">No dispatchable execution groups yet.</p>
-          {:else}
-            <div class="execution-groups">
-              {#each preview.groups as group}
-                <section class="dispatch-group-card dispatch-subgroup">
-                  <div class="dispatch-group-header">
-                    <div>
-                      <h3>{group.group_id}</h3>
-                      <p class="muted">Repo: {group.repo} · {group.nodes.length} launchable node(s)</p>
-                    </div>
-                    {#if group.merge_order?.length}
-                      <span class="proposal-type">Merge order: {group.merge_order.join(" → ")}</span>
-                    {/if}
-                  </div>
-
-                  <div class="dispatch-node-list">
-                    {#each group.nodes as node}
-                      <article class="dispatch-node-card execute-node-card">
-                        <div class="dispatch-node-header">
-                          <div>
-                            <strong>{node.id}</strong>
-                            <div>{node.name}</div>
-                          </div>
-                          <div class="node-action-cluster">
-                            {#if node.issue_url}
-                              <a class="ghost-link small" href={node.issue_url} target="_blank" rel="noreferrer">Open issue</a>
+          <!-- Scrollable feed -->
+          <div class="workspace-feed-scroll" bind:this={feedScrollEl}>
+            {#if selectedRunTurnGroups.length > 0}
+              <div class="unified-feed">
+                {#each selectedRunTurnGroups as group, gi}
+                  <div class="turn-band" style="background: {turnColors[group.turnIndex % turnColors.length]}">
+                    {#each group.entries as entry, ei}
+                      {@const globalIdx = `${gi}-${ei}`}
+                      {#if entry.kind === "agent_message"}
+                        <div class="feed-chat feed-chat-assistant">
+                          <div class="feed-chat-hdr">
+                            <span class="feed-chat-role">Agent</span>
+                            <span class="feed-chat-ts">{formatActivityTime(entry.timestamp)}</span>
+                            {#if shouldCollapse(entry.message)}
+                              <button class="feed-expand-btn" on:click={() => toggleMessageExpand(globalIdx)}>
+                                {expandedMessages[globalIdx] ? "collapse" : "expand"}
+                              </button>
                             {/if}
-                            <button on:click={() => launchNode(node)} disabled={!node.can_launch || launchingIds.includes(node.id)}>
-                              {launchingIds.includes(node.id) ? "Launching..." : node.can_launch ? "Launch run" : "Blocked"}
-                            </button>
                           </div>
-                        </div>
-
-                        <div class="execution-context-row">
-                          <span class="context-chip"><span class="context-label">Branch</span><code>{node.branch}</code></span>
-                          <span class="context-chip"><span class="context-label">Base</span><code>{node.default_base_ref}</code></span>
-                          <span class="context-chip context-path"><span class="context-label">Worktree</span><code>{node.worktree_path}</code></span>
-                        </div>
-
-                        <div class="execute-card-actions">
-                          <button class="secondary small" on:click={() => copyValue(node.branch, `Copied branch ${node.branch}`)}>Copy branch</button>
-                          <button class="secondary small" on:click={() => copyValue(node.worktree_path, `Copied worktree for ${node.id}`)}>Copy worktree</button>
-                        </div>
-
-                        <div class="safety-summary-row">
-                          <span class="status-pill {node.can_launch ? 'healthy' : 'warn'}">{node.can_launch ? 'Launchable' : 'Blocked by safety checks'}</span>
-                          <span class="muted small-text">{formatSafetySummary(node.safety_checks)}</span>
-                        </div>
-
-                        {#if node.scope_hint}
-                          <p>{node.scope_hint}</p>
-                        {/if}
-
-                        <details>
-                          <summary>Scope, sharing, and safety</summary>
-                          <div class="dispatch-scope-grid execute-scope-grid">
-                            <div>
-                              <div class="muted">Owned files</div>
-                              <ul>
-                                {#if node.files_owned.length}
-                                  {#each node.files_owned as path}<li>{path}</li>{/each}
-                                {:else}
-                                  <li>(none predicted)</li>
-                                {/if}
-                              </ul>
-                            </div>
-                            <div>
-                              <div class="muted">Shared files</div>
-                              <ul>
-                                {#if node.files_shared.length}
-                                  {#each node.files_shared as shared}<li><code>{shared.path}</code> — {shared.assessment}</li>{/each}
-                                {:else}
-                                  <li>(none)</li>
-                                {/if}
-                              </ul>
-                            </div>
-                            <div>
-                              <div class="muted">Forbidden files</div>
-                              <ul>
-                                {#if node.files_forbidden.length}
-                                  {#each node.files_forbidden as path}<li>{path}</li>{/each}
-                                {:else}
-                                  <li>(none)</li>
-                                {/if}
-                              </ul>
-                            </div>
+                          <div class="feed-chat-body" class:feed-chat-collapsed={shouldCollapse(entry.message) && !expandedMessages[globalIdx]}>
+                            {expandedMessages[globalIdx] || !shouldCollapse(entry.message) ? entry.message : truncateText(entry.message)}
                           </div>
-                          <div class="execution-check-list">
-                            {#each node.safety_checks as check}
-                              <div class="execution-check {check.status}">
-                                <strong>{check.code}</strong>
-                                <span>{check.message}</span>
-                              </div>
-                            {/each}
+                          {#if shouldCollapse(entry.message) && !expandedMessages[globalIdx]}
+                            <button class="feed-expand-inline" on:click={() => toggleMessageExpand(globalIdx)}>Show full message ({entry.message.split("\n").length} lines)</button>
+                          {/if}
+                        </div>
+                      {:else if entry.kind === "user_message"}
+                        <div class="feed-chat feed-chat-user">
+                          <div class="feed-chat-hdr">
+                            <span class="feed-chat-role">You</span>
+                            <span class="feed-chat-ts">{formatActivityTime(entry.timestamp)}</span>
                           </div>
-                        </details>
-                      </article>
+                          <div class="feed-chat-body">{entry.message}</div>
+                        </div>
+                      {:else if entry.kind === "turn_start" || entry.kind === "turn_end"}
+                        <!-- Absorbed into band color -->
+                      {:else}
+                        <div class="feed-activity" style="--activity-color: {activityKindColor(entry.kind)}">
+                          <span class="feed-activity-kind">{activityIcon(entry.kind)}</span>
+                          <span class="feed-activity-ts">{formatActivityTime(entry.timestamp)}</span>
+                          <span class="feed-activity-msg">{entry.message}</span>
+                        </div>
+                      {/if}
                     {/each}
                   </div>
-                </section>
-              {/each}
+                {/each}
+
+                <!-- Pinned summary cards at end of feed -->
+                {#if run.result_summary}
+                  <div class="feed-pinned-card">
+                    <div class="feed-pinned-hdr">Result summary</div>
+                    <pre class="feed-pinned-pre">{run.result_summary}</pre>
+                  </div>
+                {/if}
+                {#if run.changed_files?.length}
+                  <div class="feed-pinned-card">
+                    <div class="feed-pinned-hdr">Changed files ({run.changed_files.length})</div>
+                    <ul class="feed-pinned-list">{#each run.changed_files as path}<li>{path}</li>{/each}</ul>
+                  </div>
+                {/if}
+                {#if run.errors?.length}
+                  <div class="feed-pinned-card feed-pinned-error">
+                    <div class="feed-pinned-hdr">Errors ({run.errors.length})</div>
+                    <ul class="feed-pinned-list">{#each run.errors as item}<li><strong>{item.code}</strong>: {item.message}</li>{/each}</ul>
+                  </div>
+                {/if}
+              </div>
+            {:else if ["running", "preparing", "disambiguating"].includes(run.status)}
+              <div class="workspace-empty muted">Waiting for agent activity...</div>
+            {/if}
+          </div>
+
+          <!-- Pinned input at bottom -->
+          {#if canSendFollowUp(run)}
+            <div class="workspace-input-pinned">
+              <div class="chat-input-row">
+                <textarea
+                  placeholder={isDisambiguating ? "Answer questions or add context..." : ["running", "preparing"].includes(run.status) ? "Steer or follow up..." : "Send a follow-up..."}
+                  value={followUp}
+                  on:input={(e) => followUpTexts = { ...followUpTexts, [run.run_id]: e.currentTarget.value }}
+                  on:keydown={(e) => handleFollowUpKeydown(e, run)}
+                  rows="2"
+                  disabled={isSending}
+                ></textarea>
+                <button on:click={() => handleSendFollowUp(run)} disabled={isSending || !followUp.trim()}>
+                  {isSending ? "..." : "Send"}
+                </button>
+              </div>
+
+              {#if isDisambiguating}
+                <div class="chat-input-row">
+                  <textarea
+                    placeholder="Optional: final context for the coding agent..."
+                    value={disambigCtx}
+                    on:input={(e) => disambiguationContext = { ...disambiguationContext, [run.run_id]: e.currentTarget.value }}
+                    rows="2"
+                    disabled={isResolving}
+                  ></textarea>
+                  <button on:click={() => handleResolveDisambiguation(run)} disabled={isResolving}>
+                    {isResolving ? "Starting..." : "Proceed to coding"}
+                  </button>
+                </div>
+              {/if}
             </div>
           {/if}
-        </section>
+
+        {:else if activeSelection === "dispatch" && selectedDispatch}
+          <div class="workspace-feed-scroll">
+            <div class="workspace-empty large muted">
+              Dispatch candidate selected. See details in the middle column, or launch to create a run.
+            </div>
+          </div>
+        {:else}
+          <div class="workspace-feed-scroll">
+            <div class="workspace-empty large muted">No runs yet. Launch a dispatch candidate to get started.</div>
+          </div>
+        {/if}
       </div>
-
-      <aside class="execute-sidebar-column">
-        <section class="dispatch-group-card execute-sidebar-card">
-          <div class="dispatch-group-header">
-            <div>
-              <h3>Run status</h3>
-              <p class="muted">Live execution state and handoff actions for recent runs.</p>
-            </div>
-            <span class="status-pill {connected ? 'healthy' : 'warn'}">{connected ? 'Live' : 'Retrying stream'}</span>
-          </div>
-
-          <div class="run-stat-grid">
-            <div class="execution-summary-card compact-stat">
-              <strong>Queued / active</strong>
-              <span>{activeRuns.length}</span>
-            </div>
-            <div class="execution-summary-card compact-stat">
-              <strong>Completed</strong>
-              <span>{completedRuns.length}</span>
-            </div>
-            <div class="execution-summary-card compact-stat">
-              <strong>Blocked</strong>
-              <span>{blockedRuns.length}</span>
-            </div>
-            <div class="execution-summary-card compact-stat">
-              <strong>Errors</strong>
-              <span>{failedRuns.length}</span>
-            </div>
-          </div>
-        </section>
-
-        <section class="dispatch-group-card execute-sidebar-card">
-          <div class="dispatch-group-header">
-            <div>
-              <h3>Recent execution runs</h3>
-              <p class="muted">Use branch, worktree, and artifact context to review work before PR or sync follow-up.</p>
-            </div>
-          </div>
-
-          {#if runs.length === 0}
-            <p class="muted">No execution runs launched yet.</p>
-          {:else}
-            <div class="dispatch-node-list run-list">
-              {#each runs as run}
-                <article class="dispatch-node-card execution-run-card">
-                  <div class="dispatch-node-header">
-                    <div>
-                      <strong>{run.work_item_id}</strong>
-                      <div>{run.work_item_name}</div>
-                    </div>
-                    <span class="status-pill {runStatusTone(run.status)}">{run.status}</span>
-                  </div>
-
-                  <div class="execution-context-row run-context-row">
-                    <span class="context-chip"><span class="context-label">Branch</span><code>{run.branch}</code></span>
-                    <span class="context-chip"><span class="context-label">Base</span><code>{run.base_ref}</code></span>
-                  </div>
-                  <div class="execution-context-row run-context-row">
-                    <span class="context-chip context-path"><span class="context-label">Worktree</span><code>{run.worktree_path}</code></span>
-                  </div>
-                  <div class="execution-context-row run-context-row">
-                    <span class="context-chip context-path"><span class="context-label">Artifacts</span><code>{run.artifact_dir}</code></span>
-                  </div>
-
-                  <div class="run-timestamp-grid small-text muted">
-                    <span>Created: {formatTimestamp(run.created_at)}</span>
-                    <span>Updated: {formatTimestamp(run.updated_at)}</span>
-                    {#if run.started_at}<span>Started: {formatTimestamp(run.started_at)}</span>{/if}
-                    {#if run.completed_at}<span>Completed: {formatTimestamp(run.completed_at)}</span>{/if}
-                  </div>
-
-                  <div class="safety-summary-row">
-                    <span class="muted small-text">{formatSafetySummary(run.safety_checks)}</span>
-                  </div>
-
-                  {#if run.progress_message}
-                    <p class="run-progress-message">{run.progress_message}</p>
-                  {/if}
-
-                  {#if run.activity_log?.length}
-                    <details class="activity-log-details" open={["running", "preparing"].includes(run.status)}>
-                      <summary>Activity log ({run.activity_log.length} event{run.activity_log.length === 1 ? '' : 's'})</summary>
-                      <div class="activity-log">
-                        {#each run.activity_log as entry}
-                          <div class="activity-entry activity-{entry.kind}">
-                            <span class="activity-icon">{activityIcon(entry.kind)}</span>
-                            <span class="activity-time">{formatActivityTime(entry.timestamp)}</span>
-                            <span class="activity-message">{entry.message}</span>
-                          </div>
-                        {/each}
-                      </div>
-                    </details>
-                  {:else if ["running", "preparing"].includes(run.status)}
-                    <div class="activity-log-placeholder muted small-text">Waiting for activity events…</div>
-                  {/if}
-
-                  <div class="execute-card-actions">
-                    {#if run.issue_url}
-                      <a class="ghost-link small" href={run.issue_url} target="_blank" rel="noreferrer">Open issue</a>
-                    {/if}
-                    <button class="secondary small" on:click={() => copyValue(run.branch, `Copied branch ${run.branch}`)}>Copy branch</button>
-                    <button class="secondary small" on:click={() => copyValue(run.worktree_path, `Copied worktree for ${run.work_item_id}`)}>Copy worktree</button>
-                    {#if isDisambiguating(run)}
-                      <button class="secondary small disambiguation-chat-btn" on:click={() => toggleChat(run.run_id)}>
-                        {expandedChat[run.run_id] ? 'Hide plan review' : '📋 Review plan'}
-                      </button>
-                    {:else if canSendFollowUp(run)}
-                      <button class="secondary small" on:click={() => toggleChat(run.run_id)}>
-                        {expandedChat[run.run_id] ? 'Hide chat' : 'Follow-up chat'}
-                      </button>
-                    {/if}
-                    {#if run.status === "completed"}
-                      {#if run.pull_request}
-                        <a class="ghost-link small" href={run.pull_request.url} target="_blank" rel="noreferrer">PR #{run.pull_request.number}</a>
-                      {:else if prResults[run.run_id]}
-                        <a class="ghost-link small" href={prResults[run.run_id].url} target="_blank" rel="noreferrer">PR #{prResults[run.run_id].number}</a>
-                      {:else}
-                        <button on:click={() => handleOpenPR(run)} disabled={openingPrRunIds.includes(run.run_id)}>
-                          {openingPrRunIds.includes(run.run_id) ? 'Opening PR…' : 'Open PR'}
-                        </button>
-                      {/if}
-
-                    {/if}
-                  </div>
-
-                  {#if isDisambiguating(run)}
-                    {#if expandedChat[run.run_id]}
-                      <div class="follow-up-chat disambiguating-chat">
-                        <div class="disambiguation-banner">
-                          <span class="disambiguation-icon">📋</span>
-                          <div class="disambiguation-banner-text">
-                            <strong>Setup phase — Review implementation plan</strong>
-                            <span>The agent has analyzed the issue and codebase. Review the plan and checklist below, answer any questions, then approve to start coding.</span>
-                          </div>
-                        </div>
-                        {#if chatHistories[run.run_id]?.length}
-                          <div class="follow-up-messages disambiguation-messages">
-                            {#each chatHistories[run.run_id] as msg}
-                              <div class="follow-up-msg follow-up-{msg.role}">
-                                <span class="follow-up-role">{msg.role === 'user' ? 'You' : 'Agent'}</span>
-                                <span class="follow-up-time">{formatActivityTime(msg.timestamp)}</span>
-                                <div class="follow-up-text">{msg.text}</div>
-                              </div>
-                            {/each}
-                          </div>
-                        {:else}
-                          <div class="disambiguation-waiting muted small-text">Waiting for the agent to generate questions…</div>
-                        {/if}
-                        <div class="follow-up-input-row">
-                          <textarea
-                            class="follow-up-input"
-                            placeholder="Answer questions or add context for the agent…"
-                            bind:value={followUpTexts[run.run_id]}
-                            on:keydown={(e) => handleFollowUpKeydown(e, run)}
-                            rows="2"
-                            disabled={sendingFollowUp[run.run_id]}
-                          ></textarea>
-                          <button
-                            class="follow-up-send"
-                            on:click={() => handleSendFollowUp(run)}
-                            disabled={sendingFollowUp[run.run_id] || !(followUpTexts[run.run_id] || '').trim()}
-                          >
-                            {sendingFollowUp[run.run_id] ? 'Sending…' : 'Send'}
-                          </button>
-                        </div>
-                        <div class="disambiguation-resolve-row">
-                          <textarea
-                            class="disambiguation-context-input"
-                            placeholder="Optional: final context or instructions to pass to the coding agent…"
-                            bind:value={disambiguationContext[run.run_id]}
-                            rows="2"
-                            disabled={resolvingDisambiguation[run.run_id]}
-                          ></textarea>
-                          <button
-                            class="disambiguation-resolve-btn"
-                            on:click={() => handleResolveDisambiguation(run)}
-                            disabled={resolvingDisambiguation[run.run_id]}
-                          >
-                            {resolvingDisambiguation[run.run_id] ? 'Starting coding…' : '✅ Proceed to coding'}
-                          </button>
-                        </div>
-                      </div>
-                    {/if}
-                  {/if}
-                  {#if checklistData[run.run_id]?.items?.length}
-                    <ExecutionChecklist items={checklistData[run.run_id].items} />
-                  {/if}
-
-                  {#if !isDisambiguating(run) && expandedChat[run.run_id] && canSendFollowUp(run)}
-                    <div class="follow-up-chat">
-                      {#if chatHistories[run.run_id]?.length}
-                        <div class="follow-up-messages">
-                          {#each chatHistories[run.run_id] as msg}
-                            <div class="follow-up-msg follow-up-{msg.role}">
-                              <span class="follow-up-role">{msg.role === 'user' ? 'You' : 'Agent'}</span>
-                              <span class="follow-up-time">{formatActivityTime(msg.timestamp)}</span>
-                              <div class="follow-up-text">{msg.text}</div>
-                            </div>
-                          {/each}
-                        </div>
-                      {/if}
-                      <div class="follow-up-input-row">
-                        <textarea
-                          class="follow-up-input"
-                          placeholder={["running", "preparing"].includes(run.status) ? "Steer or follow up on the active run…" : "Send a follow-up message to continue this run…"}
-                          bind:value={followUpTexts[run.run_id]}
-                          on:keydown={(e) => handleFollowUpKeydown(e, run)}
-                          rows="2"
-                          disabled={sendingFollowUp[run.run_id]}
-                        ></textarea>
-                        <button
-                          class="follow-up-send"
-                          on:click={() => handleSendFollowUp(run)}
-                          disabled={sendingFollowUp[run.run_id] || !(followUpTexts[run.run_id] || '').trim()}
-                        >
-                          {sendingFollowUp[run.run_id] ? 'Sending…' : 'Send'}
-                        </button>
-                      </div>
-                    </div>
-                  {/if}
-
-                  {#if run.result_summary}
-                    <details>
-                      <summary>Result summary</summary>
-                      <pre>{run.result_summary}</pre>
-                    </details>
-                  {/if}
-
-                  <details class="scratchpad-details" on:toggle={(e) => handleScratchpadToggle(e, run.run_id)}>
-                    <summary>Scratchpad</summary>
-                    <div class="scratchpad-content">
-                      {#if scratchpadLoading[run.run_id]}
-                        <p class="muted small-text">Loading scratchpad…</p>
-                      {:else if scratchpadContent[run.run_id]}
-                        <div class="scratchpad-rendered">{@html renderMarkdown(scratchpadContent[run.run_id])}</div>
-                      {:else if scratchpadContent[run.run_id] === null}
-                        <p class="muted small-text">No scratchpad available for this run.</p>
-                      {/if}
-                    </div>
-                  </details>
-
-                  {#if run.changed_files?.length}
-                    <details>
-                      <summary>Changed files</summary>
-                      <ul>
-                        {#each run.changed_files as path}<li>{path}</li>{/each}
-                      </ul>
-                    </details>
-                  {/if}
-
-                  {#if run.errors?.length}
-                    <details>
-                      <summary>Errors</summary>
-                      <ul>
-                        {#each run.errors as item}<li><strong>{item.code}</strong>: {item.message}</li>{/each}
-                      </ul>
-                    </details>
-                  {/if}
-                </article>
-              {/each}
-            </div>
-          {/if}
-        </section>
-      </aside>
     </div>
   {/if}
 </section>
 
 <style>
-  .execution-toolbar {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .execute-summary-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .execute-layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.95fr);
-    gap: 1rem;
-    align-items: start;
-  }
-
-  .execute-primary-column,
-  .execute-sidebar-column {
-    display: grid;
-    gap: 1rem;
-  }
-
-  .execute-sidebar-column {
-    position: sticky;
-    top: 1rem;
-  }
-
-  .dispatch-subgroup {
-    padding: 0.85rem;
-    background: rgba(15, 23, 42, 0.35);
-  }
-
-  .execute-node-card,
-  .execution-run-card,
-  .execute-sidebar-card {
-    background: rgba(2, 6, 23, 0.58);
-  }
-
-  .node-action-cluster,
-  .execute-card-actions {
+  /* Top bar */
+  .exec-topbar {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
     align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-shrink: 0;
+    padding: 0 2px;
   }
 
-  .execution-context-row {
+  .exec-topbar-left {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    align-items: center;
+    gap: 8px;
   }
 
-  .context-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    max-width: 100%;
-    padding: 0.45rem 0.65rem;
-    border-radius: 999px;
-    background: rgba(30, 41, 59, 0.9);
-    border: 1px solid rgba(148, 163, 184, 0.16);
-    color: #dbeafe;
+  .exec-stat {
+    font-size: 11px;
+    color: var(--text-muted, #566070);
+  }
+
+  .exec-stat.warn {
+    color: var(--red, #f85149);
+  }
+
+  /* Three-column layout */
+  .exec-columns {
+    display: grid;
+    grid-template-columns: 220px 300px minmax(0, 1fr);
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
   }
 
-  .context-chip code {
+  .exec-col-dispatch {
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    border-right: 1px solid var(--border, #2b3245);
+    padding: 6px;
+  }
+
+  .exec-col-details {
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    border-right: 1px solid var(--border, #2b3245);
+  }
+
+  .exec-col-workspace {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Run pill strip */
+  .run-pill-strip {
+    display: flex;
+    gap: 2px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border, #2b3245);
+    background: var(--bg-surface, #13171f);
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-shrink: 0;
+  }
+
+  .run-pill-strip::-webkit-scrollbar {
+    height: 3px;
+  }
+
+  .run-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm, 3px);
+    color: var(--text-secondary, #8b95a5);
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .run-pill:hover {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: var(--border, #2b3245);
+  }
+
+  .run-pill.active {
+    background: var(--accent-muted, rgba(37, 99, 235, 0.25));
+    border-color: rgba(37, 99, 235, 0.5);
+    color: var(--text-primary, #e2e8f0);
+  }
+
+  .run-pill-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted, #566070);
+    flex-shrink: 0;
+  }
+
+  .run-pill-dot.healthy { background: var(--green, #3fb950); }
+  .run-pill-dot.info { background: var(--accent, #2563eb); }
+  .run-pill-dot.disambiguating { background: var(--purple, #a371f7); }
+  .run-pill-dot.warn { background: var(--yellow, #d29922); }
+  .run-pill-dot.danger { background: var(--red, #f85149); }
+
+  .run-pill-label {
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
-  .context-path {
-    max-width: 100%;
-  }
-
-  .context-label {
-    color: #93c5fd;
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .safety-summary-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .execute-scope-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .run-stat-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.75rem;
-  }
-
-  .compact-stat {
-    min-height: 0;
-  }
-
-  .run-list {
-    max-height: calc(100vh - 18rem);
-    overflow: auto;
-    padding-right: 0.25rem;
-  }
-
-  .run-context-row {
-    margin-top: -0.1rem;
-  }
-
-  .run-timestamp-grid {
-    display: grid;
-    gap: 0.2rem;
-  }
-
-  .run-progress-message {
-    margin: 0;
-  }
-
-  .activity-log-details {
-    border: 1px solid rgba(148, 163, 184, 0.12);
-    border-radius: 8px;
-    overflow: hidden;
-  }
-
-  .activity-log-details summary {
-    padding: 0.5rem 0.75rem;
-    font-size: 0.85rem;
-    cursor: pointer;
-    background: rgba(15, 23, 42, 0.5);
-    color: #93c5fd;
-    user-select: none;
-  }
-
-  .activity-log {
-    max-height: 240px;
+  /* Workspace top (header + expandable sections, scrollable if tall) */
+  .workspace-top {
+    flex-shrink: 0;
+    max-height: 45%;
     overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 8px 8px 4px;
+    display: grid;
+    gap: 6px;
+    border-bottom: 1px solid var(--border, #2b3245);
+  }
+
+  /* Workspace feed (scrollable middle) */
+  .workspace-feed-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    padding: 6px 8px;
+    display: grid;
+    gap: 4px;
+    align-content: start;
+  }
+
+  /* Workspace input (pinned bottom) */
+  .workspace-input-pinned {
+    flex-shrink: 0;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border, #2b3245);
+    display: grid;
+    gap: 4px;
+  }
+
+  .workspace-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .workspace-header h3 { margin: 0; font-size: 14px; }
+
+  .workspace-progress {
+    padding: 5px 8px;
+    border-radius: var(--radius-sm, 3px);
+    background: rgba(37, 99, 235, 0.1);
+    border: 1px solid rgba(37, 99, 235, 0.25);
+    color: #bfdbfe;
+    font-size: 12px;
+  }
+
+  .workspace-section {
+    display: grid;
+    gap: 6px;
+  }
+
+  .workspace-section-hdr {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .workspace-section-hdr h4 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary, #8b95a5);
+  }
+
+  .workspace-empty {
+    padding: 8px;
+    font-size: 11px;
+  }
+
+  .workspace-empty.large {
+    min-height: 8rem;
+    display: grid;
+    place-items: center;
+  }
+
+  /* Unified feed */
+  .unified-feed {
     display: grid;
     gap: 0;
-    font-size: 0.8rem;
   }
 
-  .activity-entry {
+  .turn-band {
     display: grid;
-    grid-template-columns: 1.4em 5.2em 1fr;
-    gap: 0.35rem;
-    align-items: baseline;
-    padding: 0.25rem 0.75rem;
-    border-top: 1px solid rgba(148, 163, 184, 0.06);
+    gap: 2px;
+    padding: 4px 6px;
+    border-radius: var(--radius-sm, 3px);
+    margin-bottom: 2px;
   }
 
-  .activity-entry:first-child {
-    border-top: none;
-  }
-
-  .activity-icon {
-    font-size: 0.75rem;
-    text-align: center;
-  }
-
-  .activity-time {
-    color: #64748b;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .activity-message {
-    color: #e2e8f0;
-    word-break: break-word;
-  }
-
-  .activity-reasoning .activity-message {
-    color: #fde68a;
-    font-style: italic;
-  }
-
-  .activity-error .activity-message {
-    color: #fca5a5;
-  }
-
-  .activity-tool_start .activity-message,
-  .activity-tool_end .activity-message {
-    color: #93c5fd;
-  }
-
-  .activity-log-placeholder {
-    padding: 0.5rem 0;
-  }
-
-  /* Follow-up chat */
-  .follow-up-chat {
-    border: 1px solid rgba(148, 163, 184, 0.14);
-    border-radius: 8px;
-    overflow: hidden;
-    background: rgba(15, 23, 42, 0.45);
-  }
-
-  .follow-up-messages {
-    max-height: 200px;
-    overflow-y: auto;
-    padding: 0.5rem 0.65rem;
+  /* Chat entries — prominent */
+  .feed-chat {
     display: grid;
-    gap: 0.5rem;
+    gap: 2px;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm, 3px);
+    border: 1px solid var(--border, #2b3245);
+    background: var(--bg-surface, #13171f);
+    font-size: 12px;
   }
 
-  .follow-up-msg {
-    display: grid;
-    gap: 0.15rem;
-  }
+  .feed-chat-assistant { border-color: rgba(63, 185, 80, 0.2); }
+  .feed-chat-user { border-color: rgba(37, 99, 235, 0.25); background: rgba(37, 99, 235, 0.06); }
 
-  .follow-up-role {
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
+  .feed-chat-hdr { display: flex; justify-content: space-between; gap: 4px; }
+  .feed-chat-role { font-size: 10.5px; font-weight: 600; color: var(--text-secondary, #8b95a5); }
+  .feed-chat-ts { font-size: 10.5px; color: var(--text-muted, #566070); }
 
-  .follow-up-user .follow-up-role {
-    color: #93c5fd;
-  }
-
-  .follow-up-assistant .follow-up-role {
-    color: #86efac;
-  }
-
-  .follow-up-time {
-    font-size: 0.7rem;
-    color: #64748b;
-  }
-
-  .follow-up-text {
-    font-size: 0.82rem;
-    color: #e2e8f0;
+  .feed-chat-body {
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 80px;
-    overflow-y: auto;
+    line-height: 1.5;
   }
 
-  .follow-up-input-row {
-    display: flex;
-    gap: 0.5rem;
-    padding: 0.5rem 0.65rem;
-    border-top: 1px solid rgba(148, 163, 184, 0.1);
-    align-items: flex-end;
-  }
-
-  .follow-up-input {
-    flex: 1;
-    resize: vertical;
-    min-height: 2.2rem;
-    max-height: 6rem;
-    padding: 0.45rem 0.6rem;
-    border-radius: 6px;
-    border: 1px solid rgba(148, 163, 184, 0.2);
-    background: rgba(2, 6, 23, 0.6);
-    color: #e2e8f0;
-    font-size: 0.85rem;
-    font-family: inherit;
-    line-height: 1.4;
-  }
-
-  .follow-up-input::placeholder {
-    color: #64748b;
-  }
-
-  .follow-up-input:focus {
-    outline: none;
-    border-color: rgba(96, 165, 250, 0.5);
-  }
-
-  .follow-up-send {
-    align-self: flex-end;
-    white-space: nowrap;
-  }
-
-  .ghost-link {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 10px;
-    padding: 0.7rem 1rem;
-    text-decoration: none;
-    background: rgba(15, 23, 42, 0.85);
-    border: 1px solid rgba(148, 163, 184, 0.18);
-    color: #e2e8f0;
-  }
-
-  .ghost-link.small {
-    padding: 0.35rem 0.7rem;
-    font-size: 0.875rem;
-  }
-
-  /* Disambiguation status pill */
-  .status-pill.disambiguating {
-    background: rgba(139, 92, 246, 0.85);
-    color: #ede9fe;
-    animation: pulse-disambiguating 2s ease-in-out infinite;
-  }
-
-  @keyframes pulse-disambiguating {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
-  }
-
-  /* Disambiguation chat styling */
-  .disambiguating-chat {
-    border-color: rgba(139, 92, 246, 0.35);
-    background: rgba(76, 29, 149, 0.12);
-  }
-
-  .disambiguation-banner {
-    display: flex;
-    gap: 0.65rem;
-    align-items: flex-start;
-    padding: 0.65rem 0.75rem;
-    background: rgba(139, 92, 246, 0.12);
-    border-bottom: 1px solid rgba(139, 92, 246, 0.2);
-  }
-
-  .disambiguation-icon {
-    font-size: 1.15rem;
-    line-height: 1;
-    flex-shrink: 0;
-    margin-top: 0.1rem;
-  }
-
-  .disambiguation-banner-text {
+  /* Activity entries — dimmed, compact, color-coded */
+  .feed-activity {
     display: grid;
-    gap: 0.2rem;
+    grid-template-columns: 3.2em 4.5em 1fr;
+    gap: 4px;
+    align-items: baseline;
+    padding: 2px 8px;
+    font-size: 11px;
+    opacity: 0.6;
+    transition: opacity 100ms;
   }
 
-  .disambiguation-banner-text strong {
-    color: #c4b5fd;
-    font-size: 0.88rem;
+  .feed-activity:hover {
+    opacity: 1;
   }
 
-  .disambiguation-banner-text span {
-    color: #a78bfa;
-    font-size: 0.78rem;
-    line-height: 1.4;
+  .feed-activity-kind {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--activity-color);
   }
 
-  .disambiguation-messages {
-    max-height: 320px;
+  .feed-activity-ts {
+    font-size: 10px;
+    color: var(--text-muted, #566070);
   }
 
-  .disambiguation-waiting {
-    padding: 1rem 0.75rem;
-    text-align: center;
-    color: #a78bfa;
-    animation: pulse-disambiguating 2s ease-in-out infinite;
+  .feed-activity-msg {
+    color: var(--text-secondary, #8b95a5);
   }
 
-  .disambiguation-resolve-row {
+  /* Chat input area */
+  .feed-input-area {
     display: grid;
-    gap: 0.5rem;
-    padding: 0.65rem;
-    border-top: 1px solid rgba(139, 92, 246, 0.2);
-    background: rgba(139, 92, 246, 0.06);
+    gap: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border, #2b3245);
   }
 
-  .disambiguation-context-input {
-    width: 100%;
-    resize: vertical;
-    min-height: 2.2rem;
-    max-height: 6rem;
-    padding: 0.45rem 0.6rem;
-    border-radius: 6px;
-    border: 1px solid rgba(139, 92, 246, 0.25);
-    background: rgba(2, 6, 23, 0.6);
-    color: #e2e8f0;
-    font-size: 0.82rem;
-    font-family: inherit;
-    line-height: 1.4;
-    box-sizing: border-box;
+  .chat-input-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px;
+    align-items: end;
   }
 
-  .disambiguation-context-input::placeholder {
-    color: #7c3aed;
+  .disambig-banner {
+    display: grid;
+    gap: 2px;
+    padding: 5px 8px;
+    border-radius: var(--radius-sm, 3px);
+    background: rgba(163, 113, 247, 0.08);
+    border: 1px solid rgba(163, 113, 247, 0.2);
+    font-size: 12px;
   }
 
-  .disambiguation-context-input:focus {
-    outline: none;
-    border-color: rgba(139, 92, 246, 0.55);
+  /* Expandables */
+  .workspace-expandable {
+    padding: 6px 8px;
+    border: 1px solid var(--border, #2b3245);
+    border-radius: var(--radius-sm, 3px);
+    background: var(--bg-surface, #13171f);
+    font-size: 12px;
   }
 
-  .disambiguation-resolve-btn {
-    justify-self: end;
-    background: rgba(34, 197, 94, 0.15);
-    border: 1px solid rgba(34, 197, 94, 0.35);
-    color: #86efac;
-    padding: 0.5rem 1.2rem;
-    border-radius: 8px;
-    font-size: 0.88rem;
+  .workspace-expandable summary {
+    cursor: pointer;
     font-weight: 600;
+    font-size: 11px;
+    color: var(--text-secondary, #8b95a5);
+  }
+
+  .workspace-expandable pre {
+    margin: 4px 0 0;
+    white-space: pre-wrap;
+    line-height: 1.45;
+    font-size: 11px;
+  }
+
+  .workspace-expandable ul {
+    margin: 4px 0 0;
+    padding-left: 14px;
+    font-size: 11px;
+  }
+
+  /* Collapsed agent messages */
+  .feed-chat-collapsed {
+    mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  }
+
+  .feed-expand-btn {
+    padding: 0 4px;
+    background: transparent;
+    color: var(--text-muted, #566070);
+    font-size: 10px;
+    border: none;
+    text-decoration: underline;
     cursor: pointer;
-    transition: background 0.15s, border-color 0.15s;
   }
 
-  .disambiguation-resolve-btn:hover:not(:disabled) {
-    background: rgba(34, 197, 94, 0.25);
-    border-color: rgba(34, 197, 94, 0.55);
-  }
+  .feed-expand-btn:hover { color: var(--text-secondary, #8b95a5); }
 
-  .disambiguation-resolve-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .disambiguation-chat-btn {
-    border-color: rgba(139, 92, 246, 0.35) !important;
-    color: #c4b5fd !important;
-    background: rgba(139, 92, 246, 0.12) !important;
-  }
-
-  /* Scratchpad viewer */
-  .scratchpad-details {
-    border: 1px solid rgba(148, 163, 184, 0.12);
-    border-radius: 8px;
-    overflow: hidden;
-  }
-
-  .scratchpad-details summary {
-    padding: 0.5rem 0.75rem;
-    font-size: 0.85rem;
+  .feed-expand-inline {
+    padding: 2px 0;
+    background: transparent;
+    color: var(--accent, #2563eb);
+    font-size: 10.5px;
+    border: none;
     cursor: pointer;
-    background: rgba(15, 23, 42, 0.5);
-    color: #93c5fd;
-    user-select: none;
+    text-align: left;
   }
 
-  .scratchpad-content {
-    padding: 0.5rem 0.75rem;
+  .feed-expand-inline:hover { text-decoration: underline; }
+
+  /* Pinned summary cards */
+  .feed-pinned-card {
+    padding: 6px 8px;
+    border-radius: var(--radius-sm, 3px);
+    border: 1px solid var(--border, #2b3245);
+    background: var(--bg-surface, #13171f);
+    font-size: 12px;
+    margin-top: 4px;
   }
 
-  .scratchpad-rendered {
-    max-height: 400px;
-    overflow: auto;
-    font-size: 0.82rem;
-    line-height: 1.55;
-    color: #e2e8f0;
-    word-break: break-word;
+  .feed-pinned-error { border-color: rgba(248, 81, 73, 0.3); }
+
+  .feed-pinned-hdr {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary, #8b95a5);
+    margin-bottom: 4px;
   }
 
-  .scratchpad-rendered :global(h1),
-  .scratchpad-rendered :global(h2),
-  .scratchpad-rendered :global(h3) {
-    margin: 0.6em 0 0.3em;
-    color: #93c5fd;
-    font-size: 0.92em;
-  }
-
-  .scratchpad-rendered :global(h1) {
-    font-size: 1.05em;
-  }
-
-  .scratchpad-rendered :global(ul),
-  .scratchpad-rendered :global(ol) {
-    margin: 0.3em 0;
-    padding-left: 1.4em;
-  }
-
-  .scratchpad-rendered :global(li) {
-    margin: 0.15em 0;
-  }
-
-  .scratchpad-rendered :global(code) {
-    background: rgba(30, 41, 59, 0.8);
-    padding: 0.1em 0.35em;
-    border-radius: 4px;
-    font-size: 0.9em;
-  }
-
-  .scratchpad-rendered :global(pre) {
-    background: rgba(15, 23, 42, 0.7);
-    padding: 0.5rem 0.65rem;
-    border-radius: 6px;
-    overflow-x: auto;
-    font-size: 0.82em;
-    margin: 0.4em 0;
-  }
-
-  .scratchpad-rendered :global(pre code) {
-    background: none;
-    padding: 0;
-  }
-
-  .scratchpad-rendered :global(p) {
-    margin: 0.35em 0;
-  }
-
-  .scratchpad-rendered :global(strong) {
-    color: #dbeafe;
-  }
-
-  .status-pill.info {
-    background: rgba(30, 64, 175, 0.9);
-    color: #dbeafe;
-  }
-
-  .status-pill.warn {
-    background: rgba(146, 64, 14, 0.9);
-    color: #fde68a;
-  }
-
-  .status-pill.danger {
-    background: rgba(127, 29, 29, 0.92);
-    color: #fecaca;
-  }
-
-  .execution-policy-note {
+  .feed-pinned-pre {
     margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    line-height: 1.45;
   }
 
+  .feed-pinned-list {
+    margin: 0;
+    padding-left: 14px;
+    font-size: 11px;
+  }
+
+  /* Responsive */
   @media (max-width: 1100px) {
-    .execute-layout {
-      grid-template-columns: 1fr;
+    .exec-columns {
+      grid-template-columns: 200px minmax(0, 1fr);
     }
 
-    .execute-sidebar-column {
-      position: static;
-    }
-
-    .run-list {
-      max-height: none;
-      overflow: visible;
-      padding-right: 0;
+    .exec-col-details {
+      display: none;
     }
   }
 
-  @media (max-width: 820px) {
-    .execute-summary-grid,
-    .execute-scope-grid {
-      grid-template-columns: 1fr 1fr;
-    }
-  }
-
-  @media (max-width: 640px) {
-    .execute-summary-grid,
-    .execute-scope-grid,
-    .run-stat-grid {
+  @media (max-width: 860px) {
+    .exec-columns {
       grid-template-columns: 1fr;
+      overflow-y: auto;
     }
 
-    .dispatch-node-header {
-      flex-direction: column;
+    .exec-col-dispatch {
+      border-right: none;
+      border-bottom: 1px solid var(--border, #2b3245);
     }
   }
 </style>

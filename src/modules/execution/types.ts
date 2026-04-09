@@ -1,6 +1,6 @@
 export type ExecutionRunStatus = "queued" | "blocked" | "preparing" | "disambiguating" | "running" | "completed" | "error";
 export type ExecutionSafetyStatus = "pass" | "warn" | "fail";
-export type ActivityLogEntryKind = "status_change" | "tool_start" | "tool_end" | "turn_start" | "turn_end" | "reasoning" | "error" | "info" | "follow_up";
+export type ActivityLogEntryKind = "status_change" | "tool_start" | "tool_end" | "turn_start" | "turn_end" | "reasoning" | "error" | "info" | "follow_up" | "agent_message" | "user_message";
 
 export interface ActivityLogEntry {
   timestamp: string;

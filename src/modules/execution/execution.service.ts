@@ -47,12 +47,11 @@ export class ExecutionService {
   private readonly worktreeRoot = join(this.artifactRoot, "worktrees");
   private readonly recentRuns: ExecutionRunRecord[] = [];
   private readonly recentRunLimit = 16;
-  private readonly activityLogLimit = 50;
+  // No cap on activity log — full history preserved in status.json
   private eventCounter = 0;
   /** Active agent sessions keyed by run_id — kept alive while run is active */
   private readonly activeSessions = new Map<string, import("@mariozechner/pi-coding-agent").AgentSession>();
-  /** Chat history per run (user follow-ups + assistant replies) */
-  private readonly chatHistories = new Map<string, RunChatMessage[]>();
+  // Chat history derived from activity_log (agent_message + user_message entries)
   /** Disambiguation gate resolvers — calling the stored function unblocks the coding phase */
   private readonly disambiguationGates = new Map<string, { resolve: (additionalContext?: string) => void }>();
   /** Last-emitted checklist snapshots per run — used for dedup */
@@ -678,10 +677,15 @@ export class ExecutionService {
   }
 
   getRunChatHistory(runId: string): RunChatHistory {
-    return {
-      run_id: runId,
-      messages: this.chatHistories.get(runId) ?? [],
-    };
+    const run = this.getRun(runId);
+    const messages: RunChatMessage[] = (run?.activity_log ?? [])
+      .filter((e) => e.kind === "agent_message" || e.kind === "user_message")
+      .map((e) => ({
+        timestamp: e.timestamp,
+        role: e.kind === "agent_message" ? "assistant" as const : "user" as const,
+        text: e.message,
+      }));
+    return { run_id: runId, messages };
   }
 
   getRunChecklist(runId: string): ExecutionChecklistSnapshot {
@@ -734,8 +738,8 @@ export class ExecutionService {
       throw new BadRequestException(`Unknown execution run: ${runId}`);
     }
 
-    // Record the user message in chat history
-    this.pushChatMessage(runId, { timestamp: this.now(), role: "user", text: message });
+    // Record the user message in the unified activity log
+    this.pushActivity(runId, "user_message", message);
 
     const session = this.activeSessions.get(runId);
 
@@ -748,7 +752,6 @@ export class ExecutionService {
         } else {
           await session.followUp(message);
         }
-        this.pushActivity(runId, "follow_up", `Follow-up (${delivery}): ${message.length > 120 ? message.slice(0, 117) + "..." : message}`);
         this.appendEvent(run, { type: "follow_up_sent", delivery, message_length: message.length });
         return { accepted: true, run_id: runId, delivery, message };
       } catch (error) {
@@ -819,7 +822,7 @@ export class ExecutionService {
     }
 
     const assistantText = session.getLastAssistantText()?.trim() ?? "Follow-up turn completed without a summary.";
-    this.pushChatMessage(run.run_id, { timestamp: this.now(), role: "assistant", text: assistantText });
+    this.pushActivity(run.run_id, "agent_message", assistantText);
 
     const changedFiles = this.listChangedFiles(run.worktree_path);
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
@@ -839,12 +842,7 @@ export class ExecutionService {
     }
   }
 
-  private pushChatMessage(runId: string, message: RunChatMessage) {
-    if (!this.chatHistories.has(runId)) {
-      this.chatHistories.set(runId, []);
-    }
-    this.chatHistories.get(runId)!.push(message);
-  }
+  // Chat messages are now stored as agent_message/user_message entries in the activity_log
 
   private handleSessionEvent(runId: string, event: AgentSessionEvent) {
     const run = this.getRun(runId);
@@ -873,8 +871,7 @@ export class ExecutionService {
       const text = this.extractTextFromMessage(message);
       this.appendEvent(run, { type: event.type, text: text?.slice(0, 2000) ?? null });
       if (text) {
-        this.pushChatMessage(runId, { timestamp: this.now(), role: "assistant", text });
-        this.pushActivity(runId, "info", text.length > 200 ? text.slice(0, 200) + "…" : text);
+        this.pushActivity(runId, "agent_message", text);
         this.emitRun("execution_status", run);
       }
       return;
@@ -972,9 +969,6 @@ export class ExecutionService {
     }
     const entry: ActivityLogEntry = { timestamp: this.now(), kind, message, ...(detail ? { detail } : {}) };
     run.activity_log.push(entry);
-    if (run.activity_log.length > this.activityLogLimit) {
-      run.activity_log = run.activity_log.slice(-this.activityLogLimit);
-    }
   }
 
   private evaluateSafety(branch: string, worktreePath: string, baseRef = getDefaultWorkingBranch(null)): ExecutionSafetyCheck[] {
