@@ -37,6 +37,11 @@ During coding, the user clarified that gating should be based on **frontier memb
 - web/src/lib/api.js
 - web/src/lib/graph.js
 
+## Summary
+The planning graph is rendered as an SVG via `web/src/components/GraphView.svelte`, with node visuals created in `web/src/lib/graph.js`. Today, node fill color communicates work-item state, while selection and hover are both expressed through node stroke changes on the rendered `<rect>`. The issue asks for frontier / dispatchable nodes to gain an additional visual treatment that remains readable without colliding with those existing selection and hover affordances.
+
+Based on the current implementation surface, a non-stroke treatment such as a subtle diagonal stripe overlay is the right direction because selection and hover already consume stroke color/width. However, the current graph renderer appears to set node styles inline and does not expose any frontier-specific class or data attribute in the SVG output, so I do not currently see a CSS-only hook that would let `web/src/app.css` distinguish frontier nodes from non-frontier nodes.
+
 ## Acceptance Criteria
 - [x] Graph context menu launch action is frontier-gated.
 - [x] Node details panel launch action is frontier-gated.

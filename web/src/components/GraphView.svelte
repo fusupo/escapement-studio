@@ -11,17 +11,55 @@
   let handle = { cleanup() {}, updateSelection() {}, resize() {} };
   let resizeObserver;
   let prevGraph = null;
+  let prevFrontierSignature = "";
   let mounted = false;
+  let frontierIds = [];
+  let frontierSignature = "";
+  let frontierLookupToken = 0;
 
   function fullRedraw() {
     handle.cleanup();
-    handle = renderGraph(svg, graph, selectedId, onSelect, { onContextMenu });
+    handle = renderGraph(svg, graph, selectedId, onSelect, { onContextMenu, frontierIds });
     prevGraph = graph;
+    prevFrontierSignature = frontierSignature;
   }
 
-  // Mount + graph data changes → full re-layout
+  async function loadFrontier(currentGraph) {
+    const token = ++frontierLookupToken;
+    frontierIds = [];
+    frontierSignature = "";
+    if (!currentGraph?.items?.length) {
+      return;
+    }
+
+    const params = new URLSearchParams();
+    const repo = currentGraph.filters?.repo;
+    if (repo) params.set("repo", repo);
+
+    try {
+      const response = await fetch(`/api/frontier${params.toString() ? `?${params.toString()}` : ""}`);
+      if (!response.ok) throw new Error(`Failed to load frontier: ${response.status}`);
+      const frontier = await response.json();
+      if (token !== frontierLookupToken) return;
+      const visibleIds = new Set(currentGraph.items.map((item) => item.id));
+      frontierIds = frontier
+        .map((item) => item.id)
+        .filter((id) => visibleIds.has(id))
+        .sort();
+      frontierSignature = frontierIds.join("|");
+    } catch (error) {
+      if (token !== frontierLookupToken) return;
+      console.warn("Failed to load frontier graph styling data", error);
+      frontierIds = [];
+      frontierSignature = "";
+    }
+  }
+
+  $: void loadFrontier(graph);
+
+  // Mount + graph/frontier data changes → full re-layout
   $: if (svg && graph) {
-    if (!mounted || graph !== prevGraph) {
+    if (!mounted || graph !== prevGraph || frontierSignature !== prevFrontierSignature) {
       mounted = true;
       fullRedraw();
     }
@@ -60,6 +98,7 @@
         <div class="legend-row"><span class="legend-swatch" style="background:#d29922"></span><code>in_progress</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#a371f7"></span><code>open_pr</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#58a6ff"></span><code>planned</code></div>
+        <div class="legend-row"><span class="legend-swatch frontier"></span><code>frontier</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#8b949e"></span><code>deferred</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#f85149"></span><code>cancelled</code></div>
       </div>

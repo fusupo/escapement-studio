@@ -241,6 +241,53 @@ a:hover {
   min-height: 0;
   border-radius: var(--radius-md);
   background: rgba(13, 17, 23, 0.9);
+  --graph-frontier-stripe-color: rgba(240, 246, 252, 0.24);
+  --graph-frontier-glow: rgba(240, 246, 252, 0.16);
+}
+
+/* Frontier styling uses an interior overlay so it composes with the graph
+   renderer's existing state fill plus hover/selection stroke affordances. */
+.graph-canvas .node.graph-node--frontier,
+.graph-canvas .node.frontier,
+.graph-canvas .node[data-frontier="true"] {
+  filter: drop-shadow(0 0 0.35rem var(--graph-frontier-glow));
+}
+
+.graph-canvas .node.graph-node--frontier rect,
+.graph-canvas .node.frontier rect,
+.graph-canvas .node[data-frontier="true"] rect {
+  shape-rendering: geometricPrecision;
+}
+
+.graph-canvas .node.graph-node--frontier .frontier-overlay,
+.graph-canvas .node.frontier .frontier-overlay,
+.graph-canvas .node[data-frontier="true"] .frontier-overlay {
+  fill: url("#graph-frontier-diagonal-stripes");
+  stroke: none;
+  opacity: 0.34;
+  pointer-events: none;
+}
+
+.graph-canvas .node.graph-node--frontier.selected .frontier-overlay,
+.graph-canvas .node.frontier.selected .frontier-overlay,
+.graph-canvas .node[data-frontier="true"].selected .frontier-overlay {
+  opacity: 0.26;
+}
+
+.graph-canvas .node.graph-node--frontier:hover .frontier-overlay,
+.graph-canvas .node.frontier:hover .frontier-overlay,
+.graph-canvas .node[data-frontier="true"]:hover .frontier-overlay {
+  opacity: 0.4;
+}
+
+.graph-legend .legend-swatch.frontier {
+  border: 1px solid rgba(240, 246, 252, 0.28);
+  background-color: rgba(88, 166, 255, 0.24);
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--graph-frontier-stripe-color, rgba(240, 246, 252, 0.24)) 0 2px,
+    transparent 2px 6px
+  );
 }
 
 /* ── Sidebar (node editor) ── */

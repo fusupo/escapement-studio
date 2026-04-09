@@ -79,6 +79,7 @@ function buildTooltipHtml(data, links) {
   let body = `<div style="font-weight:600;color:#e6edf3;margin-bottom:4px;">${data.id}: ${data.name}</div>`;
   body += `<div style="color:#8b949e;margin:2px 0;">Kind: <span style="color:#c9d1d9">${data.kind}</span></div>`;
   body += `<div style="color:#8b949e;margin:2px 0;">State: <span style="color:#c9d1d9">${data.state}</span></div>`;
+  if (data._isFrontier) body += `<div style="color:#8b949e;margin:2px 0;">Frontier: <span style="color:#c9d1d9">dispatchable</span></div>`;
   body += `<div style="color:#8b949e;margin:2px 0;">Edges: <span style="color:#c9d1d9">${inbound} in / ${outbound} out</span></div>`;
   if (data.issue_number) body += `<div style="color:#8b949e;margin:2px 0;">Issue: <span style="color:#c9d1d9">#${data.issue_number}</span></div>`;
   if (data.repo) body += `<div style="color:#8b949e;margin:2px 0;">Repo: <span style="color:#c9d1d9">${data.repo}</span></div>`;
@@ -122,6 +123,8 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     }
   }
 
+  const frontierIds = new Set(options.frontierIds ?? []);
+
   const nodes = graph.items.map((item) => {
     const node = { ...item };
     if (!extractPullRequest(node) && runPrByWorkItem.has(node.id)) {
@@ -129,6 +132,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     }
     node._pr = extractPullRequest(node);
     node._prStatus = classifyPrStatus(node._pr);
+    node._isFrontier = frontierIds.has(node.id);
     return node;
   });
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -152,6 +156,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     const isSelected = node.id === selectedId;
     g.setNode(node.id, {
       label: node.id,
+      class: node._isFrontier ? "graph-node--frontier" : "graph-node",
       style: `fill: ${color}; stroke: ${isSelected ? "#e6edf3" : "rgba(255,255,255,0.15)"}; stroke-width: ${isSelected ? "2.5px" : "1px"};`,
       labelStyle: "fill: #fff; font-size: 11px; font-weight: 500;",
       rx: 5, ry: 5,
@@ -202,6 +207,26 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       .attr("opacity", 0.8);
   }
 
+  const frontierPattern = defs.append("pattern")
+    .attr("id", "graph-frontier-diagonal-stripes")
+    .attr("patternUnits", "userSpaceOnUse")
+    .attr("width", 8)
+    .attr("height", 8)
+    .attr("patternTransform", "rotate(135)");
+
+  frontierPattern.append("rect")
+    .attr("width", 8)
+    .attr("height", 8)
+    .attr("fill", "transparent");
+
+  frontierPattern.append("line")
+    .attr("x1", 0)
+    .attr("y1", 0)
+    .attr("x2", 0)
+    .attr("y2", 8)
+    .attr("stroke", "rgba(240, 246, 252, 0.92)")
+    .attr("stroke-width", 2);
+
   // Swap marker-end to marker-start on all edge paths
   inner.selectAll("g.edgePath path.path").each(function () {
     const path = d3.select(this);
@@ -245,22 +270,49 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     }
   }
 
-  // Post-render: merged PR badges
+  // Post-render: frontier overlays + merged PR badges
   inner.selectAll("g.node").each(function (id) {
+    const nodeGroup = d3.select(this);
     const data = g.node(id)?._data;
-    if (!data || data._prStatus !== "merged" || data.state !== "done") return;
-    const bbox = d3.select(this).select("rect").node()?.getBBox();
-    if (bbox) {
-      d3.select(this).append("text")
-        .text("✓PR")
-        .attr("x", bbox.x + bbox.width / 2)
-        .attr("y", bbox.y + bbox.height + 12)
-        .attr("text-anchor", "middle")
-        .attr("fill", PR_MERGED_RING_COLOR)
-        .attr("font-size", "9px")
-        .attr("font-weight", "600")
-        .attr("pointer-events", "none");
+    if (!data) return;
+
+    nodeGroup
+      .classed("selected", data.id === selectedId)
+      .attr("data-frontier", data._isFrontier ? "true" : "false");
+
+    const baseRect = nodeGroup.select("rect");
+    const rectNode = baseRect.node();
+    if (data._isFrontier && rectNode) {
+      const x = Number(baseRect.attr("x"));
+      const y = Number(baseRect.attr("y"));
+      const width = Number(baseRect.attr("width"));
+      const height = Number(baseRect.attr("height"));
+      const rx = Number(baseRect.attr("rx") || 0);
+      const ry = Number(baseRect.attr("ry") || 0);
+      const inset = Math.min(1.5, width / 6, height / 6);
+
+      nodeGroup.insert("rect", "g.label")
+        .attr("class", "frontier-overlay")
+        .attr("fill", "url(#graph-frontier-diagonal-stripes)")
+        .attr("x", x + inset)
+        .attr("y", y + inset)
+        .attr("width", Math.max(0, width - inset * 2))
+        .attr("height", Math.max(0, height - inset * 2))
+        .attr("rx", Math.max(0, rx - inset / 2))
+        .attr("ry", Math.max(0, ry - inset / 2));
     }
+
+    if (data._prStatus !== "merged" || data.state !== "done" || !rectNode) return;
+    const bbox = rectNode.getBBox();
+    nodeGroup.append("text")
+      .text("✓PR")
+      .attr("x", bbox.x + bbox.width / 2)
+      .attr("y", bbox.y + bbox.height + 12)
+      .attr("text-anchor", "middle")
+      .attr("fill", PR_MERGED_RING_COLOR)
+      .attr("font-size", "9px")
+      .attr("font-weight", "600")
+      .attr("pointer-events", "none");
   });
 
   // Node interactions
@@ -333,7 +385,9 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       const data = g.node(nodeId)?._data;
       if (!data) return;
       const sel = data.id === newSelectedId;
-      d3.select(this).select("rect")
+      d3.select(this)
+        .classed("selected", sel)
+        .select("rect")
         .style("stroke", sel ? "#e6edf3" : "rgba(255,255,255,0.15)")
         .style("stroke-width", sel ? "2.5px" : "1px");
     });
