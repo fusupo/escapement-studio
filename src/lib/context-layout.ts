@@ -99,6 +99,18 @@ export function archiveDir(artifactRoot: string, workItemId: string): string {
   return join(archivesRoot(artifactRoot), workItemSlug(workItemId));
 }
 
+/**
+ * Path to the canonical scratchpad file for a work item's plan.
+ *
+ * Returns `plans/<slug>/SCRATCHPAD_<slug>.md`. This is the single source of
+ * truth for plan content per ADR 014 — execution copies this file into the
+ * worktree at run launch and syncs it back at phase boundaries.
+ */
+export function canonicalScratchpadPath(artifactRoot: string, workItemId: string): string {
+  const slug = workItemSlug(workItemId);
+  return join(planDir(artifactRoot, workItemId), `SCRATCHPAD_${slug}.md`);
+}
+
 /* ── Plan dir creation with collision detection ──────────────────────────── */
 
 interface PlanMetadataMarker {
