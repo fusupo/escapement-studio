@@ -348,6 +348,36 @@ export class ExecutionService {
       this.autoStageAndCommit(run, workItem, input.commit_message);
     }
 
+    // ADR 014 step 6: hard guards at PR creation. These run even when
+    // auto_commit: false (the auto-commit guard is inside an optional
+    // branch) and they cover both the current staged state and the
+    // branch's full committed history relative to the base ref.
+    const prStagedViolations = this.findStagedScratchpadViolations(run.worktree_path);
+    if (prStagedViolations.length > 0) {
+      this.appendEvent(run, {
+        type: "scratchpad_commit_blocked",
+        phase: "pull_request",
+        paths: prStagedViolations,
+      });
+      throw new BadRequestException(
+        `pull_request_blocked_by_scratchpad: the following scratchpad files are staged and must not be committed before opening a pull request: ${prStagedViolations.join(", ")}. ` +
+          `Unstage them (git reset HEAD -- <path>) before retrying.`,
+      );
+    }
+
+    const committedViolations = this.findCommittedScratchpadViolations(run.worktree_path, baseRef);
+    if (committedViolations.length > 0) {
+      this.appendEvent(run, {
+        type: "scratchpad_commit_blocked",
+        phase: "pull_request_history",
+        paths: committedViolations,
+      });
+      throw new BadRequestException(
+        `pull_request_blocked_by_committed_scratchpad: the following scratchpad files were committed to branch ${run.branch}: ${committedViolations.join(", ")}. ` +
+          `Inspect the history with \`git log ${baseRef}...HEAD -- '${committedViolations[0]}'\` and remove the files from the branch (e.g. \`git rm\` + rewrite) before opening a pull request.`,
+      );
+    }
+
     const title = input.title?.trim() || this.buildPullRequestTitle(workItem);
     const body = input.body?.trim() || this.buildPullRequestBody(run, workItem, baseRef);
     const aheadCount = this.countCommitsAhead(run.worktree_path, baseRef, run.branch);
@@ -674,9 +704,6 @@ export class ExecutionService {
     );
     this.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.emitChecklistIfChanged(run);
-
-    // Ensure SCRATCHPAD_*.md is gitignored so the agent can't accidentally commit it
-    this.ensureScratchpadIgnored(run.worktree_path);
 
     // --- Create agent session ---
     const { session, modelFallbackMessage } = await createAgentSession({
@@ -1495,25 +1522,6 @@ export class ExecutionService {
     ].join("\n");
   }
 
-  /** Ensure `SCRATCHPAD_*.md` is in the worktree's .gitignore so canonical scratchpads can't be committed. */
-  private ensureScratchpadIgnored(worktreePath: string): void {
-    const gitignorePath = join(worktreePath, ".gitignore");
-    const entry = "SCRATCHPAD_*.md";
-    try {
-      if (existsSync(gitignorePath)) {
-        const content = readFileSync(gitignorePath, "utf8");
-        if (content.includes(entry)) return;
-        writeFileSync(gitignorePath, content.trimEnd() + "\n" + entry + "\n", "utf8");
-      } else {
-        writeFileSync(gitignorePath, entry + "\n", "utf8");
-      }
-      // Stage the .gitignore change immediately so it's not left untracked
-      this.runGitIn(worktreePath, ["add", ".gitignore"]);
-    } catch {
-      // Non-fatal — the prompt still tells the agent not to commit it
-    }
-  }
-
   /**
    * Sync the agent's worktree scratchpad back to the canonical plan file.
    *
@@ -1917,6 +1925,21 @@ export class ExecutionService {
     this.logger.log(`Auto-staging and committing changes in ${run.worktree_path}`);
     this.runGitIn(run.worktree_path, ["add", "-A"]);
 
+    // ADR 014 step 6: hard guard against committing `SCRATCHPAD_*.md`.
+    // Replaces the silent `.gitignore` trick — disobedience is now visible.
+    const stagedViolations = this.findStagedScratchpadViolations(run.worktree_path);
+    if (stagedViolations.length > 0) {
+      this.appendEvent(run, {
+        type: "scratchpad_commit_blocked",
+        phase: "auto_commit",
+        paths: stagedViolations,
+      });
+      throw new BadRequestException(
+        `auto_commit_blocked_by_scratchpad: the following scratchpad files are staged and must not be committed: ${stagedViolations.join(", ")}. ` +
+          `Unstage them (git reset HEAD -- <path>) and retry. The canonical scratchpad lives at plans/<slug>/ and should not enter the worktree's git history.`,
+      );
+    }
+
     const message = commitMessage?.trim() || this.buildCommitMessage(workItem);
     this.runGitIn(run.worktree_path, ["commit", "-m", message]);
 
@@ -1925,6 +1948,42 @@ export class ExecutionService {
     if (changedFiles.length > 0) {
       this.updateRun(run.run_id, { changed_files: changedFiles });
     }
+  }
+
+  /**
+   * ADR 014 step 6: detect `SCRATCHPAD_*.md` files in the git index.
+   *
+   * Basename match at any path depth. Returns an empty array when the
+   * index is clean. Callers use the list both for the rejection error
+   * message and for the `scratchpad_commit_blocked` event payload.
+   */
+  private findStagedScratchpadViolations(worktreePath: string): string[] {
+    const output = this.runGitIn(worktreePath, ["diff", "--cached", "--name-only"], { allowFailure: true });
+    return output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && this.isScratchpadPath(line));
+  }
+
+  /**
+   * ADR 014 step 6: detect `SCRATCHPAD_*.md` files introduced by this
+   * branch relative to its base ref.
+   *
+   * Uses three-dot `$base...HEAD` (merge-base relative) so files that
+   * changed on the base branch are not spuriously flagged. This matches
+   * what GitHub shows in a pull-request diff.
+   */
+  private findCommittedScratchpadViolations(worktreePath: string, baseRef: string): string[] {
+    const output = this.runGitIn(worktreePath, ["diff", "--name-only", `${baseRef}...HEAD`], { allowFailure: true });
+    return output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && this.isScratchpadPath(line));
+  }
+
+  /** Basename match for `SCRATCHPAD_*.md` at any path depth. */
+  private isScratchpadPath(path: string): boolean {
+    return /(?:^|\/)SCRATCHPAD_[^/]*\.md$/.test(path);
   }
 
   private buildCommitMessage(workItem: WorkItemRecord): string {
