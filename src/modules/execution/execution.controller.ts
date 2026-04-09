@@ -2,7 +2,7 @@ import { Body, Controller, Get, Inject, Param, Post, Query, Sse } from "@nestjs/
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./execution.service.js";
-import type { CleanupWorktreeDto, CreateExecutionPullRequestDto, FollowUpMessageDto, LaunchExecutionRunDto, ResolveDisambiguationDto, SyncMergedExecutionDto } from "./types.js";
+import type { CleanupWorktreeDto, CreateExecutionPullRequestDto, FollowUpMessageDto, LaunchExecutionRunDto, ResolveDisambiguationDto, SyncMergedExecutionDto, TransitionWorkItemDto } from "./types.js";
 
 @Controller("api/execution")
 export class ExecutionController {
@@ -61,6 +61,16 @@ export class ExecutionController {
   @Post("resolve-disambiguation")
   resolveDisambiguation(@Body() body: ResolveDisambiguationDto) {
     return this.executionService.resolveDisambiguation(body);
+  }
+
+  @Post("transition-ready")
+  transitionInProgressToReady(@Body() body: TransitionWorkItemDto) {
+    return this.executionService.transitionInProgressToReady(body.work_item_id);
+  }
+
+  @Post("transition-drafting")
+  transitionInProgressToDrafting(@Body() body: TransitionWorkItemDto) {
+    return this.executionService.transitionInProgressToDrafting(body.work_item_id);
   }
 
   @Get("runs/:runId/chat")

@@ -261,3 +261,12 @@ export interface ResolveDisambiguationResult {
   /** Present when resolved is false */
   error?: string;
 }
+
+/**
+ * ADR 014 step 5: request payload for the in_progress → {ready,drafting}
+ * transition endpoints. Operator triggers these after a run fails or is
+ * abandoned to advance the work item back to a plan-editable state.
+ */
+export interface TransitionWorkItemDto {
+  work_item_id: string;
+}
