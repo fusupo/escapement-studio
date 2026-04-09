@@ -70,6 +70,32 @@ export class WorkItemsService {
     return this.toRecord(row);
   }
 
+  listByRepoIssueNumber(repo: string, issueNumber: number): WorkItemRecord[] {
+    if (!repo?.trim() || !Number.isInteger(issueNumber) || issueNumber <= 0) {
+      return [];
+    }
+
+    return this.list({ repo }).filter((item) => item.issue_number === issueNumber);
+  }
+
+  listByRepoBranch(repo: string, branch: string): WorkItemRecord[] {
+    const normalizedRepo = repo?.trim();
+    const normalizedBranch = branch?.trim();
+    if (!normalizedRepo || !normalizedBranch) {
+      return [];
+    }
+
+    return this.list({ repo: normalizedRepo }).filter((item) => item.branch?.trim() === normalizedBranch);
+  }
+
+  listByRepoPullRequestNumber(repo: string, pullRequestNumber: number): WorkItemRecord[] {
+    if (!repo?.trim() || !Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) {
+      return [];
+    }
+
+    return this.list({ repo }).filter((item) => this.extractPullRequestNumbers(item.meta).includes(pullRequestNumber));
+  }
+
   create(input: CreateWorkItemDto): WorkItemRecord {
     const result = this.graphWriter.apply({
       mutations: [{ kind: "create_work_item", work_item: input }],
@@ -143,6 +169,35 @@ export class WorkItemsService {
     } catch {
       return {};
     }
+  }
+
+  private extractPullRequestNumbers(meta: Record<string, unknown>): number[] {
+    const values = [
+      this.readPullRequestNumber(meta.pull_request),
+      this.readPullRequestNumber(this.readNested(meta, ["studio_post_merge_sync", "pull_request"])),
+    ];
+
+    return values.filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value > 0);
+  }
+
+  private readPullRequestNumber(value: unknown): number | null {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const number = (value as Record<string, unknown>).number;
+    return Number.isInteger(number) && Number(number) > 0 ? Number(number) : null;
+  }
+
+  private readNested(value: unknown, path: string[]): unknown {
+    let current = value;
+    for (const key of path) {
+      if (!current || typeof current !== "object") {
+        return null;
+      }
+      current = (current as Record<string, unknown>)[key];
+    }
+    return current;
   }
 
   private getErrorMessage(error: unknown): string {

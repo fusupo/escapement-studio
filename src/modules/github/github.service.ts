@@ -65,14 +65,30 @@ export interface GitHubPullRequestDetails {
   head_ref: string;
   merged_at: string | null;
   merge_commit_sha: string | null;
+  reconciliation?: {
+    updated_work_item_ids: string[];
+    updated_run_ids: string[];
+  };
+}
+
+interface PullRequestTruthRefreshResult {
+  updated_run_ids: string[];
 }
 
 @Injectable()
 export class GitHubService {
+  private pullRequestTruthRefresher?: (pullRequest: GitHubPullRequestDetails, options?: { work_item_ids?: string[] }) => PullRequestTruthRefreshResult;
+
   constructor(
     @Inject(SQLiteService) private readonly sqlite: SQLiteService,
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
   ) {}
+
+  registerPullRequestTruthRefresher(
+    refresher: (pullRequest: GitHubPullRequestDetails, options?: { work_item_ids?: string[] }) => PullRequestTruthRefreshResult,
+  ) {
+    this.pullRequestTruthRefresher = refresher;
+  }
 
   private get db(): DatabaseType {
     return this.sqlite.getDb();

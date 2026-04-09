@@ -62,7 +62,9 @@ export class ExecutionService {
     @Inject(GraphService) private readonly graphService: GraphService,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
-  ) {}
+  ) {
+    this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
+  }
 
   stream(): Observable<MessageEvent> {
     return new Observable<MessageEvent>((subscriber) => {
@@ -73,6 +75,72 @@ export class ExecutionService {
 
   listRecentRuns(): ExecutionRunRecord[] {
     return [...this.recentRuns].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  }
+
+  refreshPullRequestTruth(
+    pullRequest: {
+      number: number;
+      url: string;
+      title: string;
+      body: string;
+      state: string;
+      is_draft: boolean;
+      base_ref: string;
+      head_ref: string;
+      merged_at: string | null;
+      merge_commit_sha: string | null;
+    },
+    options: { work_item_ids?: string[] } = {},
+  ): { updated_run_ids: string[] } {
+    const updatedRunIds: string[] = [];
+    const workItemIds = new Set(options.work_item_ids ?? []);
+
+    for (const run of this.listRecentRuns()) {
+      const matchesByNumber = run.pull_request?.number === pullRequest.number;
+      const matchesByBranch = run.branch === pullRequest.head_ref;
+      const matchesByWorkItem = workItemIds.has(run.work_item_id);
+      if (!matchesByNumber && !matchesByBranch && !matchesByWorkItem) {
+        continue;
+      }
+
+      const nextPullRequest: ExecutionPullRequestRecord = {
+        ...(run.pull_request ?? {}),
+        number: pullRequest.number,
+        url: pullRequest.url,
+        title: pullRequest.title,
+        body: pullRequest.body,
+        base_ref: pullRequest.base_ref,
+        head_ref: pullRequest.head_ref,
+        is_draft: pullRequest.is_draft,
+        created_at: run.pull_request?.created_at ?? this.now(),
+        state: pullRequest.state,
+        merged_at: pullRequest.merged_at,
+        merge_commit_sha: pullRequest.merge_commit_sha,
+      };
+
+      if (this.samePullRequestRecord(run.pull_request, nextPullRequest)) {
+        continue;
+      }
+
+      const nextRun = this.updateRun(run.run_id, { pull_request: nextPullRequest });
+      if (!nextRun) {
+        continue;
+      }
+
+      this.appendEvent(nextRun, {
+        type: "pull_request_truth_refreshed",
+        pull_request: {
+          number: nextPullRequest.number,
+          state: nextPullRequest.state,
+          merged_at: nextPullRequest.merged_at,
+          merge_commit_sha: nextPullRequest.merge_commit_sha,
+        },
+      });
+      this.writeSummary(nextRun);
+      updatedRunIds.push(nextRun.run_id);
+    }
+
+    return { updated_run_ids: updatedRunIds };
   }
 
   getPreview(repo?: string): ExecutionDispatchPreview {
@@ -1822,6 +1890,23 @@ export class ExecutionService {
       merged_at: pullRequest.merged_at,
       merge_commit_sha: pullRequest.merge_commit_sha,
     };
+  }
+
+  private samePullRequestRecord(left: ExecutionPullRequestRecord | undefined, right: ExecutionPullRequestRecord): boolean {
+    if (!left) {
+      return false;
+    }
+
+    return left.number === right.number
+      && left.url === right.url
+      && left.title === right.title
+      && left.body === right.body
+      && left.base_ref === right.base_ref
+      && left.head_ref === right.head_ref
+      && left.is_draft === right.is_draft
+      && left.state === right.state
+      && (left.merged_at ?? null) === (right.merged_at ?? null)
+      && (left.merge_commit_sha ?? null) === (right.merge_commit_sha ?? null);
   }
 
   private normalizeNullableString(value?: string | null): string | null | undefined {
