@@ -179,6 +179,39 @@ export function archiveAndCloseMergedPullRequest(workItemId) {
   });
 }
 
+// ADR 014 step 8 — plan lifecycle endpoints.
+// See src/modules/plans/plans.controller.ts. The GET endpoint returns
+// { work_item_id, metadata, scratchpad_content } and 404s when no plan
+// dir exists yet for the work item.
+
+export function getPlan(workItemId) {
+  return request(`/api/plans/${encodeURIComponent(workItemId)}`);
+}
+
+export function preparePlan(workItemId) {
+  return request(`/api/plans/${encodeURIComponent(workItemId)}/prepare`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: "{}",
+  });
+}
+
+export function approvePlan(workItemId, payload = {}) {
+  return request(`/api/plans/${encodeURIComponent(workItemId)}/approve`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function reopenPlan(workItemId, payload = {}) {
+  return request(`/api/plans/${encodeURIComponent(workItemId)}/reopen`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getReconciliationReports(params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
