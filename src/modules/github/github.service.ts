@@ -69,6 +69,7 @@ export interface GitHubPullRequestDetails {
   reconciliation?: {
     updated_work_item_ids: string[];
     updated_run_ids: string[];
+    work_items: WorkItemRecord[];
   };
 }
 
@@ -224,7 +225,7 @@ export class GitHubService {
       "number,url,title,body,state,isDraft,baseRefName,headRefName,mergedAt,mergeCommit",
     ]);
 
-    return this.toPullRequestDetails(repo, raw);
+    return this.withPullRequestReconciliation(this.toPullRequestDetails(repo, raw));
   }
 
   async findPullRequestForBranch(repo: string, branch: string): Promise<GitHubPullRequestDetails | null> {
@@ -253,7 +254,11 @@ export class GitHubService {
       .filter((pull) => pull.head_ref === branch)
       .sort((left, right) => (right.merged_at ?? "").localeCompare(left.merged_at ?? "") || right.number - left.number);
 
-    return exactMatches[0] ?? null;
+    if (!exactMatches[0]) {
+      return null;
+    }
+
+    return this.withPullRequestReconciliation(exactMatches[0]);
   }
 
   async stageManagedBlockSync(workItemId: string) {
@@ -367,6 +372,65 @@ export class GitHubService {
       },
       issue: updatedIssue,
     };
+  }
+
+  private withPullRequestReconciliation(pullRequest: GitHubPullRequestDetails): GitHubPullRequestDetails {
+    const workItems = this.findLinkedPullRequestWorkItems(pullRequest);
+    const updatedWorkItemIds: string[] = [];
+    const nextWorkItems = workItems.map((workItem) => {
+      const existingMeta = this.readObject(workItem.meta);
+      const nextMeta = { ...existingMeta };
+      let changed = false;
+
+      const nextPrimaryPullRequest = this.mergeStoredPullRequest(existingMeta.pull_request, pullRequest);
+      if (!this.samePullRequestSnapshot(existingMeta.pull_request, pullRequest)) {
+        nextMeta.pull_request = nextPrimaryPullRequest;
+        changed = true;
+      }
+
+      const existingPostMergeSync = this.readObject(existingMeta.studio_post_merge_sync);
+      if (Object.keys(existingPostMergeSync).length > 0) {
+        const existingPostMergePullRequest = existingPostMergeSync.pull_request;
+        if (!this.samePullRequestSnapshot(existingPostMergePullRequest, pullRequest)) {
+          nextMeta.studio_post_merge_sync = {
+            ...existingPostMergeSync,
+            pull_request: this.mergeStoredPullRequest(existingPostMergePullRequest, pullRequest),
+          };
+          changed = true;
+        }
+      }
+
+      if (!changed) {
+        return workItem;
+      }
+
+      updatedWorkItemIds.push(workItem.id);
+      return this.workItems.update(workItem.id, { meta: nextMeta });
+    });
+
+    const refreshResult = this.pullRequestTruthRefresher?.(pullRequest, {
+      work_item_ids: nextWorkItems.map((workItem) => workItem.id),
+    }) ?? { updated_run_ids: [] };
+
+    return {
+      ...pullRequest,
+      reconciliation: {
+        updated_work_item_ids: updatedWorkItemIds,
+        updated_run_ids: refreshResult.updated_run_ids,
+        work_items: nextWorkItems,
+      },
+    };
+  }
+
+  private findLinkedPullRequestWorkItems(pullRequest: GitHubPullRequestDetails): WorkItemRecord[] {
+    const byId = new Map<string, WorkItemRecord>();
+    for (const workItem of this.workItems.listByRepoPullRequestNumber(pullRequest.repo, pullRequest.number)) {
+      byId.set(workItem.id, workItem);
+    }
+    for (const workItem of this.workItems.listByRepoBranch(pullRequest.repo, pullRequest.head_ref)) {
+      byId.set(workItem.id, workItem);
+    }
+    return Array.from(byId.values());
   }
 
   private reconcileIssueTruth(issue: GitHubIssueDetails): { updated_work_item_ids: string[]; work_items: WorkItemRecord[] } {
@@ -495,6 +559,35 @@ export class GitHubService {
     };
   }
 
+  private samePullRequestSnapshot(stored: unknown, pullRequest: GitHubPullRequestDetails): boolean {
+    const snapshot = this.readObject(stored);
+    return this.readNumber(snapshot.number) === pullRequest.number
+      && this.normalizeNullableString(snapshot.url) === pullRequest.url
+      && this.normalizeNullableString(snapshot.title) === pullRequest.title
+      && this.normalizeNullableString(snapshot.state) === pullRequest.state
+      && this.normalizeNullableString(snapshot.base_ref) === pullRequest.base_ref
+      && this.normalizeNullableString(snapshot.head_ref) === pullRequest.head_ref
+      && this.readBoolean(snapshot.is_draft) === pullRequest.is_draft
+      && this.normalizeNullableString(snapshot.merged_at) === (pullRequest.merged_at ?? null)
+      && this.normalizeNullableString(snapshot.merge_commit_sha) === (pullRequest.merge_commit_sha ?? null);
+  }
+
+  private mergeStoredPullRequest(stored: unknown, pullRequest: GitHubPullRequestDetails): Record<string, unknown> {
+    return {
+      ...this.readObject(stored),
+      number: pullRequest.number,
+      url: pullRequest.url,
+      title: pullRequest.title,
+      state: pullRequest.state,
+      is_draft: pullRequest.is_draft,
+      base_ref: pullRequest.base_ref,
+      head_ref: pullRequest.head_ref,
+      merged_at: pullRequest.merged_at,
+      merge_commit_sha: pullRequest.merge_commit_sha,
+      synced_at: this.now(),
+    };
+  }
+
   private sameIssueSnapshot(stored: unknown, issue: GitHubIssueDetails): boolean {
     const snapshot = this.readObject(stored);
     return this.normalizeNullableString(snapshot.title) === issue.title
@@ -554,6 +647,14 @@ export class GitHubService {
 
   private readObject(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
+  }
+
+  private readNumber(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  private readBoolean(value: unknown): boolean | null {
+    return typeof value === "boolean" ? value : null;
   }
 
   private normalizeNullableString(value: unknown): string | null {
