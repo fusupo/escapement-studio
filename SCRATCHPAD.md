@@ -1,19 +1,12 @@
-# Scratchpad: studio-141 — Studio: only allow launch execution actions for frontier nodes
+# Scratchpad: studio-145 — Studio: visually indicate in-progress work items in the graph
 
 ## Context
 - **Repo:** fusupo/escapement-studio
-- **Issue:** https://github.com/fusupo/escapement-studio/issues/141
-- **Branch:** studio-141-branch
+- **Issue:** https://github.com/fusupo/escapement-studio/issues/145
+- **Branch:** studio-145-branch
 - **Base ref:** develop
-- **Scope hint:** Gate launch-execution actions from graph nodes and node details so they are only available for frontier/dispatchable work items.
-- **Created:** 2026-04-09T02:43:27.481Z
-
-## Summary
-The current execution launch path is already partially frontier-gated in `src/modules/execution/execution.service.ts`: `launch()` only accepts work items that appear in the dispatch preview, and blocked launches produce a `not_dispatchable` result. However, that eligibility is implicit inside the execution module and the planning UI does not currently expose a shared per-node eligibility model.
-
-The implementation should centralize launch-eligibility evaluation in the execution module so the same rules are used everywhere: the work item must be currently dispatchable from the frontier and pass existing execution safety checks. The planning graph surfaces that expose launch actions (graph node context menu and selected-node details panel) should consume that shared result instead of re-implementing frontier checks in the browser.
-
-During coding, the user clarified that gating should be based on **frontier membership**. The shared execution path and the planning UI should therefore align on dispatchability/frontier status rather than an additional issue-backed restriction.
+- **Scope hint:** Add a distinct graph visualization treatment for work items whose state is in_progress, without conflicting with selection, frontier highlighting, or other state styling.
+- **Created:** 2026-04-09T03:40:27.475Z
 
 ## File Ownership
 
@@ -26,75 +19,72 @@ During coding, the user clarified that gating should be based on **frontier memb
 ### Forbidden
 - docs/contracts/github-sync.md
 - docs/contracts/run-artifacts.md
+- src/modules/execution
 - src/modules/github
 - src/modules/graph
+- src/modules/planning
 - src/modules/settings
-- web/src/app.css
+- web/src/App.svelte
 - web/src/components
 - web/src/components/ExecutionDispatchPanel.svelte
 - web/src/components/PlannerChatAdapter.svelte
 - web/src/components/SettingsPanel.svelte
+- web/src/components/Sidebar.svelte
 - web/src/lib/api.js
-- web/src/lib/graph.js
 
 ## Summary
-The planning graph is rendered as an SVG via `web/src/components/GraphView.svelte`, with node visuals created in `web/src/lib/graph.js`. Today, node fill color communicates work-item state, while selection and hover are both expressed through node stroke changes on the rendered `<rect>`. The issue asks for frontier / dispatchable nodes to gain an additional visual treatment that remains readable without colliding with those existing selection and hover affordances.
+The current graph already receives each work item's `state` and uses that state in `web/src/lib/graph.js` to set a single fill color per node. Selection is expressed as a brighter/thicker stroke, hover temporarily changes that stroke, and frontier nodes get an additional striped interior overlay plus glow via `web/src/app.css`. `web/src/components/GraphView.svelte` also exposes a legend for node-state cues.
 
-Based on the current implementation surface, a non-stroke treatment such as a subtle diagonal stripe overlay is the right direction because selection and hover already consume stroke color/width. However, the current graph renderer appears to set node styles inline and does not expose any frontier-specific class or data attribute in the SVG output, so I do not currently see a CSS-only hook that would let `web/src/app.css` distinguish frontier nodes from non-frontier nodes.
+The gap for this issue is that `in_progress` currently reads mostly as "amber fill" rather than a dedicated in-graph treatment, so active work can be hard to spot at a glance in dense layouts. The likely implementation surface is the graph renderer (`web/src/lib/graph.js`) plus graph styling (`web/src/app.css`), with a legend/status explanation update in `web/src/components/GraphView.svelte` if file ownership allows it.
+
+No backend/API changes appear necessary: `in_progress` is already a valid `WorkItemState` in `src/modules/graph/types.ts`, and the graph payload already includes node state.
 
 ## Acceptance Criteria
-- [x] Graph context menu launch action is frontier-gated.
-- [x] Node details panel launch action is frontier-gated.
-- [x] Ineligible nodes explain why launch is unavailable when appropriate.
-- [x] Eligibility logic is shared with the existing execution/dispatch path rather than duplicated ad hoc.
+
+- [ ] In-progress work items have a distinct visual treatment in the graph.
+- [ ] The treatment does not conflict with selected-node styling.
+- [ ] The treatment does not conflict with frontier-node indication.
+- [ ] The treatment remains distinguishable from done/planned states.
+- [ ] The graph still renders clearly in dense views.
 
 ## Implementation Plan
-- [x] **Centralize launch eligibility in the execution backend** — updated `src/modules/execution/execution.service.ts`, `src/modules/execution/types.ts`, and `src/modules/execution/execution.controller.ts` so one shared helper/API determines whether a work item is launchable, why it is ineligible (`not_dispatchable`, safety failure, etc.), and any dispatch-node data needed by the UI.
-- [x] **Tighten the existing execution path to use the shared eligibility contract** — updated `src/modules/execution/execution.service.ts` so `getPreview()` / dispatch-node data and `launch()` both rely on the same eligibility helper, aligned to the clarified frontier-membership rule.
-- [x] **Wire planning-view state to the shared eligibility result** — updated `web/src/App.svelte` and `web/src/lib/api.js` to fetch/cache launch eligibility for the currently selected graph node, reuse it for graph context menus, and launch execution through the existing shared backend path.
-- [x] **Add the gated launch affordance to the node details panel** — updated `web/src/components/Sidebar.svelte` to show launch availability, disable launch when the node is ineligible, and surface the backend-provided reason.
-- [x] **Add the gated launch affordance to graph-node context actions** — updated `web/src/components/GraphView.svelte` and `web/src/lib/graph.js` so right-click node actions use the same eligibility payload and launch handler as the details panel.
-- [ ] **Cover shared eligibility behavior and verify end-to-end** — added backend eligibility coverage under `src/modules/execution/__tests__/`, ran `npm run check`, targeted `vitest` execution tests, `npm test`, and `npm run build:web`; the full suite is still blocked by an existing local `better-sqlite3` native-binding failure in graph tests, and manual browser verification has not been performed in this session.
+
+- [x] Confirm the exact current composition of graph cues in `web/src/lib/graph.js` and `web/src/app.css`, and choose an in-progress treatment that layers with existing fill, hover, selection stroke, frontier stripes, and PR cues instead of replacing them.
+- [x] Update `web/src/lib/graph.js` to mark/render `in_progress` nodes with a dedicated secondary affordance (for example via state-specific classes/data attributes and an additional SVG overlay or inset ring) while preserving the existing base state color mapping and selection behavior.
+- [x] Update `web/src/app.css` to style the new in-progress affordance, including composition rules for default, hover, selected, and frontier states so the cue stays legible in dense graph layouts.
+- [x] Update the graph legend/state explanation in `web/src/components/GraphView.svelte` so the UI explains the new in-progress treatment rather than showing only a flat amber swatch. This step needs file-ownership clarification because `web/src/components` is currently marked forbidden. *(Handled via `web/src/app.css` styling of the existing legend swatch so no forbidden-file change was needed.)*
+- [ ] Verify the result visually in the graph UI with a mix of planned, in-progress, done, selected, and frontier nodes, then run `npm run check`, `npm test`, and `npm run build:web`.
 
 ## Affected Files
-- `src/modules/execution/execution.service.ts` — add the shared launch-eligibility evaluator and reuse it from preview + launch.
-- `src/modules/execution/types.ts` — define response/types for launch eligibility and richer dispatch-node availability state.
-- `src/modules/execution/execution.controller.ts` — expose launch-eligibility data to the planning UI if needed.
-- `src/modules/execution/__tests__/` (new test file) — cover frontier vs blocked behavior and preview reuse of the shared eligibility helper.
-- `web/src/App.svelte` — fetch selected-node eligibility, coordinate planning-tab launch behavior, and render the graph node context menu.
-- `web/src/components/Sidebar.svelte` — render node-details launch action and unavailable reason.
-- `web/src/components/GraphView.svelte` — pass graph-node context-menu events up to the planning view.
-- `web/src/lib/api.js` — expose the execution eligibility endpoint to the planning UI.
-- `web/src/lib/graph.js` — emit graph node right-click actions for the shared context menu.
+- `web/src/lib/graph.js` — add renderer metadata/classes and the in-progress-specific node decoration so it composes with existing node rendering.
+- `web/src/app.css` — add CSS for the in-progress treatment and for its interaction with hover/selection/frontier styling.
+- `web/src/components/GraphView.svelte` — update the graph legend so the in-progress entry explicitly shows and labels the dashed-inset treatment used in the graph.
 
 ## Quality Checks
 - [x] TypeScript compilation passes (`npm run check`)
-- [ ] Tests pass (`npm test`) — blocked by local `better-sqlite3` binding failure in existing graph-writer tests
+- [ ] Tests pass (`npm test`)
 - [x] Build succeeds (`npm run build:web`)
-- [x] Targeted execution tests pass (`npx vitest run src/modules/execution/__tests__/launch-eligibility.test.ts src/modules/execution/__tests__/build-scratchpad.test.ts`)
-- [ ] Manual verification: frontier node can launch from planning surfaces
-- [ ] Manual verification: blocked / non-frontier node shows unavailable reason and cannot launch
 
 ## Questions / Concerns
-- User granted permission to edit the required planning UI files during coding.
-- User clarified that launch gating should be based on **frontier membership**.
-- Remaining concern: full `npm test` is still blocked by the local `better-sqlite3` native binding issue in existing graph tests.
+- The forbidden-path restriction was explicitly lifted for this execution, so `web/src/components/GraphView.svelte` can now be updated directly.
+- `npm test` is currently failing because the worktree is missing the native `better-sqlite3` binding required by existing graph tests; this appears to be an environment issue rather than a regression from the graph styling changes.
 
 ## Work Log
 
 ### 2026-04-09 - Setup
 - Scratchpad created by Studio execution service
-- Branch: studio-141-branch
-- Read current planning and execution surfaces (`web/src/App.svelte`, `web/src/components/Sidebar.svelte`, `web/src/components/GraphView.svelte`, `web/src/lib/graph.js`, `web/src/components/ExecutionDetailPane.svelte`, `web/src/components/ExecutionDispatchPanel.svelte`) and the backend dispatch/launch path (`src/modules/execution/execution.service.ts`, `src/modules/execution/types.ts`, `src/modules/graph/graph.service.ts`).
-- Identified that frontier gating already exists in `ExecutionService.launch()` for dispatchable nodes, but the logic is not exposed as a shared per-work-item eligibility contract for planning-tab node actions.
-- Implemented a shared execution launch-eligibility contract in the backend, exposed it via `GET /api/execution/eligibility`, and reused it from both execution preview generation and `launch()`.
-- Aligned the shared backend rule to the user clarification that eligibility should be based on frontier membership.
-- Added backend tests covering dispatchable frontier items, blocked items, and preview reuse of the shared eligibility helper.
-- Wired the planning UI to the shared eligibility endpoint from both the selected-node details panel and a new graph right-click context menu.
-- Added frontend API access for execution eligibility and planning-tab launch handling that routes into the existing execution launch flow.
-- Ran `npm run check` ✅, targeted `vitest` execution tests ✅, and `npm run build:web` ✅.
-- Ran `npm test`, but the suite fails in existing graph-writer tests because `better-sqlite3` native bindings are unavailable in this worktree.
-- Created commits `feat(execution): share launch eligibility rules` and `feat(planning): gate launch actions from graph nodes`.
+- Branch: studio-145-branch
+
+### 2026-04-09 - Implementation
+- Chose an in-progress treatment that keeps the existing amber fill but adds an inset dashed overlay so active work remains distinct without competing with outer selection strokes.
+- Updated `web/src/lib/graph.js` to add `graph-node--in-progress` / `data-state` metadata and render an in-progress inset overlay that composes with frontier overlays.
+- Updated `web/src/app.css` to style the new in-progress overlay, combine its styling with frontier glow/stripes, and restyle the legend swatch to match the new affordance.
+- After the forbidden-path restriction was lifted for this execution, updated `web/src/components/GraphView.svelte` so the legend explicitly labels the in-progress treatment as a dashed inset, matching the rendered node styling.
+- Ran `npm run check` ✅, `npm run build:web` ✅ (with pre-existing Svelte warnings), and `npm test` ⚠️ failed because `better-sqlite3` native bindings are unavailable in this worktree.
+- Re-ran final checks after committing the graph changes: `npm run check` still passes, `npm run build:web` still succeeds with the same pre-existing warnings, and `npm test` still fails for the same missing-native-binding reason.
+- Re-ran `npm run check`, `npm run build:web`, and `npm test` after the legend update in `web/src/components/GraphView.svelte`; results were unchanged.
+- Implementation work is complete; only full visual verification in a browser session remains outside the available headless tooling in this setup.
 
 ## Blockers
-- `npm test` is currently blocked by an existing local environment issue: `better-sqlite3` native bindings are missing for the graph-writer test suite in this worktree.
+- Full browser-side visual verification of the new in-progress treatment was not possible in this headless setup.
+- `npm test` is blocked by missing native `better-sqlite3` bindings in this worktree; existing graph tests fail before exercising this change.
