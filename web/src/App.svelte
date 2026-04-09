@@ -4,6 +4,7 @@
   import ReconciliationPanel from "./components/ReconciliationPanel.svelte";
   import SettingsPanel from "./components/SettingsPanel.svelte";
   import GraphView from "./components/GraphView.svelte";
+  import GraphNodeContextMenu from "./components/GraphNodeContextMenu.svelte";
   import FiltersToolbar from "./components/FiltersToolbar.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import {
@@ -19,6 +20,7 @@
     listWorkItems,
     updateWorkItem,
   } from "./lib/api.js";
+  import { buildGraphNodeContextMenu } from "./lib/graph-node-actions.js";
 
   const emptyGraph = { filters: {}, items: [], edges: [] };
   let graph = emptyGraph;
@@ -94,6 +96,12 @@
   $: selectedLaunchEligibilityLoading = selectedItem ? !!launchEligibilityLoadingIds[selectedItem.id] : false;
   $: contextMenuLaunchEligibility = graphContextMenu.item ? launchEligibilityById[graphContextMenu.item.id] ?? null : null;
   $: contextMenuLaunchEligibilityLoading = graphContextMenu.item ? !!launchEligibilityLoadingIds[graphContextMenu.item.id] : false;
+  $: graphContextMenuModel = buildGraphNodeContextMenu({
+    item: graphContextMenu.item,
+    launchEligibility: contextMenuLaunchEligibility,
+    launchEligibilityLoading: contextMenuLaunchEligibilityLoading,
+    launchingExecution,
+  });
   $: filterOptions = {
     repos: [...new Set(catalog.map((item) => item.repo).filter(Boolean))].sort(),
     states: [...new Set(catalog.map((item) => item.state).filter(Boolean))].sort(),
@@ -283,24 +291,16 @@
     }
 
     selectedId = detail.item.id;
-    const x = Math.min(detail.x, Math.max(16, window.innerWidth - 280));
-    const y = Math.min(detail.y, Math.max(16, window.innerHeight - 180));
     graphContextMenu = {
       open: true,
-      x,
-      y,
+      x: detail.x,
+      y: detail.y,
       item: detail.item,
     };
     await ensureLaunchEligibility(detail.item.id);
   }
 
   function handleGlobalKeydown(event) {
-    if (event.key === "Escape") {
-      closeGraphContextMenu();
-    }
-  }
-
-  function handleGraphContextMenuKeydown(event) {
     if (event.key === "Escape") {
       closeGraphContextMenu();
     }
@@ -348,7 +348,13 @@
   <title>Escapement Studio</title>
 </svelte:head>
 
-<svelte:window on:click={closeGraphContextMenu} on:keydown={handleGlobalKeydown} on:scroll={closeGraphContextMenu} />
+<svelte:window
+  on:click={closeGraphContextMenu}
+  on:contextmenu={closeGraphContextMenu}
+  on:keydown={handleGlobalKeydown}
+  on:resize={closeGraphContextMenu}
+  on:scroll={closeGraphContextMenu}
+/>
 
 <div class="app-shell">
   <!-- Activity Bar (far left icon rail) -->
@@ -544,33 +550,18 @@
       </div>
     {/if}
 
-    {#if activeTab === "planning" && graphContextMenu.open && graphContextMenu.item}
-      <div
-        class="graph-context-menu"
-        style={`left:${graphContextMenu.x}px; top:${graphContextMenu.y}px;`}
-        role="menu"
-        tabindex="-1"
-        aria-label={`Actions for ${graphContextMenu.item.id}`}
-        on:click|stopPropagation
-        on:keydown|stopPropagation={handleGraphContextMenuKeydown}
-      >
-        <div class="graph-context-menu-title">{graphContextMenu.item.id}</div>
-        <div class="graph-context-menu-name">{graphContextMenu.item.name}</div>
-        {#if contextMenuLaunchEligibilityLoading}
-          <div class="graph-context-menu-reason muted">Checking launch eligibility…</div>
-        {:else}
-          <button
-            class="graph-context-menu-action"
-            on:click={() => handleLaunchExecution(graphContextMenu.item)}
-            disabled={!contextMenuLaunchEligibility?.can_launch || launchingExecution}
-          >
-            {launchingExecution ? "Launching…" : "Launch execution"}
-          </button>
-          {#if contextMenuLaunchEligibility?.launch_unavailable_reason}
-            <div class="graph-context-menu-reason">{contextMenuLaunchEligibility.launch_unavailable_reason}</div>
-          {/if}
-        {/if}
-      </div>
+    {#if activeTab === "planning" && graphContextMenu.open && graphContextMenu.item && graphContextMenuModel}
+      <GraphNodeContextMenu
+        menu={graphContextMenuModel}
+        x={graphContextMenu.x}
+        y={graphContextMenu.y}
+        on:action={(event) => {
+          if (event.detail.id === "launch-execution") {
+            handleLaunchExecution(graphContextMenu.item);
+          }
+        }}
+        on:requestclose={closeGraphContextMenu}
+      />
     {/if}
 
     <!-- Status bar -->
@@ -913,43 +904,6 @@
     flex: 1;
     color: #6b7a94;
     font-size: 12px;
-  }
-
-  .graph-context-menu {
-    position: fixed;
-    z-index: 40;
-    min-width: 220px;
-    max-width: 280px;
-    display: grid;
-    gap: 6px;
-    padding: 10px;
-    border-radius: 8px;
-    border: 1px solid #2b3245;
-    background: #13171f;
-    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
-  }
-
-  .graph-context-menu-title {
-    font-size: 11px;
-    font-weight: 700;
-    color: #e2e8f0;
-  }
-
-  .graph-context-menu-name {
-    font-size: 11px;
-    color: #8b95a5;
-    overflow-wrap: anywhere;
-  }
-
-  .graph-context-menu-action {
-    width: 100%;
-    justify-content: center;
-  }
-
-  .graph-context-menu-reason {
-    font-size: 11px;
-    color: #8b95a5;
-    line-height: 1.4;
   }
 
   /* ── Responsive ── */
