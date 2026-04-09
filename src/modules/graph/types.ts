@@ -28,7 +28,16 @@ export interface MisalignedWorkItem {
   issue_number: number;
   expected_id: string;
 }
-export type WorkItemState = "planned" | "in_progress" | "open_pr" | "done" | "deferred" | "cancelled";
+export type WorkItemState =
+  | "planned"
+  | "drafting"
+  | "ready"
+  | "in_progress"
+  | "open_pr"
+  | "merged_pr"
+  | "done"
+  | "deferred"
+  | "cancelled";
 export type EdgeRel = "depends_on" | "is_part_of" | "implemented_by";
 export type EdgeConfidence = "certain" | "inferred" | "ambiguous";
 
