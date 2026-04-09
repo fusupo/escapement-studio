@@ -2,10 +2,13 @@ import * as d3 from "d3";
 import * as dagreD3 from "dagre-d3-es";
 
 const STATE_COLORS = {
-  done: "#238636",
+  planned: "#58a6ff",
+  drafting: "#79c0ff",
+  ready: "#56d364",
   in_progress: "#d29922",
   open_pr: "#a371f7",
-  planned: "#58a6ff",
+  merged_pr: "#8957e5",
+  done: "#238636",
   deferred: "#8b949e",
   cancelled: "#f85149",
 };
@@ -322,7 +325,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       }
     }
 
-    if (data._prStatus !== "merged" || data.state !== "done" || !rectNode) return;
+    if (data._prStatus !== "merged" || (data.state !== "done" && data.state !== "merged_pr") || !rectNode) return;
     const bbox = rectNode.getBBox();
     nodeGroup.append("text")
       .text("✓PR")

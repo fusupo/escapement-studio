@@ -58,14 +58,17 @@ export class SQLiteService {
       .prepare("INSERT OR IGNORE INTO studio_metadata (key, value) VALUES ('graph_version', '0')")
       .run();
 
-    // Extend upstream CHECK constraint to include open_pr state
+    // Extend upstream CHECK constraint to include expanded ADR 014 state set
     this.migrateWorkItemStates();
   }
 
   private migrateWorkItemStates() {
-    // Check if open_pr is already allowed
+    // Guard sentinel is merged_pr (ADR 014 step 3). If already present, the
+    // expanded state set is in place and the migration is a no-op. Instances
+    // that have the step-1/2 schema with open_pr but not merged_pr will fall
+    // through and run the recreate.
     const tableInfo = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_items'").get() as { sql: string } | undefined;
-    if (!tableInfo?.sql || tableInfo.sql.includes("open_pr")) {
+    if (!tableInfo?.sql || tableInfo.sql.includes("merged_pr")) {
       return; // already migrated or no table
     }
 
@@ -81,8 +84,11 @@ export class SQLiteService {
         state       TEXT NOT NULL DEFAULT 'planned'
                     CHECK (state IN (
                       'planned',
+                      'drafting',
+                      'ready',
                       'in_progress',
                       'open_pr',
+                      'merged_pr',
                       'done',
                       'deferred',
                       'cancelled'
