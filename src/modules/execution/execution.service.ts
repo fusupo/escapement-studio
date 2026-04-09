@@ -12,6 +12,7 @@ import {
   workItemSlug,
   worktreesRoot,
 } from "../../lib/context-layout.js";
+import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
@@ -600,20 +601,6 @@ export class ExecutionService {
     return { resolved: true, run_id: runId };
   }
 
-  /** Fetch issue body via gh CLI. Returns body text or null. */
-  private fetchIssueBody(repo: string | null, issueNumber: number | null): string | null {
-    if (!repo || !issueNumber) return null;
-    try {
-      const raw = execFileSync("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "body", "--jq", ".body"], {
-        encoding: "utf8",
-        timeout: 15000,
-      }).trim();
-      return raw || null;
-    } catch {
-      return null;
-    }
-  }
-
   /** Read AGENTS.md or CLAUDE.md from a directory if it exists. */
   private readProjectContext(dir: string): string | null {
     for (const name of ["AGENTS.md", "CLAUDE.md"]) {
@@ -661,7 +648,7 @@ export class ExecutionService {
 
     // --- Gather context ---
     const workItem = this.workItemsService.get(run.work_item_id);
-    const issueBody = this.fetchIssueBody(workItem.repo, workItem.issue_number);
+    const issueBody = fetchIssueBody(workItem.repo, workItem.issue_number);
     const projectContext = this.readProjectContext(run.worktree_path);
     this.pushActivity(run.run_id, "status_change", `Context gathered: issue body ${issueBody ? "found" : "not found"}, project conventions ${projectContext ? "found" : "not found"}`);
 
