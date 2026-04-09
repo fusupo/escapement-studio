@@ -154,9 +154,13 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   for (const node of nodes) {
     const color = STATE_COLORS[node.state] ?? "#484f58";
     const isSelected = node.id === selectedId;
+    const classes = ["graph-node"];
+    if (node._isFrontier) classes.push("graph-node--frontier");
+    if (node.state === "in_progress") classes.push("graph-node--in-progress");
+
     g.setNode(node.id, {
       label: node.id,
-      class: node._isFrontier ? "graph-node--frontier" : "graph-node",
+      class: classes.join(" "),
       style: `fill: ${color}; stroke: ${isSelected ? "#e6edf3" : "rgba(255,255,255,0.15)"}; stroke-width: ${isSelected ? "2.5px" : "1px"};`,
       labelStyle: "fill: #fff; font-size: 11px; font-weight: 500;",
       rx: 5, ry: 5,
@@ -270,7 +274,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     }
   }
 
-  // Post-render: frontier overlays + merged PR badges
+  // Post-render: state overlays + merged PR badges
   inner.selectAll("g.node").each(function (id) {
     const nodeGroup = d3.select(this);
     const data = g.node(id)?._data;
@@ -278,28 +282,44 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
     nodeGroup
       .classed("selected", data.id === selectedId)
-      .attr("data-frontier", data._isFrontier ? "true" : "false");
+      .classed("graph-node--in-progress", data.state === "in_progress")
+      .attr("data-frontier", data._isFrontier ? "true" : "false")
+      .attr("data-state", data.state ?? "unknown");
 
     const baseRect = nodeGroup.select("rect");
     const rectNode = baseRect.node();
-    if (data._isFrontier && rectNode) {
+    if (rectNode) {
       const x = Number(baseRect.attr("x"));
       const y = Number(baseRect.attr("y"));
       const width = Number(baseRect.attr("width"));
       const height = Number(baseRect.attr("height"));
       const rx = Number(baseRect.attr("rx") || 0);
       const ry = Number(baseRect.attr("ry") || 0);
-      const inset = Math.min(1.5, width / 6, height / 6);
 
-      nodeGroup.insert("rect", "g.label")
-        .attr("class", "frontier-overlay")
-        .attr("fill", "url(#graph-frontier-diagonal-stripes)")
-        .attr("x", x + inset)
-        .attr("y", y + inset)
-        .attr("width", Math.max(0, width - inset * 2))
-        .attr("height", Math.max(0, height - inset * 2))
-        .attr("rx", Math.max(0, rx - inset / 2))
-        .attr("ry", Math.max(0, ry - inset / 2));
+      if (data._isFrontier) {
+        const frontierInset = Math.min(1.5, width / 6, height / 6);
+        nodeGroup.insert("rect", "g.label")
+          .attr("class", "frontier-overlay")
+          .attr("fill", "url(#graph-frontier-diagonal-stripes)")
+          .attr("x", x + frontierInset)
+          .attr("y", y + frontierInset)
+          .attr("width", Math.max(0, width - frontierInset * 2))
+          .attr("height", Math.max(0, height - frontierInset * 2))
+          .attr("rx", Math.max(0, rx - frontierInset / 2))
+          .attr("ry", Math.max(0, ry - frontierInset / 2));
+      }
+
+      if (data.state === "in_progress") {
+        const progressInset = Math.min(3, width / 5, height / 5);
+        nodeGroup.insert("rect", "g.label")
+          .attr("class", "in-progress-overlay")
+          .attr("x", x + progressInset)
+          .attr("y", y + progressInset)
+          .attr("width", Math.max(0, width - progressInset * 2))
+          .attr("height", Math.max(0, height - progressInset * 2))
+          .attr("rx", Math.max(0, rx - progressInset / 2))
+          .attr("ry", Math.max(0, ry - progressInset / 2));
+      }
     }
 
     if (data._prStatus !== "merged" || data.state !== "done" || !rectNode) return;
