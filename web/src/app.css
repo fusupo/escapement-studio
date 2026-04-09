@@ -245,10 +245,8 @@ a:hover {
   --graph-frontier-glow: rgba(240, 246, 252, 0.16);
 }
 
-/* Frontier styling is intentionally hook-based so it composes with the
-   graph renderer's existing state fill plus hover/selection stroke affordances.
-   The current renderer does not yet expose a frontier selector or SVG pattern
-   definition, so these rules are dormant until that hook exists. */
+/* Frontier styling uses an interior overlay so it composes with the graph
+   renderer's existing state fill plus hover/selection stroke affordances. */
 .graph-canvas .node.graph-node--frontier,
 .graph-canvas .node.frontier,
 .graph-canvas .node[data-frontier="true"] {
@@ -265,6 +263,7 @@ a:hover {
 .graph-canvas .node.frontier .frontier-overlay,
 .graph-canvas .node[data-frontier="true"] .frontier-overlay {
   fill: url("#graph-frontier-diagonal-stripes");
+  stroke: none;
   opacity: 0.34;
   pointer-events: none;
 }
@@ -286,7 +285,7 @@ a:hover {
   background-color: rgba(88, 166, 255, 0.24);
   background-image: repeating-linear-gradient(
     135deg,
-    var(--graph-frontier-stripe-color) 0 2px,
+    var(--graph-frontier-stripe-color, rgba(240, 246, 252, 0.24)) 0 2px,
     transparent 2px 6px
   );
 }
