@@ -112,8 +112,10 @@ describe("state-machine allowlist", () => {
     it("terminal states (done, cancelled, merged_pr) have no human-triggered outbound transitions", () => {
       expect(VALID_HUMAN_TRANSITIONS.done).toEqual([]);
       expect(VALID_HUMAN_TRANSITIONS.cancelled).toEqual([]);
-      // merged_pr → done is wired by the disposition flow (ADR 014 step 7)
-      // not by a human reviewer, so it stays empty here.
+      // merged_pr → done is triggered by the disposition endpoints
+      // (POST /api/execution/close-merged, POST /api/execution/archive-and-close-merged)
+      // not by a human reviewer via the generic transition endpoint, so the
+      // allowlist stays empty here.
       expect(VALID_HUMAN_TRANSITIONS.merged_pr).toEqual([]);
     });
   });

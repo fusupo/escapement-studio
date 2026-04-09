@@ -79,6 +79,14 @@ export class WorkItemsController {
       return this.executionService.transitionInProgressToReady(id);
     }
 
+    // ADR 014 step 7: `* → cancelled` delegates to ExecutionService so the
+    // plan dir can be moved into `archives/<slug>/` and the active-run guard
+    // runs before the state update. Source-state validity is already enforced
+    // by `isValidHumanTransition` above.
+    if (target === "cancelled") {
+      return this.executionService.cancelWorkItem(id);
+    }
+
     return this.workItems.update(id, { state: target });
   }
 

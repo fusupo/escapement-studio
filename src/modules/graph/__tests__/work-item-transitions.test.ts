@@ -57,6 +57,10 @@ function makeController(initialState: WorkItemState = "planned") {
       current = { ...current, state: "ready" };
       return current;
     }),
+    cancelWorkItem: vi.fn((_id: string) => {
+      current = { ...current, state: "cancelled" };
+      return current;
+    }),
   } as unknown as ExecutionService;
 
   const controller = new WorkItemsController(workItemsService, executionService);
@@ -110,12 +114,30 @@ describe("WorkItemsController.transition", () => {
     });
   });
 
+  describe("cancelled delegation (ADR 014 step 7)", () => {
+    // * → cancelled now delegates to ExecutionService.cancelWorkItem so the
+    // plan dir can be archived and the active-run guard runs before the
+    // state update.
+    const sources: WorkItemState[] = ["planned", "drafting", "ready", "in_progress", "open_pr"];
+    for (const from of sources) {
+      it(`delegates ${from} → cancelled to ExecutionService.cancelWorkItem`, () => {
+        const harness = makeController(from);
+
+        const result = harness.controller.transition("studio-153", { to: "cancelled" });
+
+        expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith("studio-153");
+        expect(harness.workItemsService.update).not.toHaveBeenCalled();
+        expect(result.state).toBe("cancelled");
+      });
+    }
+  });
+
   describe("rejection of disallowed transitions", () => {
     const disallowed: Array<[WorkItemState, WorkItemState]> = [
       ["planned", "in_progress"], // must launch, not manually set
       ["planned", "done"],
       ["done", "planned"],
-      ["merged_pr", "done"], // reserved for disposition flow (step 7)
+      ["merged_pr", "done"], // disposition flow (step 7) uses dedicated endpoints, not this allowlist
       ["cancelled", "planned"],
       ["ready", "in_progress"], // must launch, not manually set
     ];

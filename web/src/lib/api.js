@@ -155,6 +155,30 @@ export function resolveDisambiguation(payload) {
   });
 }
 
+export function syncMergedPullRequest(payload) {
+  return request("/api/execution/post-merge-sync", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
+export function closeMergedPullRequest(workItemId) {
+  return request("/api/execution/close-merged", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ work_item_id: workItemId }),
+  });
+}
+
+export function archiveAndCloseMergedPullRequest(workItemId) {
+  return request("/api/execution/archive-and-close-merged", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ work_item_id: workItemId }),
+  });
+}
+
 export function getReconciliationReports(params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

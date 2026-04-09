@@ -73,6 +73,16 @@ export class ExecutionController {
     return this.executionService.transitionInProgressToDrafting(body.work_item_id);
   }
 
+  @Post("close-merged")
+  closeMergedPullRequest(@Body() body: TransitionWorkItemDto) {
+    return this.executionService.closeMergedPullRequest(body.work_item_id);
+  }
+
+  @Post("archive-and-close-merged")
+  archiveAndCloseMergedPullRequest(@Body() body: TransitionWorkItemDto) {
+    return this.executionService.archiveAndCloseMergedPullRequest(body.work_item_id);
+  }
+
   @Get("runs/:runId/chat")
   getRunChat(@Param("runId") runId: string) {
     return this.executionService.getRunChatHistory(runId);
