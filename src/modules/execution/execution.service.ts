@@ -8,16 +8,18 @@ import { getConfig } from "../../config.js";
 import {
   canonicalScratchpadPath,
   ensurePlanDir,
+  readPlanMetadata,
   runDir,
   workItemSlug,
   worktreesRoot,
+  writePlanMetadata,
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
-import type { WorkItemRecord } from "../graph/types.js";
+import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
@@ -292,6 +294,9 @@ export class ExecutionService {
     });
 
     this.persistRun(run);
+    // ADR 014 step 5: record the run ID on the plan so the plan metadata
+    // knows about every attempt (including blocked/failed ones). Non-fatal.
+    this.appendRunIdToPlanMetadata(run.work_item_id, run.run_id);
     this.pushActivity(
       run.run_id,
       "status_change",
@@ -652,9 +657,21 @@ export class ExecutionService {
     const projectContext = this.readProjectContext(run.worktree_path);
     this.pushActivity(run.run_id, "status_change", `Context gathered: issue body ${issueBody ? "found" : "not found"}, project conventions ${projectContext ? "found" : "not found"}`);
 
-    // --- Write initial scratchpad (skeleton — agent will fill it in during setup) ---
-    const scratchpadPath = this.writeScratchpad(run, node);
-    this.pushActivity(run.run_id, "status_change", `Scratchpad written to ${scratchpadPath}`);
+    // --- Write initial scratchpad ---
+    // ADR 014 step 5: when the plan reached `ready` via PlansService.approve,
+    // the canonical scratchpad is the executable contract — copied into the
+    // worktree verbatim and the setup-phase agent turn is skipped below.
+    // Otherwise (fallback for `planned` items) a skeleton is synthesized.
+    const scratchpadResult = this.writeScratchpad(run, node);
+    const scratchpadPath = scratchpadResult.path;
+    const hasApprovedPlan = scratchpadResult.source === "canonical_ready";
+    this.pushActivity(
+      run.run_id,
+      "status_change",
+      hasApprovedPlan
+        ? `Approved plan loaded from canonical scratchpad at ${scratchpadPath}`
+        : `Scratchpad written to ${scratchpadPath}`,
+    );
     this.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.emitChecklistIfChanged(run);
 
@@ -692,10 +709,22 @@ export class ExecutionService {
       // ============================================================
       // PHASE 1: SETUP (like setup-work skill)
       // Agent reads issue, analyzes codebase, writes implementation
-      // plan into the canonical scratchpad, surfaces questions
+      // plan into the canonical scratchpad, surfaces questions.
+      //
+      // ADR 014 step 5: skip entirely when an approved plan was loaded
+      // from canonical — the approved scratchpad IS the executable contract.
       // ============================================================
       const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
-      if (disambiguate) {
+      const shouldRunSetupPhase = disambiguate && !hasApprovedPlan;
+      if (hasApprovedPlan) {
+        this.pushActivity(
+          runId,
+          "status_change",
+          "Approved plan loaded from canonical — skipping setup phase.",
+        );
+        this.appendEvent(run, { type: "setup_phase_skipped" });
+      }
+      if (shouldRunSetupPhase) {
         run = this.updateRun(runId, {
           status: "running",
           progress_message: "Setup phase — agent is analyzing the issue and planning implementation.",
@@ -936,6 +965,10 @@ export class ExecutionService {
 
     try {
       await session.prompt(message);
+      // ADR 014 step 5: sync the agent's scratchpad edits back to canonical
+      // at follow-up turn completion (phase boundary).
+      this.syncScratchpadToCanonical(run);
+      this.emitChecklistIfChanged(run);
     } finally {
       unsubscribe();
       this.activeSessions.delete(run.run_id);
@@ -1112,6 +1145,7 @@ export class ExecutionService {
         message: "Work item is not currently dispatchable from the frontier.",
       });
     } else {
+      safetyChecks.push(this.checkLaunchableState(workItem));
       safetyChecks.push(...this.evaluateSafety(branch, worktreePath, baseRef));
     }
 
@@ -1184,6 +1218,40 @@ export class ExecutionService {
     checks.push(this.checkWorktreePathAvailable(worktreePath));
     checks.push(this.checkPathBounded(worktreePath));
     return checks;
+  }
+
+  /**
+   * ADR 014 step 5: gate launch on work item state.
+   *
+   * A work item is launchable when its state is `ready` (an approved plan
+   * produced by `PlansService.approve`) or — under the transitional fallback
+   * until step 4 is broadly rolled out — `planned` (inline scratchpad
+   * synthesis at launch time). Every other state fails with `not_ready` so
+   * the reason is visible in dispatch previews.
+   *
+   * TODO(ADR 014 step 5 follow-up): once every caller goes through
+   * prepare→approve, drop `planned` from the launchable set and make the
+   * gate strictly `ready`.
+   */
+  private isLaunchableState(state: WorkItemState): boolean {
+    return state === "ready" || state === "planned";
+  }
+
+  private checkLaunchableState(workItem: WorkItemRecord): ExecutionSafetyCheck {
+    if (this.isLaunchableState(workItem.state)) {
+      return {
+        code: "launchable_state",
+        status: "pass",
+        message: `Work item state '${workItem.state}' is launchable.`,
+      };
+    }
+    return {
+      code: "not_ready",
+      status: "fail",
+      message:
+        `Work item state '${workItem.state}' is not launchable. ` +
+        "Expected 'ready' (approved plan) or 'planned' (fallback).",
+    };
   }
 
   private checkTrackedRepoClean(): ExecutionSafetyCheck {
@@ -1454,6 +1522,36 @@ export class ExecutionService {
    * canonical file unchanged — the canonical retains its last-known-good
    * state.
    */
+  /**
+   * ADR 014 step 5: record a run ID on the plan metadata.
+   *
+   * Called at launch time (after the run record is persisted) so every
+   * attempt — including blocked/failed starts — leaves a trace in the plan
+   * metadata. Idempotent (deduped). Non-fatal: metadata write failures are
+   * logged but must not abort the run.
+   */
+  private appendRunIdToPlanMetadata(workItemId: string, runId: string): void {
+    try {
+      const metadata = readPlanMetadata(this.artifactRoot, workItemId);
+      if (!metadata) {
+        return;
+      }
+      if (metadata.run_ids.includes(runId)) {
+        return;
+      }
+      writePlanMetadata(this.artifactRoot, workItemId, {
+        ...metadata,
+        run_ids: [...metadata.run_ids, runId],
+        updated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      this.logger.warn(
+        `appendRunIdToPlanMetadata: failed to record run ${runId} on plan for ${workItemId}: ` +
+          this.getErrorMessage(error),
+      );
+    }
+  }
+
   private syncScratchpadToCanonical(run: ExecutionRunRecord): void {
     const slug = workItemSlug(run.work_item_id);
     const worktreeScratchpad = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
@@ -1471,33 +1569,63 @@ export class ExecutionService {
   /**
    * Seed the worktree scratchpad from the canonical plan file.
    *
-   * ADR 014 step 2: the canonical scratchpad lives at
-   * `plans/<slug>/SCRATCHPAD_<slug>.md` and is the source of truth. On first
-   * run for a work item the skeleton is generated and written to canonical;
-   * on subsequent runs the existing canonical content is carried forward
-   * (so plan edits from prior runs survive). The worktree always receives a
-   * copy named `SCRATCHPAD_<slug>.md`.
+   * ADR 014 step 2/4/5: the canonical scratchpad lives at
+   * `plans/<slug>/SCRATCHPAD_<slug>.md` and is the source of truth.
    *
-   * Returns the worktree scratchpad path.
+   * After ADR 014 step 4 lands, a work item that reached `ready` state via
+   * `PlansService.approve` already has an approved canonical scratchpad —
+   * no skeleton synthesis happens here and the setup-phase agent turn is
+   * skipped upstream (caller uses the returned `source` field).
+   *
+   * The fallback path (no plan metadata or plan state is null/drafting, for
+   * `planned` items under the step 5 transitional gate) still generates a
+   * skeleton via `buildScratchpad` and writes it to canonical. This path
+   * goes away when every launch goes through prepare→approve.
+   *
+   * Returns `{ path, source }`:
+   *   - `canonical_ready`    — plan was approved, content came from canonical
+   *   - `carried_forward`    — canonical existed but plan state was not `ready`
+   *                            (e.g. legacy plan dir with no metadata state)
+   *   - `synthesized`        — no canonical file existed; skeleton generated
    */
-  private writeScratchpad(run: ExecutionRunRecord, node: ExecutionDispatchNodePreview): string {
+  private writeScratchpad(
+    run: ExecutionRunRecord,
+    node: ExecutionDispatchNodePreview,
+  ): { path: string; source: "canonical_ready" | "carried_forward" | "synthesized" } {
     ensurePlanDir(this.artifactRoot, run.work_item_id);
     const canonicalPath = canonicalScratchpadPath(this.artifactRoot, run.work_item_id);
+    const metadata = readPlanMetadata(this.artifactRoot, run.work_item_id);
 
     let content: string;
-    if (existsSync(canonicalPath)) {
-      // Carry existing plan forward — edits from prior runs survive.
+    let source: "canonical_ready" | "carried_forward" | "synthesized";
+
+    if (metadata?.state === "ready") {
+      // Step 5 happy path: an approved plan must have a canonical scratchpad.
+      if (!existsSync(canonicalPath)) {
+        throw new BadRequestException(
+          `ready_plan_scratchpad_missing: work item ${run.work_item_id} is marked ready ` +
+            `but canonical scratchpad is missing at ${canonicalPath}`,
+        );
+      }
       content = readFileSync(canonicalPath, "utf8");
+      source = "canonical_ready";
+    } else if (existsSync(canonicalPath)) {
+      // Legacy / fallback: canonical exists but plan is not in `ready` state.
+      // Carry the existing plan forward — edits from prior runs survive.
+      content = readFileSync(canonicalPath, "utf8");
+      source = "carried_forward";
     } else {
-      // First run for this work item — generate skeleton and persist to canonical.
+      // Fallback: first run for this work item, no canonical exists.
+      // Generate a skeleton and persist to canonical.
       content = this.buildScratchpad(run, node);
       writeFileSync(canonicalPath, content, "utf8");
+      source = "synthesized";
     }
 
     const slug = workItemSlug(run.work_item_id);
     const worktreeScratchpad = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
     writeFileSync(worktreeScratchpad, content, "utf8");
-    return worktreeScratchpad;
+    return { path: worktreeScratchpad, source };
   }
 
   private createRunRecord(input: {
@@ -1816,10 +1944,15 @@ export class ExecutionService {
   }
 
   private markWorkItemInProgressOnLaunch(workItem: WorkItemRecord): { workItem: WorkItemRecord; transitioned: boolean } {
-    // Both 'planned' and 'ready' are launchable under ADR 014 step 3:
-    // 'planned' items launch directly (upstream behavior) and 'ready' items
-    // launch after a human reviewer has approved a plan.
-    if (workItem.state !== "planned" && workItem.state !== "ready") {
+    // ADR 014 step 5: only launchable states transition to in_progress. The
+    // eligibility safety check `launchable_state` already rejects anything
+    // else before this method is reached; this guard is defensive.
+    //
+    // `ready` items launch after a human reviewer approved a plan via
+    // `PlansService.approve`. `planned` items are a transitional fallback
+    // until step 4 is broadly rolled out — the inline setup-phase scratchpad
+    // synthesis still handles these.
+    if (!this.isLaunchableState(workItem.state)) {
       return { workItem, transitioned: false };
     }
 
@@ -1850,6 +1983,24 @@ export class ExecutionService {
       );
     }
     return this.workItemsService.update(workItemId, { state: "ready" });
+  }
+
+  /**
+   * Transition a work item from in_progress back to drafting.
+   *
+   * ADR 014 step 5: mirror of `transitionInProgressToReady` for the "plan
+   * needs rework" failure return path. Both transitions remain purely
+   * operator-triggered in step 5 — automatic failure classification is
+   * deferred to step 7 (run disposition).
+   */
+  transitionInProgressToDrafting(workItemId: string): WorkItemRecord {
+    const workItem = this.workItemsService.get(workItemId);
+    if (workItem.state !== "in_progress") {
+      throw new BadRequestException(
+        `Cannot transition ${workItemId} from ${workItem.state} to drafting (requires in_progress)`,
+      );
+    }
+    return this.workItemsService.update(workItemId, { state: "drafting" });
   }
 
   private async resolvePullRequestFromWorkItem(workItem: WorkItemRecord) {
