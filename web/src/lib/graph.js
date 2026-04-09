@@ -322,7 +322,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       }
     }
 
-    if (data._prStatus !== "merged" || data.state !== "done" || !rectNode) return;
+    if (data._prStatus !== "merged" || (data.state !== "done" && data.state !== "merged_pr") || !rectNode) return;
     const bbox = rectNode.getBBox();
     nodeGroup.append("text")
       .text("✓PR")

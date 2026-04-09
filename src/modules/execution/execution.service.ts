@@ -422,8 +422,11 @@ export class ExecutionService {
     const nextArchivePath = this.hasOwn(input, "archive_path") ? (input.archive_path ?? null) : workItem.archive_path;
     const nextMeta = this.buildMergedWorkItemMeta(workItem, pullRequest, matchedRun?.run_id ?? null, actualFilesSelection.source);
 
+    // ADR 014 step 3: post-merge sync lands on 'merged_pr', not 'done'.
+    // 'merged_pr' is a stable resting state that the disposition flow
+    // (ADR 014 step 7) will transition to 'done' after archival completes.
     this.workItemsService.update(workItem.id, {
-      state: "done",
+      state: "merged_pr",
       actual_files: actualFilesSelection.files,
       branch: nextBranch,
       archive_path: nextArchivePath,
