@@ -273,10 +273,44 @@
     return "var(--text-muted, #566070)";
   }
 
-  // The activity_log IS the unified feed — agent_message/user_message are chat,
-  // everything else is activity. No merging needed.
-  function isActivityEvent(kind) {
-    return kind !== "agent_message" && kind !== "user_message";
+  // Group activity_log entries by turn for color-banded rendering
+  const turnColors = [
+    "rgba(37, 99, 235, 0.04)",
+    "rgba(63, 185, 80, 0.04)",
+    "rgba(163, 113, 247, 0.04)",
+    "rgba(210, 153, 34, 0.04)",
+  ];
+
+  function groupByTurn(activityLog) {
+    if (!activityLog?.length) return [];
+    const groups = [];
+    let current = { turnIndex: 0, entries: [] };
+    for (const entry of activityLog) {
+      if (entry.kind === "turn_start" && current.entries.length > 0) {
+        groups.push(current);
+        current = { turnIndex: current.turnIndex + 1, entries: [] };
+      }
+      current.entries.push(entry);
+    }
+    if (current.entries.length > 0) groups.push(current);
+    return groups;
+  }
+
+  $: selectedRunTurnGroups = selectedRun ? groupByTurn(selectedRun.activity_log) : [];
+
+  const COLLAPSE_LINE_THRESHOLD = 6;
+  let expandedMessages = {};
+
+  function toggleMessageExpand(idx) {
+    expandedMessages = { ...expandedMessages, [idx]: !expandedMessages[idx] };
+  }
+
+  function shouldCollapse(text) {
+    return text ? text.split("\n").length > COLLAPSE_LINE_THRESHOLD : false;
+  }
+
+  function truncateText(text) {
+    return text.split("\n").slice(0, COLLAPSE_LINE_THRESHOLD).join("\n");
   }
 
   function handleFollowUpKeydown(event, run) {
@@ -387,6 +421,9 @@
           }}
           on:openpr={() => selectedRun && handleOpenPR(selectedRun)}
           on:launch={() => selectedDispatch && launchNode(selectedDispatch)}
+          scratchpadContent={selectedRun ? scratchpadContent[selectedRun.run_id] : undefined}
+          scratchpadLoading={selectedRun ? !!scratchpadLoading[selectedRun.run_id] : false}
+          on:scratchpadtoggle={() => selectedRun && loadScratchpad(selectedRun.run_id)}
         />
       </div>
 
@@ -433,43 +470,11 @@
               <div class="workspace-progress">{run.progress_message}</div>
             {/if}
 
-            <!-- Scratchpad -->
-            <details class="workspace-expandable" on:toggle={(e) => e.currentTarget.open && loadScratchpad(run.run_id)}>
-              <summary>Scratchpad</summary>
-              <div class="scratchpad-body">
-                {#if scratchpadLoading[run.run_id]}
-                  <p class="muted">Loading...</p>
-                {:else if scratchpadContent[run.run_id]}
-                  <div class="scratchpad-rendered">{@html renderMarkdown(scratchpadContent[run.run_id])}</div>
-                {:else if scratchpadContent[run.run_id] === null}
-                  <p class="muted">No scratchpad available.</p>
-                {:else}
-                  <p class="muted">Open to load.</p>
-                {/if}
-              </div>
-            </details>
-
-            <!-- Checklist -->
+            <!-- Checklist (collapsible, open by default) -->
             {#if checklist?.items?.length}
-              <section class="workspace-section">
-                <div class="workspace-section-hdr"><h4>Checklist</h4></div>
-                <ExecutionChecklist items={checklist.items} />
-              </section>
-            {/if}
-
-            <!-- Result summary -->
-            {#if run.result_summary}
               <details class="workspace-expandable" open>
-                <summary>Result summary</summary>
-                <pre>{run.result_summary}</pre>
-              </details>
-            {/if}
-
-            <!-- Changed files -->
-            {#if run.changed_files?.length}
-              <details class="workspace-expandable">
-                <summary>Changed files ({run.changed_files.length})</summary>
-                <ul>{#each run.changed_files as path}<li>{path}</li>{/each}</ul>
+                <summary>Checklist ({checklist.items.filter(i => i.checked).length}/{checklist.items.length})</summary>
+                <ExecutionChecklist items={checklist.items} />
               </details>
             {/if}
 
@@ -484,43 +489,73 @@
 
           <!-- Scrollable feed -->
           <div class="workspace-feed-scroll" bind:this={feedScrollEl}>
-            {#if run.activity_log?.length > 0}
+            {#if selectedRunTurnGroups.length > 0}
               <div class="unified-feed">
-                {#each run.activity_log as entry}
-                  {#if entry.kind === "agent_message"}
-                    <div class="feed-chat feed-chat-assistant">
-                      <div class="feed-chat-hdr">
-                        <span class="feed-chat-role">Agent</span>
-                        <span class="feed-chat-ts">{formatActivityTime(entry.timestamp)}</span>
-                      </div>
-                      <div class="feed-chat-body">{entry.message}</div>
-                    </div>
-                  {:else if entry.kind === "user_message"}
-                    <div class="feed-chat feed-chat-user">
-                      <div class="feed-chat-hdr">
-                        <span class="feed-chat-role">You</span>
-                        <span class="feed-chat-ts">{formatActivityTime(entry.timestamp)}</span>
-                      </div>
-                      <div class="feed-chat-body">{entry.message}</div>
-                    </div>
-                  {:else}
-                    <div class="feed-activity" style="--activity-color: {activityKindColor(entry.kind)}">
-                      <span class="feed-activity-kind">{activityIcon(entry.kind)}</span>
-                      <span class="feed-activity-ts">{formatActivityTime(entry.timestamp)}</span>
-                      <span class="feed-activity-msg">{entry.message}</span>
-                    </div>
-                  {/if}
+                {#each selectedRunTurnGroups as group, gi}
+                  <div class="turn-band" style="background: {turnColors[group.turnIndex % turnColors.length]}">
+                    {#each group.entries as entry, ei}
+                      {@const globalIdx = `${gi}-${ei}`}
+                      {#if entry.kind === "agent_message"}
+                        <div class="feed-chat feed-chat-assistant">
+                          <div class="feed-chat-hdr">
+                            <span class="feed-chat-role">Agent</span>
+                            <span class="feed-chat-ts">{formatActivityTime(entry.timestamp)}</span>
+                            {#if shouldCollapse(entry.message)}
+                              <button class="feed-expand-btn" on:click={() => toggleMessageExpand(globalIdx)}>
+                                {expandedMessages[globalIdx] ? "collapse" : "expand"}
+                              </button>
+                            {/if}
+                          </div>
+                          <div class="feed-chat-body" class:feed-chat-collapsed={shouldCollapse(entry.message) && !expandedMessages[globalIdx]}>
+                            {expandedMessages[globalIdx] || !shouldCollapse(entry.message) ? entry.message : truncateText(entry.message)}
+                          </div>
+                          {#if shouldCollapse(entry.message) && !expandedMessages[globalIdx]}
+                            <button class="feed-expand-inline" on:click={() => toggleMessageExpand(globalIdx)}>Show full message ({entry.message.split("\n").length} lines)</button>
+                          {/if}
+                        </div>
+                      {:else if entry.kind === "user_message"}
+                        <div class="feed-chat feed-chat-user">
+                          <div class="feed-chat-hdr">
+                            <span class="feed-chat-role">You</span>
+                            <span class="feed-chat-ts">{formatActivityTime(entry.timestamp)}</span>
+                          </div>
+                          <div class="feed-chat-body">{entry.message}</div>
+                        </div>
+                      {:else if entry.kind === "turn_start" || entry.kind === "turn_end"}
+                        <!-- Absorbed into band color -->
+                      {:else}
+                        <div class="feed-activity" style="--activity-color: {activityKindColor(entry.kind)}">
+                          <span class="feed-activity-kind">{activityIcon(entry.kind)}</span>
+                          <span class="feed-activity-ts">{formatActivityTime(entry.timestamp)}</span>
+                          <span class="feed-activity-msg">{entry.message}</span>
+                        </div>
+                      {/if}
+                    {/each}
+                  </div>
                 {/each}
+
+                <!-- Pinned summary cards at end of feed -->
+                {#if run.result_summary}
+                  <div class="feed-pinned-card">
+                    <div class="feed-pinned-hdr">Result summary</div>
+                    <pre class="feed-pinned-pre">{run.result_summary}</pre>
+                  </div>
+                {/if}
+                {#if run.changed_files?.length}
+                  <div class="feed-pinned-card">
+                    <div class="feed-pinned-hdr">Changed files ({run.changed_files.length})</div>
+                    <ul class="feed-pinned-list">{#each run.changed_files as path}<li>{path}</li>{/each}</ul>
+                  </div>
+                {/if}
+                {#if run.errors?.length}
+                  <div class="feed-pinned-card feed-pinned-error">
+                    <div class="feed-pinned-hdr">Errors ({run.errors.length})</div>
+                    <ul class="feed-pinned-list">{#each run.errors as item}<li><strong>{item.code}</strong>: {item.message}</li>{/each}</ul>
+                  </div>
+                {/if}
               </div>
             {:else if ["running", "preparing", "disambiguating"].includes(run.status)}
               <div class="workspace-empty muted">Waiting for agent activity...</div>
-            {/if}
-
-            {#if run.errors?.length}
-              <details class="workspace-expandable">
-                <summary>Errors ({run.errors.length})</summary>
-                <ul>{#each run.errors as item}<li><strong>{item.code}</strong>: {item.message}</li>{/each}</ul>
-              </details>
             {/if}
           </div>
 
@@ -778,7 +813,15 @@
   /* Unified feed */
   .unified-feed {
     display: grid;
+    gap: 0;
+  }
+
+  .turn-band {
+    display: grid;
     gap: 2px;
+    padding: 4px 6px;
+    border-radius: var(--radius-sm, 3px);
+    margin-bottom: 2px;
   }
 
   /* Chat entries — prominent */
@@ -891,16 +934,70 @@
     font-size: 11px;
   }
 
-  .scratchpad-body { margin-top: 4px; }
+  /* Collapsed agent messages */
+  .feed-chat-collapsed {
+    mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  }
 
-  .scratchpad-rendered :global(h1),
-  .scratchpad-rendered :global(h2),
-  .scratchpad-rendered :global(h3) { margin: 6px 0 3px; }
+  .feed-expand-btn {
+    padding: 0 4px;
+    background: transparent;
+    color: var(--text-muted, #566070);
+    font-size: 10px;
+    border: none;
+    text-decoration: underline;
+    cursor: pointer;
+  }
 
-  .scratchpad-rendered :global(ul),
-  .scratchpad-rendered :global(ol) { padding-left: 16px; }
+  .feed-expand-btn:hover { color: var(--text-secondary, #8b95a5); }
 
-  .scratchpad-rendered :global(code) { overflow-wrap: anywhere; }
+  .feed-expand-inline {
+    padding: 2px 0;
+    background: transparent;
+    color: var(--accent, #2563eb);
+    font-size: 10.5px;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .feed-expand-inline:hover { text-decoration: underline; }
+
+  /* Pinned summary cards */
+  .feed-pinned-card {
+    padding: 6px 8px;
+    border-radius: var(--radius-sm, 3px);
+    border: 1px solid var(--border, #2b3245);
+    background: var(--bg-surface, #13171f);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+
+  .feed-pinned-error { border-color: rgba(248, 81, 73, 0.3); }
+
+  .feed-pinned-hdr {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary, #8b95a5);
+    margin-bottom: 4px;
+  }
+
+  .feed-pinned-pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .feed-pinned-list {
+    margin: 0;
+    padding-left: 14px;
+    font-size: 11px;
+  }
 
   /* Responsive */
   @media (max-width: 1100px) {

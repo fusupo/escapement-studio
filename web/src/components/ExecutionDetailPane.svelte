@@ -1,5 +1,6 @@
 <script>
   import { createEventDispatcher } from "svelte";
+  import { renderMarkdown } from "../lib/markdown.js";
 
   export let kind = null;
   export let run = null;
@@ -8,6 +9,8 @@
   export let openingPr = false;
   export let assumptions = [];
   export let validationPolicy = null;
+  export let scratchpadContent = undefined;
+  export let scratchpadLoading = false;
 
   const dispatch = createEventDispatcher();
 
@@ -80,6 +83,24 @@
       {:else}
         <p class="muted">Available after completion.</p>
       {/if}
+    </div>
+
+    <!-- Scratchpad -->
+    <div class="detail-card">
+      <details class="detail-inline-expandable" on:toggle={(e) => e.currentTarget.open && dispatch("scratchpadtoggle")}>
+        <summary><h3>SCRATCHPAD</h3></summary>
+        <div class="scratchpad-body">
+          {#if scratchpadLoading}
+            <p class="muted">Loading...</p>
+          {:else if scratchpadContent}
+            <div class="scratchpad-rendered">{@html renderMarkdown(scratchpadContent)}</div>
+          {:else if scratchpadContent === null}
+            <p class="muted">No scratchpad available.</p>
+          {:else}
+            <p class="muted">Open to load.</p>
+          {/if}
+        </div>
+      </details>
     </div>
 
     <!-- Safety -->
@@ -249,6 +270,35 @@
   .check-row.fail strong { color: var(--red, #f85149); }
   .check-row.warn strong { color: var(--yellow, #d29922); }
   .check-row.pass strong { color: var(--green, #3fb950); }
+
+  .detail-inline-expandable summary {
+    cursor: pointer;
+    list-style: disclosure-closed;
+  }
+
+  .detail-inline-expandable[open] summary {
+    list-style: disclosure-open;
+  }
+
+  .detail-inline-expandable summary h3 {
+    display: inline;
+    margin: 0;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--text-secondary, #8b95a5);
+    letter-spacing: 0.08em;
+  }
+
+  .scratchpad-body { margin-top: 6px; font-size: 12px; }
+
+  .scratchpad-rendered :global(h1),
+  .scratchpad-rendered :global(h2),
+  .scratchpad-rendered :global(h3) { margin: 6px 0 3px; }
+
+  .scratchpad-rendered :global(ul),
+  .scratchpad-rendered :global(ol) { padding-left: 16px; }
+
+  .scratchpad-rendered :global(code) { overflow-wrap: anywhere; }
 
   .detail-empty {
     padding: 16px 8px;
