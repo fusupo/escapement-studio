@@ -5,6 +5,7 @@
   export let graph = { items: [], edges: [] };
   export let selectedId = null;
   export let onSelect = () => {};
+  export let onContextMenu = () => {};
 
   let svg;
   let handle = { cleanup() {}, updateSelection() {}, resize() {} };
@@ -18,7 +19,7 @@
 
   function fullRedraw() {
     handle.cleanup();
-    handle = renderGraph(svg, graph, selectedId, onSelect, { frontierIds });
+    handle = renderGraph(svg, graph, selectedId, onSelect, { onContextMenu, frontierIds });
     prevGraph = graph;
     prevFrontierSignature = frontierSignature;
   }

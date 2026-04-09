@@ -323,6 +323,16 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       const data = g.node(id)?._data;
       if (data) onSelect(data);
     })
+    .on("contextmenu", function (event, id) {
+      event.preventDefault();
+      event.stopPropagation();
+      const data = g.node(id)?._data;
+      if (data) {
+        onSelect(data);
+        options.onContextMenu?.({ item: data, x: event.clientX, y: event.clientY });
+      }
+      hideTooltip(tooltip);
+    })
     .on("mouseenter", function (event) {
       const id = d3.select(this).datum();
       const data = g.node(id)?._data;
@@ -346,6 +356,10 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
   // Click background to deselect
   svg.on("click", () => onSelect(null));
+  svg.on("contextmenu", (event) => {
+    event.preventDefault();
+    options.onContextMenu?.(null);
+  });
 
   // Edge hover
   inner.selectAll("g.edgePath")

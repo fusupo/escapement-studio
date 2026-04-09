@@ -20,6 +20,9 @@
 
   export let selectedItem = null;
   export let issueDetails = null;
+  export let launchEligibility = null;
+  export let launchEligibilityLoading = false;
+  export let launchingExecution = false;
   export let graph = { items: [], edges: [] };
   export let saving = false;
   export let edgeSaving = false;
@@ -28,6 +31,7 @@
   export let onCreateEdge = () => {};
   export let onDeleteEdge = () => {};
   export let onCloseIssue = () => {};
+  export let onLaunchExecution = () => {};
   export let closingIssue = false;
 
   let linkedPrDetails = null;
@@ -182,6 +186,34 @@
           {/if}
         </div>
       {/if}
+
+      <div class="issue-details-card">
+        <div class="issue-details-header">
+          <h3>Execution</h3>
+        </div>
+
+        {#if launchEligibilityLoading}
+          <p class="muted">Checking frontier eligibility…</p>
+        {:else if launchEligibility}
+          <span class="status-pill {launchEligibility.can_launch ? 'healthy' : 'warn'}">{launchEligibility.can_launch ? 'dispatchable' : 'blocked'}</span>
+          {#if launchEligibility.dispatch_node}
+            <p class="muted">
+              Branch <code>{launchEligibility.dispatch_node.branch}</code>
+              · Base <code>{launchEligibility.dispatch_node.default_base_ref}</code>
+            </p>
+          {/if}
+          {#if launchEligibility.launch_unavailable_reason}
+            <p class="muted">{launchEligibility.launch_unavailable_reason}</p>
+          {:else}
+            <p class="muted">This node is currently on the frontier and can be launched into execution.</p>
+          {/if}
+          <button on:click={() => onLaunchExecution(selectedItem)} disabled={!launchEligibility.can_launch || launchingExecution}>
+            {launchingExecution ? "Launching..." : "Launch execution"}
+          </button>
+        {:else}
+          <p class="muted">Select a node to inspect execution availability.</p>
+        {/if}
+      </div>
 
       <div class="stack">
         <label>

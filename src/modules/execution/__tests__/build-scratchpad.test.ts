@@ -46,6 +46,7 @@ function makeNode(overrides: Partial<ExecutionDispatchNodePreview> = {}): Execut
     worktree_path: "/tmp/worktrees/studio-42-branch",
     safety_checks: [],
     can_launch: true,
+    issue_backed: true,
     ...overrides,
   };
 }

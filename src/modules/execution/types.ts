@@ -34,6 +34,21 @@ export interface ExecutionDispatchNodePreview {
   worktree_path: string;
   safety_checks: ExecutionSafetyCheck[];
   can_launch: boolean;
+  issue_backed: boolean;
+  launch_unavailable_code?: string | null;
+  launch_unavailable_reason?: string | null;
+}
+
+export interface ExecutionLaunchEligibility {
+  work_item_id: string;
+  repo: string | null;
+  issue_url: string | null;
+  issue_backed: boolean;
+  can_launch: boolean;
+  safety_checks: ExecutionSafetyCheck[];
+  launch_unavailable_code: string | null;
+  launch_unavailable_reason: string | null;
+  dispatch_node: ExecutionDispatchNodePreview | null;
 }
 
 export interface ExecutionDispatchGroupPreview {

@@ -18,6 +18,11 @@ export class ExecutionController {
     return this.executionService.listRecentRuns();
   }
 
+  @Get("eligibility")
+  getLaunchEligibility(@Query("work_item_id") workItemId?: string, @Query("base_ref") baseRef?: string) {
+    return this.executionService.getLaunchEligibility(workItemId, baseRef);
+  }
+
   @Get("runs/:runId/activity")
   getRunActivity(@Param("runId") runId: string) {
     return this.executionService.getRunActivityLog(runId);
