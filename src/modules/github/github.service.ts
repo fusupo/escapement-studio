@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { SQLiteService } from "../graph/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
+import type { WorkItemRecord } from "../graph/types.js";
 import type {
   GitHubIssueDetails,
   GitHubIssueAssignee,
@@ -65,14 +66,31 @@ export interface GitHubPullRequestDetails {
   head_ref: string;
   merged_at: string | null;
   merge_commit_sha: string | null;
+  reconciliation?: {
+    updated_work_item_ids: string[];
+    updated_run_ids: string[];
+    work_items: WorkItemRecord[];
+  };
+}
+
+interface PullRequestTruthRefreshResult {
+  updated_run_ids: string[];
 }
 
 @Injectable()
 export class GitHubService {
+  private pullRequestTruthRefresher?: (pullRequest: GitHubPullRequestDetails, options?: { work_item_ids?: string[] }) => PullRequestTruthRefreshResult;
+
   constructor(
     @Inject(SQLiteService) private readonly sqlite: SQLiteService,
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
   ) {}
+
+  registerPullRequestTruthRefresher(
+    refresher: (pullRequest: GitHubPullRequestDetails, options?: { work_item_ids?: string[] }) => PullRequestTruthRefreshResult,
+  ) {
+    this.pullRequestTruthRefresher = refresher;
+  }
 
   private get db(): DatabaseType {
     return this.sqlite.getDb();
@@ -160,25 +178,32 @@ export class GitHubService {
 
     const body = raw.body ?? "";
     const managedBlock = this.extractManagedBlock(body);
+    const labels = this.normalizeIssueLabels((raw.labels ?? []).map((label): GitHubIssueLabel => ({
+      name: label.name ?? "",
+      description: label.description,
+      color: label.color,
+    })).filter((label) => Boolean(label.name)));
+    const assignees = this.normalizeIssueAssignees((raw.assignees ?? []).map((assignee): GitHubIssueAssignee => ({
+      login: assignee.login ?? "",
+      name: assignee.name,
+    })).filter((assignee) => Boolean(assignee.login)));
 
-    return {
+    const details: GitHubIssueDetails = {
       repo,
       number: raw.number,
       title: raw.title,
       body,
       url: raw.url,
       state: raw.state,
-      labels: (raw.labels ?? []).map((label): GitHubIssueLabel => ({
-        name: label.name ?? "",
-        description: label.description,
-        color: label.color,
-      })).filter((label) => Boolean(label.name)),
-      assignees: (raw.assignees ?? []).map((assignee): GitHubIssueAssignee => ({
-        login: assignee.login ?? "",
-        name: assignee.name,
-      })).filter((assignee) => Boolean(assignee.login)),
+      labels,
+      assignees,
       body_hash: this.hash(body),
       managed_block: managedBlock,
+    };
+
+    return {
+      ...details,
+      reconciliation: this.reconcileIssueTruth(details),
     };
   }
 
@@ -200,7 +225,7 @@ export class GitHubService {
       "number,url,title,body,state,isDraft,baseRefName,headRefName,mergedAt,mergeCommit",
     ]);
 
-    return this.toPullRequestDetails(repo, raw);
+    return this.withPullRequestReconciliation(this.toPullRequestDetails(repo, raw));
   }
 
   async findPullRequestForBranch(repo: string, branch: string): Promise<GitHubPullRequestDetails | null> {
@@ -229,7 +254,11 @@ export class GitHubService {
       .filter((pull) => pull.head_ref === branch)
       .sort((left, right) => (right.merged_at ?? "").localeCompare(left.merged_at ?? "") || right.number - left.number);
 
-    return exactMatches[0] ?? null;
+    if (!exactMatches[0]) {
+      return null;
+    }
+
+    return this.withPullRequestReconciliation(exactMatches[0]);
   }
 
   async stageManagedBlockSync(workItemId: string) {
@@ -345,6 +374,100 @@ export class GitHubService {
     };
   }
 
+  private withPullRequestReconciliation(pullRequest: GitHubPullRequestDetails): GitHubPullRequestDetails {
+    const workItems = this.findLinkedPullRequestWorkItems(pullRequest);
+    const updatedWorkItemIds: string[] = [];
+    const nextWorkItems = workItems.map((workItem) => {
+      const existingMeta = this.readObject(workItem.meta);
+      const nextMeta = { ...existingMeta };
+      let changed = false;
+
+      const nextPrimaryPullRequest = this.mergeStoredPullRequest(existingMeta.pull_request, pullRequest);
+      if (!this.samePullRequestSnapshot(existingMeta.pull_request, pullRequest)) {
+        nextMeta.pull_request = nextPrimaryPullRequest;
+        changed = true;
+      }
+
+      const existingPostMergeSync = this.readObject(existingMeta.studio_post_merge_sync);
+      if (Object.keys(existingPostMergeSync).length > 0) {
+        const existingPostMergePullRequest = existingPostMergeSync.pull_request;
+        if (!this.samePullRequestSnapshot(existingPostMergePullRequest, pullRequest)) {
+          nextMeta.studio_post_merge_sync = {
+            ...existingPostMergeSync,
+            pull_request: this.mergeStoredPullRequest(existingPostMergePullRequest, pullRequest),
+          };
+          changed = true;
+        }
+      }
+
+      if (!changed) {
+        return workItem;
+      }
+
+      updatedWorkItemIds.push(workItem.id);
+      return this.workItems.update(workItem.id, { meta: nextMeta });
+    });
+
+    const refreshResult = this.pullRequestTruthRefresher?.(pullRequest, {
+      work_item_ids: nextWorkItems.map((workItem) => workItem.id),
+    }) ?? { updated_run_ids: [] };
+
+    return {
+      ...pullRequest,
+      reconciliation: {
+        updated_work_item_ids: updatedWorkItemIds,
+        updated_run_ids: refreshResult.updated_run_ids,
+        work_items: nextWorkItems,
+      },
+    };
+  }
+
+  private findLinkedPullRequestWorkItems(pullRequest: GitHubPullRequestDetails): WorkItemRecord[] {
+    const byId = new Map<string, WorkItemRecord>();
+    for (const workItem of this.workItems.listByRepoPullRequestNumber(pullRequest.repo, pullRequest.number)) {
+      byId.set(workItem.id, workItem);
+    }
+    for (const workItem of this.workItems.listByRepoBranch(pullRequest.repo, pullRequest.head_ref)) {
+      byId.set(workItem.id, workItem);
+    }
+    return Array.from(byId.values());
+  }
+
+  private reconcileIssueTruth(issue: GitHubIssueDetails): { updated_work_item_ids: string[]; work_items: WorkItemRecord[] } {
+    const linkedWorkItems = this.workItems.listByRepoIssueNumber(issue.repo, issue.number);
+    const updatedWorkItemIds: string[] = [];
+    const nextWorkItems = linkedWorkItems.map((workItem) => {
+      const existingMeta = this.readObject(workItem.meta);
+      const nextIssueMeta = {
+        ...this.readObject(existingMeta.github_issue),
+        title: issue.title,
+        url: issue.url,
+        state: issue.state,
+        labels: this.normalizeIssueLabels(issue.labels),
+        assignees: this.normalizeIssueAssignees(issue.assignees),
+        synced_at: this.now(),
+      };
+
+      if (workItem.issue_url === issue.url && this.sameIssueSnapshot(existingMeta.github_issue, issue)) {
+        return workItem;
+      }
+
+      updatedWorkItemIds.push(workItem.id);
+      return this.workItems.update(workItem.id, {
+        issue_url: issue.url,
+        meta: {
+          ...existingMeta,
+          github_issue: nextIssueMeta,
+        },
+      });
+    });
+
+    return {
+      updated_work_item_ids: updatedWorkItemIds,
+      work_items: nextWorkItems,
+    };
+  }
+
   private renderManagedBlock(workItemId: string): string {
     const workItem = this.workItems.get(workItemId);
     const dependsOn = this.listRelatedIds(workItemId, "depends_on", "to_id");
@@ -436,6 +559,108 @@ export class GitHubService {
     };
   }
 
+  private samePullRequestSnapshot(stored: unknown, pullRequest: GitHubPullRequestDetails): boolean {
+    const snapshot = this.readObject(stored);
+    return this.readNumber(snapshot.number) === pullRequest.number
+      && this.normalizeNullableString(snapshot.url) === pullRequest.url
+      && this.normalizeNullableString(snapshot.title) === pullRequest.title
+      && this.normalizeNullableString(snapshot.state) === pullRequest.state
+      && this.normalizeNullableString(snapshot.base_ref) === pullRequest.base_ref
+      && this.normalizeNullableString(snapshot.head_ref) === pullRequest.head_ref
+      && this.readBoolean(snapshot.is_draft) === pullRequest.is_draft
+      && this.normalizeNullableString(snapshot.merged_at) === (pullRequest.merged_at ?? null)
+      && this.normalizeNullableString(snapshot.merge_commit_sha) === (pullRequest.merge_commit_sha ?? null);
+  }
+
+  private mergeStoredPullRequest(stored: unknown, pullRequest: GitHubPullRequestDetails): Record<string, unknown> {
+    return {
+      ...this.readObject(stored),
+      number: pullRequest.number,
+      url: pullRequest.url,
+      title: pullRequest.title,
+      state: pullRequest.state,
+      is_draft: pullRequest.is_draft,
+      base_ref: pullRequest.base_ref,
+      head_ref: pullRequest.head_ref,
+      merged_at: pullRequest.merged_at,
+      merge_commit_sha: pullRequest.merge_commit_sha,
+      synced_at: this.now(),
+    };
+  }
+
+  private sameIssueSnapshot(stored: unknown, issue: GitHubIssueDetails): boolean {
+    const snapshot = this.readObject(stored);
+    return this.normalizeNullableString(snapshot.title) === issue.title
+      && this.normalizeNullableString(snapshot.url) === issue.url
+      && this.normalizeNullableString(snapshot.state) === issue.state
+      && JSON.stringify(this.normalizeIssueLabels(this.readIssueLabels(snapshot.labels))) === JSON.stringify(this.normalizeIssueLabels(issue.labels))
+      && JSON.stringify(this.normalizeIssueAssignees(this.readIssueAssignees(snapshot.assignees))) === JSON.stringify(this.normalizeIssueAssignees(issue.assignees));
+  }
+
+  private normalizeIssueLabels(labels: GitHubIssueLabel[]): GitHubIssueLabel[] {
+    return [...labels]
+      .map((label) => ({
+        name: label.name,
+        description: label.description,
+        color: label.color,
+      }))
+      .sort((left, right) => `${left.name}|${left.color ?? ""}|${left.description ?? ""}`.localeCompare(`${right.name}|${right.color ?? ""}|${right.description ?? ""}`));
+  }
+
+  private normalizeIssueAssignees(assignees: GitHubIssueAssignee[]): GitHubIssueAssignee[] {
+    return [...assignees]
+      .map((assignee) => ({
+        login: assignee.login,
+        name: assignee.name,
+      }))
+      .sort((left, right) => `${left.login}|${left.name ?? ""}`.localeCompare(`${right.login}|${right.name ?? ""}`));
+  }
+
+  private readIssueLabels(value: unknown): GitHubIssueLabel[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((item) => ({
+        name: typeof item.name === "string" ? item.name : "",
+        description: typeof item.description === "string" ? item.description : undefined,
+        color: typeof item.color === "string" ? item.color : undefined,
+      }))
+      .filter((label) => Boolean(label.name));
+  }
+
+  private readIssueAssignees(value: unknown): GitHubIssueAssignee[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((item) => ({
+        login: typeof item.login === "string" ? item.login : "",
+        name: typeof item.name === "string" ? item.name : undefined,
+      }))
+      .filter((assignee) => Boolean(assignee.login));
+  }
+
+  private readObject(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" ? value as Record<string, unknown> : {};
+  }
+
+  private readNumber(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  }
+
+  private readBoolean(value: unknown): boolean | null {
+    return typeof value === "boolean" ? value : null;
+  }
+
+  private normalizeNullableString(value: unknown): string | null {
+    return typeof value === "string" ? value : null;
+  }
+
   private toPullRequestDetails(repo: string, raw: RawPullRequestResponse): GitHubPullRequestDetails {
     return {
       repo,
@@ -468,6 +693,10 @@ export class GitHubService {
       const message = error instanceof Error ? error.message : String(error);
       throw new BadRequestException(`gh command failed: ${message}`);
     }
+  }
+
+  private now(): string {
+    return new Date().toISOString();
   }
 
   private hash(value: string): string {

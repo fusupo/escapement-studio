@@ -191,8 +191,43 @@
     await loadGraph();
   }
 
+  function mergeReconciledWorkItems(workItems = []) {
+    if (!Array.isArray(workItems) || workItems.length === 0) {
+      return;
+    }
+
+    const nextById = new Map(workItems.filter((item) => item?.id).map((item) => [item.id, item]));
+    if (nextById.size === 0) {
+      return;
+    }
+
+    graph = {
+      ...graph,
+      items: graph.items.map((item) => nextById.get(item.id) ?? item),
+    };
+    catalog = catalog.map((item) => nextById.get(item.id) ?? item);
+
+    if (graphContextMenu.item?.id && nextById.has(graphContextMenu.item.id)) {
+      graphContextMenu = {
+        ...graphContextMenu,
+        item: nextById.get(graphContextMenu.item.id),
+      };
+    }
+  }
+
+  function handleGitHubTruthRefresh(payload) {
+    mergeReconciledWorkItems(payload?.reconciliation?.work_items ?? []);
+  }
+
   let issueLookupToken = 0;
-  $: void loadSelectedIssueDetails(selectedItem);
+  let lastIssueLookupKey = null;
+  $: issueLookupKey = selectedItem?.repo && selectedItem?.issue_number
+    ? `${selectedItem.repo}#${selectedItem.issue_number}`
+    : null;
+  $: if (issueLookupKey !== lastIssueLookupKey) {
+    lastIssueLookupKey = issueLookupKey;
+    void loadSelectedIssueDetails(selectedItem);
+  }
 
   async function loadSelectedIssueDetails(item) {
     const token = ++issueLookupToken;
@@ -202,7 +237,10 @@
     }
     try {
       const details = await getGitHubIssueDetails({ repo: item.repo, issue_number: item.issue_number });
-      if (token === issueLookupToken) selectedIssueDetails = details;
+      if (token === issueLookupToken) {
+        selectedIssueDetails = details;
+        handleGitHubTruthRefresh(details);
+      }
     } catch (lookupError) {
       if (token === issueLookupToken) {
         selectedIssueDetails = { error: lookupError.message, repo: item.repo, number: item.issue_number, url: item.issue_url };
@@ -502,6 +540,7 @@
                   launchEligibilityLoading={selectedLaunchEligibilityLoading}
                   launchingExecution={launchingExecution}
                   onLaunchExecution={handleLaunchExecution}
+                  onGitHubTruthRefresh={handleGitHubTruthRefresh}
                   {graph}
                   {saving}
                   {edgeSaving}
