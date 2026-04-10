@@ -99,7 +99,7 @@
         <div class="legend-row"><span class="legend-swatch" style="background:#56d364"></span><code>ready</code></div>
         <div class="legend-row"><span class="legend-swatch in-progress" style="background:#d29922"></span><code>in_progress</code><span class="legend-note">dashed inset</span></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#a371f7"></span><code>open_pr</code></div>
-        <div class="legend-row"><span class="legend-swatch merged-pr" style="background:#2ea08f"></span><code>merged_pr</code><span class="legend-note">solid inset</span></div>
+        <div class="legend-row"><span class="legend-swatch merged-pr" style="background:#39c2a6"></span><code>merged_pr</code><span class="legend-note">double inset</span></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#238636"></span><code>done</code></div>
         <div class="legend-row"><span class="legend-swatch frontier"></span><code>frontier</code></div>
         <div class="legend-row"><span class="legend-swatch" style="background:#8b949e"></span><code>deferred</code></div>
