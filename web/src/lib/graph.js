@@ -7,7 +7,7 @@ const STATE_COLORS = {
   ready: "#56d364",
   in_progress: "#d29922",
   open_pr: "#a371f7",
-  merged_pr: "#8957e5",
+  merged_pr: "#2ea08f",
   done: "#238636",
   deferred: "#8b949e",
   cancelled: "#f85149",
