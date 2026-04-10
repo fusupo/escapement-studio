@@ -7,7 +7,7 @@ const STATE_COLORS = {
   ready: "#56d364",
   in_progress: "#d29922",
   open_pr: "#a371f7",
-  merged_pr: "#2ea08f",
+  merged_pr: "#39c2a6",
   done: "#238636",
   deferred: "#8b949e",
   cancelled: "#f85149",
@@ -327,15 +327,30 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       }
 
       if (data.state === "merged_pr") {
-        const mergedInset = Math.min(2.5, width / 6, height / 6);
+        // Double-outline 'stamp' treatment: outer bold inset stroke + inner
+        // thinner inset stroke so the node reads as distinct from open_pr
+        // at normal zoom even without color (stroke pattern is shape-based).
+        const mergedOuterInset = Math.min(2.5, width / 6, height / 6);
         nodeGroup.insert("rect", "g.label")
           .attr("class", "merged-pr-overlay")
-          .attr("x", x + mergedInset)
-          .attr("y", y + mergedInset)
-          .attr("width", Math.max(0, width - mergedInset * 2))
-          .attr("height", Math.max(0, height - mergedInset * 2))
-          .attr("rx", Math.max(0, rx - mergedInset / 2))
-          .attr("ry", Math.max(0, ry - mergedInset / 2));
+          .attr("x", x + mergedOuterInset)
+          .attr("y", y + mergedOuterInset)
+          .attr("width", Math.max(0, width - mergedOuterInset * 2))
+          .attr("height", Math.max(0, height - mergedOuterInset * 2))
+          .attr("rx", Math.max(0, rx - mergedOuterInset / 2))
+          .attr("ry", Math.max(0, ry - mergedOuterInset / 2));
+
+        const mergedInnerInset = Math.min(5.5, width / 4, height / 4);
+        if (mergedInnerInset > mergedOuterInset + 1) {
+          nodeGroup.insert("rect", "g.label")
+            .attr("class", "merged-pr-overlay-inner")
+            .attr("x", x + mergedInnerInset)
+            .attr("y", y + mergedInnerInset)
+            .attr("width", Math.max(0, width - mergedInnerInset * 2))
+            .attr("height", Math.max(0, height - mergedInnerInset * 2))
+            .attr("rx", Math.max(0, rx - mergedInnerInset / 2))
+            .attr("ry", Math.max(0, ry - mergedInnerInset / 2));
+        }
       }
     }
 
