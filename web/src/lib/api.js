@@ -99,6 +99,19 @@ export function listExecutionRuns() {
   return request("/api/execution/runs");
 }
 
+/**
+ * studio-176: reconciled work-item view. Returns one entry per
+ * in_progress work item with a `next_action` derived from the graph,
+ * disk runs, GitHub PR state, and worktree status. Pass `work_item_id`
+ * to filter to a single item.
+ */
+export function listReconciledWorkItems({ workItemId } = {}) {
+  const query = new URLSearchParams();
+  if (workItemId) query.set("work_item_id", workItemId);
+  const search = query.toString();
+  return request(`/api/work-items/reconciled${search ? `?${search}` : ""}`);
+}
+
 export function getExecutionEligibility(params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
