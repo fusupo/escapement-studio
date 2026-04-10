@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { getSettings, updateSettings } from "../lib/api.js";
+  import { getSettings, updateSettings, getAvailableModels } from "../lib/api.js";
 
   export let health = null;
 
@@ -17,6 +17,11 @@
   let newRepoSlug = "";
   let newRepoBranch = "main";
 
+  // Model selection state
+  let availableModels = [];
+  let modelsLoadError = "";
+  let selectedModelKey = ""; // "" means use pi default; otherwise "provider::modelId"
+
   onMount(async () => {
     await load();
   });
@@ -27,11 +32,52 @@
     try {
       settings = await getSettings();
       syncEditState();
+      await loadModels();
     } catch (loadError) {
       error = loadError.message;
     } finally {
       loading = false;
     }
+  }
+
+  async function loadModels() {
+    modelsLoadError = "";
+    try {
+      availableModels = await getAvailableModels();
+    } catch (err) {
+      modelsLoadError = err.message;
+      availableModels = [];
+    }
+  }
+
+  $: modelsByProvider = groupModelsByProvider(availableModels);
+  $: selectedModelInfo = findModelInfo(availableModels, selectedModelKey);
+  $: selectedModelUnavailable =
+    selectedModelKey && selectedModelInfo && !selectedModelInfo.available;
+  $: selectedModelMissing =
+    selectedModelKey && !selectedModelInfo && availableModels.length > 0;
+
+  function groupModelsByProvider(models) {
+    const groups = new Map();
+    for (const m of models) {
+      if (!groups.has(m.provider)) groups.set(m.provider, []);
+      groups.get(m.provider).push(m);
+    }
+    const sorted = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+    for (const [, list] of sorted) {
+      list.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return sorted;
+  }
+
+  function findModelInfo(models, key) {
+    if (!key) return null;
+    const [provider, id] = key.split("::");
+    return models.find((m) => m.provider === provider && m.id === id) ?? null;
+  }
+
+  function modelKey(provider, id) {
+    return `${provider}::${id}`;
   }
 
   function syncEditState() {
@@ -40,6 +86,20 @@
       .map(([slug, info]) => ({ slug, ...info }))
       .sort((a, b) => a.slug.localeCompare(b.slug));
     editConfig = { ...settings.config };
+    selectedModelKey = editConfig.selectedModel
+      ? modelKey(editConfig.selectedModel.provider, editConfig.selectedModel.modelId)
+      : "";
+  }
+
+  function onModelChange(event) {
+    const value = event.target.value;
+    selectedModelKey = value;
+    if (!value) {
+      editConfig = { ...editConfig, selectedModel: null };
+      return;
+    }
+    const [provider, modelId] = value.split("::");
+    editConfig = { ...editConfig, selectedModel: { provider, modelId } };
   }
 
   async function save() {
@@ -147,6 +207,51 @@
               <span class="status-pill" class:healthy={health.db.hasSchema}>{health.db.hasSchema ? "Yes" : "No"}</span>
             </span>
           </div>
+        {/if}
+      </div>
+    </section>
+
+    <!-- Model selection -->
+    <section class="settings-section">
+      <h2>Model</h2>
+      <p class="muted">Choose which pi-backed model Studio uses for planning, execution, and plan drafting. Leave on <em>Default</em> to let pi pick the first available model.</p>
+      <div class="settings-card">
+        {#if modelsLoadError}
+          <div class="banner error inline-banner">Failed to load models: {modelsLoadError}</div>
+        {/if}
+        <div class="settings-row">
+          <span class="settings-label">Current</span>
+          <span class="settings-value">
+            {#if selectedModelInfo}
+              <code>{selectedModelInfo.provider} / {selectedModelInfo.name}</code>
+              {#if !selectedModelInfo.available}
+                <span class="status-pill" style="margin-left: 0.5rem;">No auth configured</span>
+              {/if}
+            {:else if selectedModelMissing}
+              <code>{editConfig.selectedModel?.provider} / {editConfig.selectedModel?.modelId}</code>
+              <span class="status-pill" style="margin-left: 0.5rem;">Not in registry</span>
+            {:else}
+              <em class="muted">Default (pi first-available)</em>
+            {/if}
+          </span>
+        </div>
+        <label>
+          Model
+          <select value={selectedModelKey} on:change={onModelChange} disabled={availableModels.length === 0}>
+            <option value="">— Use default —</option>
+            {#each modelsByProvider as [provider, models]}
+              <optgroup label={provider}>
+                {#each models as m}
+                  <option value={modelKey(m.provider, m.id)}>
+                    {m.name}{m.available ? "" : " (no auth)"}
+                  </option>
+                {/each}
+              </optgroup>
+            {/each}
+          </select>
+        </label>
+        {#if selectedModelUnavailable}
+          <p class="muted"><strong>Warning:</strong> The selected model has no configured auth. Studio will fall back to pi's default model until credentials are configured.</p>
         {/if}
       </div>
     </section>

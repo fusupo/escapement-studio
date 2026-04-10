@@ -52,6 +52,7 @@ function makePlanningService(createdIssues: CreatedIssue[]) {
     {} as never,
     { createIssue } as never,
     {} as never,
+    {} as never,
   );
 
   (service as any).currentTurnId = "turn_0001";

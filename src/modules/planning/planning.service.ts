@@ -22,6 +22,7 @@ import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
 import { ReconciliationService } from "../reconciliation/reconciliation.service.js";
+import { SettingsService } from "../settings/settings.service.js";
 import type {
   ApproveGitHubSyncDto,
   ApproveMutationProposalDto,
@@ -85,6 +86,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     @Inject(SubAgentService) private readonly subAgentService: SubAgentService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(ReconciliationService) private readonly reconciliationService: ReconciliationService,
+    @Inject(SettingsService) private readonly settingsService: SettingsService,
   ) {}
 
   async onModuleInit() {
@@ -296,6 +298,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: process.cwd(),
       sessionManager: SessionManager.continueRecent(process.cwd(), this.sessionDir),
+      model: this.settingsService.getSelectedModel(),
       customTools: [
         this.createGraphQueryTool(),
         this.createProposeMutationsTool(),

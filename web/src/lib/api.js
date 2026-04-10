@@ -294,3 +294,7 @@ export function discoverSettingsRepo(path) {
   const query = new URLSearchParams({ path });
   return request(`/api/settings/repos/discover?${query.toString()}`);
 }
+
+export function getAvailableModels() {
+  return request("/api/settings/models");
+}

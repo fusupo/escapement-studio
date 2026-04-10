@@ -1,9 +1,13 @@
 import { Body, Controller, Get, Inject, Put } from "@nestjs/common";
 import { SettingsService, type SettingsUpdate } from "./settings.service.js";
+import { ModelRegistryService } from "./model-registry.service.js";
 
 @Controller("api/settings")
 export class SettingsController {
-  constructor(@Inject(SettingsService) private readonly settings: SettingsService) {}
+  constructor(
+    @Inject(SettingsService) private readonly settings: SettingsService,
+    @Inject(ModelRegistryService) private readonly modelRegistry: ModelRegistryService,
+  ) {}
 
   @Get()
   getSettings() {
@@ -13,5 +17,10 @@ export class SettingsController {
   @Put()
   updateSettings(@Body() body: SettingsUpdate) {
     return this.settings.updateSettings(body);
+  }
+
+  @Get("models")
+  getAvailableModels() {
+    return this.modelRegistry.listModels();
   }
 }

@@ -22,6 +22,7 @@ import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-w
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
+import { SettingsService } from "../settings/settings.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ActivityLogEntry,
@@ -75,6 +76,7 @@ export class ExecutionService {
     @Inject(GraphService) private readonly graphService: GraphService,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
+    @Inject(SettingsService) private readonly settingsService: SettingsService,
   ) {
     this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
   }
@@ -713,6 +715,7 @@ export class ExecutionService {
       cwd: run.worktree_path,
       sessionManager: SessionManager.inMemory(run.worktree_path),
       tools: createCodingTools(run.worktree_path),
+      model: this.settingsService.getSelectedModel(),
     });
 
     if (modelFallbackMessage) {
@@ -982,6 +985,7 @@ export class ExecutionService {
       cwd: run.worktree_path,
       sessionManager: SessionManager.inMemory(run.worktree_path),
       tools: createCodingTools(run.worktree_path),
+      model: this.settingsService.getSelectedModel(),
     });
 
     if (modelFallbackMessage) {
