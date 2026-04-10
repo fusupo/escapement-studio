@@ -226,6 +226,31 @@ describe("PlanDrafterService.parseEnvelope", () => {
     expect(result.summary).toBe("Drafted summary");
   });
 
+  it("skips brace-balanced preamble noise that is not valid JSON (studio-179 regression)", () => {
+    // Real failure mode from studio-179: agent was grepping Svelte files for
+    // the Settings model selector and its preamble copied `{selectedModelKey}`
+    // out of a template. The old first-balanced-span extractor grabbed that
+    // 17-char span as the "envelope" and JSON.parse exploded on the unquoted
+    // property name. The new enumerator should skip it and find the real
+    // envelope that follows.
+    const service = makeService();
+    const wrapped =
+      "I looked at {selectedModelKey} in Settings.svelte and the adjacent " +
+      "{foo_bar} interpolation, then drafted the plan:\n\n" +
+      validEnvelopeJson();
+    const result = service.parseEnvelope(wrapped);
+    expect(result.summary).toBe("Drafted summary");
+  });
+
+  it("skips a JS code fragment in preamble that is brace-balanced but not JSON", () => {
+    const service = makeService();
+    const wrapped =
+      "I found `const x = {foo: 1, bar: {baz: 2}};` in the file, then drafted:\n\n" +
+      validEnvelopeJson();
+    const result = service.parseEnvelope(wrapped);
+    expect(result.summary).toBe("Drafted summary");
+  });
+
   it("handles braces inside JSON string values without confusion", () => {
     // String values containing `{` and `}` should not throw off the
     // brace-depth tracker.

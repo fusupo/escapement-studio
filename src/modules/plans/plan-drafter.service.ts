@@ -144,23 +144,51 @@ export class PlanDrafterService {
     // Models occasionally add preamble or postamble around the JSON envelope
     // even when explicitly told not to (e.g. "Now I have enough to draft the
     // plan. Producing the JSON envelope.\n\n{ ... }\n\nThat's the plan!").
-    // Always try to extract the first balanced JSON object and use that as
-    // the parse target — falls back to the cleaned text if no balanced object
-    // is found.
-    const extracted = this.extractFirstJsonObject(cleaned);
-    if (extracted) {
-      cleaned = extracted;
+    //
+    // Worse: the preamble may itself contain brace-balanced noise that the
+    // naive "first balanced `{...}`" extractor would grab by mistake — e.g.
+    // a Svelte template interpolation `{selectedModelKey}` copied out of a
+    // source file the agent grepped. That's a balanced span with no colon,
+    // no quoted key, and JSON.parse rightfully chokes on it.
+    //
+    // Strategy: enumerate ALL top-level balanced `{...}` spans in order,
+    // attempt to JSON.parse each, and pick the first that yields a plain
+    // object. Fall back to parsing the raw cleaned text if no candidate
+    // works (covers the trivial all-JSON case).
+    const candidates = this.extractAllJsonObjects(cleaned);
+    let parsed: unknown = null;
+    let lastParseError: string | null = null;
+    for (const candidate of candidates) {
+      try {
+        const tentative = JSON.parse(candidate);
+        if (tentative && typeof tentative === "object" && !Array.isArray(tentative)) {
+          parsed = tentative;
+          cleaned = candidate;
+          break;
+        }
+      } catch (error) {
+        lastParseError = error instanceof Error ? error.message : String(error);
+      }
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `PlanDrafterService.parseEnvelope: agent response is not valid JSON: ${message}. ` +
-          `First 200 chars: ${cleaned.slice(0, 200)}`,
-      );
+    if (parsed === null) {
+      // Last resort: try the raw cleaned text (covers the case where the
+      // entire assistant message is valid JSON and the enumerator already
+      // returned it as the sole candidate, plus defensive fallback for any
+      // edge cases the enumerator misses).
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const hint =
+          candidates.length > 0
+            ? ` Tried ${candidates.length} balanced '{...}' candidate(s); last parse error: ${lastParseError ?? "n/a"}.`
+            : " No balanced '{...}' candidates found in response.";
+        throw new Error(
+          `PlanDrafterService.parseEnvelope: agent response is not valid JSON: ${message}.${hint} ` +
+            `First 200 chars: ${cleaned.slice(0, 200)}`,
+        );
+      }
     }
 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -384,51 +412,66 @@ export class PlanDrafterService {
   }
 
   /**
-   * Extract the first balanced JSON object substring from `text`. Walks the
-   * string from the first `{` and tracks brace depth (with proper handling
-   * of string literals and escaped characters) until the matching closing
-   * `}`. Returns the substring, or null if no balanced object is found.
+   * Enumerate all top-level balanced `{...}` substrings in `text`, in order
+   * of appearance. Tracks brace depth with proper handling of JSON string
+   * literals and escaped characters, so `{` and `}` inside `"..."` do not
+   * affect depth.
    *
-   * Used by `parseEnvelope` to recover from agent responses that include
-   * preamble or postamble text around the JSON envelope.
+   * Used by `parseEnvelope` to recover from agent responses that wrap the
+   * JSON envelope in preamble/postamble text. Returning *all* candidates
+   * (not just the first) lets the caller skip brace-balanced noise that
+   * isn't actually JSON — e.g. `{selectedModelKey}` copied out of a Svelte
+   * template the agent grepped — and try the next candidate.
    */
-  private extractFirstJsonObject(text: string): string | null {
-    const start = text.indexOf("{");
-    if (start === -1) return null;
+  private extractAllJsonObjects(text: string): string[] {
+    const results: string[] = [];
+    let i = 0;
 
-    let depth = 0;
-    let inString = false;
-    let escape = false;
+    while (i < text.length) {
+      const start = text.indexOf("{", i);
+      if (start === -1) break;
 
-    for (let i = start; i < text.length; i++) {
-      const ch = text[i];
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      let end = -1;
 
-      if (inString) {
-        if (escape) {
-          escape = false;
-        } else if (ch === "\\") {
-          escape = true;
-        } else if (ch === '"') {
-          inString = false;
+      for (let j = start; j < text.length; j++) {
+        const ch = text[j];
+
+        if (inString) {
+          if (escape) {
+            escape = false;
+          } else if (ch === "\\") {
+            escape = true;
+          } else if (ch === '"') {
+            inString = false;
+          }
+          continue;
         }
-        continue;
-      }
 
-      if (ch === '"') {
-        inString = true;
-        continue;
-      }
+        if (ch === '"') {
+          inString = true;
+          continue;
+        }
 
-      if (ch === "{") {
-        depth++;
-      } else if (ch === "}") {
-        depth--;
-        if (depth === 0) {
-          return text.slice(start, i + 1);
+        if (ch === "{") {
+          depth++;
+        } else if (ch === "}") {
+          depth--;
+          if (depth === 0) {
+            end = j;
+            break;
+          }
         }
       }
+
+      if (end === -1) break; // unbalanced — no more candidates
+
+      results.push(text.slice(start, end + 1));
+      i = end + 1;
     }
 
-    return null;
+    return results;
   }
 }
