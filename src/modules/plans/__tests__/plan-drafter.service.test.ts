@@ -73,6 +73,9 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
 
 function makeService(): PlanDrafterService {
   const service = Object.create(PlanDrafterService.prototype) as PlanDrafterService;
+  (service as unknown as { settingsService: { getSelectedModel: () => undefined } }).settingsService = {
+    getSelectedModel: () => undefined,
+  };
   (service as unknown as { logger: { log: (m: string) => void; warn: (m: string) => void; error: (m: string) => void; debug: (m: string) => void } }).logger = {
     log: () => {},
     warn: () => {},

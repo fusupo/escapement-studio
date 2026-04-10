@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Inject, Logger } from "@nestjs/common";
 import {
   createAgentSession,
   createBashTool,
@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { WorkItemRecord } from "../graph/types.js";
 import type { PlanDraftEnvelope, PlanDraftTask, PlanDraftTechnicalNotes } from "./types.js";
+import { SettingsService } from "../settings/settings.service.js";
 
 /**
  * ADR 014 step 8 follow-up (#167) — auto-draft the plan scratchpad via a
@@ -28,6 +29,10 @@ import type { PlanDraftEnvelope, PlanDraftTask, PlanDraftTechnicalNotes } from "
 @Injectable()
 export class PlanDrafterService {
   private readonly logger = new Logger(PlanDrafterService.name);
+
+  constructor(
+    @Inject(SettingsService) private readonly settingsService: SettingsService,
+  ) {}
 
   /**
    * Run a one-shot drafting session for a work item. Returns the parsed
@@ -49,6 +54,7 @@ export class PlanDrafterService {
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd,
       sessionManager: SessionManager.inMemory(cwd),
+      model: this.settingsService.getSelectedModel(),
       tools: [
         createReadTool(cwd),
         createGrepTool(cwd),

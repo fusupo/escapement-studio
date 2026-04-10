@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Injectable, Inject, Logger } from "@nestjs/common";
 import {
   createAgentSession,
   createBashTool,
@@ -18,6 +18,7 @@ import type {
   SubAgentRunStatus,
   SubAgentType,
 } from "./types.js";
+import { SettingsService } from "../settings/settings.service.js";
 
 interface RunHooks {
   onStatus?: (run: SubAgentRunRecord) => void;
@@ -30,6 +31,10 @@ export class SubAgentService {
   private readonly artifactRoot = resolve(getConfig().artifactRoot);
   private readonly recentRuns: SubAgentRunRecord[] = [];
   private readonly recentRunLimit = 12;
+
+  constructor(
+    @Inject(SettingsService) private readonly settingsService: SettingsService,
+  ) {}
 
   listRecentRuns(): SubAgentRunRecord[] {
     return [...this.recentRuns].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
@@ -66,6 +71,7 @@ export class SubAgentService {
       const { session, modelFallbackMessage } = await createAgentSession({
         cwd: process.cwd(),
         sessionManager: SessionManager.inMemory(process.cwd()),
+        model: this.settingsService.getSelectedModel(),
         tools: [
           createReadTool(process.cwd()),
           createBashTool(process.cwd()),
