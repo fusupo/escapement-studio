@@ -1,16 +1,24 @@
 import { Inject, Injectable } from "@nestjs/common";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { SQLiteService } from "../graph/sqlite.service.js";
 import { getConfig } from "../../config.js";
+import { ModelRegistryService } from "./model-registry.service.js";
 
 export interface RepoSettings {
   default_branch: string;
   included: boolean;
 }
 
+export interface SelectedModel {
+  provider: string;
+  modelId: string;
+}
+
 export interface SettingsConfig {
   manifestPath: string;
   planningSessionDir: string;
   artifactRoot: string;
+  selectedModel: SelectedModel | null;
 }
 
 export interface SettingsPayload {
@@ -27,7 +35,10 @@ const SETTINGS_KEY = "studio_settings";
 
 @Injectable()
 export class SettingsService {
-  constructor(@Inject(SQLiteService) private readonly sqlite: SQLiteService) {}
+  constructor(
+    @Inject(SQLiteService) private readonly sqlite: SQLiteService,
+    @Inject(ModelRegistryService) private readonly modelRegistry: ModelRegistryService,
+  ) {}
 
   getSettings(): SettingsPayload {
     const db = this.sqlite.getDb();
@@ -73,6 +84,9 @@ export class SettingsService {
       if (payload.config.artifactRoot !== undefined) {
         current.config.artifactRoot = payload.config.artifactRoot;
       }
+      if (payload.config.selectedModel !== undefined) {
+        current.config.selectedModel = payload.config.selectedModel;
+      }
     }
 
     const db = this.sqlite.getDb();
@@ -82,6 +96,17 @@ export class SettingsService {
     ).run(SETTINGS_KEY, JSON.stringify(current));
 
     return current;
+  }
+
+  /**
+   * Resolve the persisted model selection to a pi-ai Model instance.
+   * Returns undefined when no model is selected or the selection doesn't
+   * match any model in the registry — callers should let pi use its default.
+   */
+  getSelectedModel(): Model<Api> | undefined {
+    const { config } = this.getSettings();
+    if (!config.selectedModel) return undefined;
+    return this.modelRegistry.find(config.selectedModel.provider, config.selectedModel.modelId);
   }
 
   /**
@@ -135,6 +160,7 @@ export class SettingsService {
         manifestPath: appConfig.manifestPath,
         planningSessionDir: appConfig.planningSessionDir,
         artifactRoot: appConfig.artifactRoot,
+        selectedModel: null,
       },
     };
   }
@@ -147,6 +173,7 @@ export class SettingsService {
         manifestPath: stored.config?.manifestPath ?? defaults.config.manifestPath,
         planningSessionDir: stored.config?.planningSessionDir ?? defaults.config.planningSessionDir,
         artifactRoot: stored.config?.artifactRoot ?? defaults.config.artifactRoot,
+        selectedModel: stored.config?.selectedModel ?? defaults.config.selectedModel,
       },
     };
   }
