@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { SQLiteService } from "../graph/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
-import type { WorkItemRecord } from "../graph/types.js";
+import type { UpdateWorkItemDto, WorkItemRecord } from "../graph/types.js";
 import type {
   GitHubIssueDetails,
   GitHubIssueAssignee,
@@ -400,12 +400,23 @@ export class GitHubService {
         }
       }
 
+      const updatePatch: UpdateWorkItemDto = { meta: nextMeta };
+      // Narrowly advance open_pr → merged_pr when GitHub truth shows the PR merged.
+      // Keep the guard strict on 'open_pr' so already-merged_pr items stay stable and
+      // unrelated states (in_progress, ready, done, ...) are never rewritten. The fuller
+      // ExecutionService.syncMergedPullRequest flow still owns runs / actual_files /
+      // archive_path / studio_post_merge_sync and remains the source of truth for those.
+      if (pullRequest.merged_at && workItem.state === "open_pr") {
+        updatePatch.state = "merged_pr";
+        changed = true;
+      }
+
       if (!changed) {
         return workItem;
       }
 
       updatedWorkItemIds.push(workItem.id);
-      return this.workItems.update(workItem.id, { meta: nextMeta });
+      return this.workItems.update(workItem.id, updatePatch);
     });
 
     const refreshResult = this.pullRequestTruthRefresher?.(pullRequest, {
