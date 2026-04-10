@@ -6,6 +6,7 @@
   export let selectedId = null;
   export let onSelect = () => {};
   export let onContextMenu = () => {};
+  export let externalFrontierIds = null; // optional: pass frontier IDs from parent to avoid duplicate fetch
 
   let svg;
   let handle = { cleanup() {}, updateSelection() {}, resize() {} };
@@ -25,6 +26,9 @@
   }
 
   async function loadFrontier(currentGraph) {
+    // Skip self-fetch when parent provides frontier IDs
+    if (externalFrontierIds !== null) return;
+
     const token = ++frontierLookupToken;
     frontierIds = [];
     frontierSignature = "";
@@ -55,7 +59,14 @@
     }
   }
 
-  $: void loadFrontier(graph);
+  // When parent provides frontier IDs, use those instead of self-fetching
+  $: if (externalFrontierIds !== null) {
+    const visibleIds = new Set(graph.items.map((item) => item.id));
+    frontierIds = externalFrontierIds.filter((id) => visibleIds.has(id)).sort();
+    frontierSignature = frontierIds.join("|");
+  }
+
+  $: if (externalFrontierIds === null) void loadFrontier(graph);
 
   // Mount + graph/frontier data changes → full re-layout
   $: if (svg && graph) {
