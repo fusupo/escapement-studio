@@ -15,9 +15,11 @@ import {
   type StudioIssueTemplate,
 } from "../github/studio-issue-template.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
+import { PlanDrafterService } from "./plan-drafter.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ApprovePlanDto,
+  PlanDraftEnvelope,
   PlanResponse,
   PredictedFilesDiff,
   ReopenPlanDto,
@@ -47,6 +49,7 @@ export class PlansService {
   constructor(
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(StudioIssueTemplateService) private readonly templateService: StudioIssueTemplateService,
+    @Inject(PlanDrafterService) private readonly drafter: PlanDrafterService,
   ) {}
 
   /* ── Public API ────────────────────────────────────────────────────────── */
@@ -55,45 +58,70 @@ export class PlansService {
    * Draft (or re-draft) the canonical scratchpad for a work item and
    * transition it to the `drafting` state. No worktree is created.
    *
-   * - If the canonical scratchpad already exists and is non-empty, its
-   *   contents are carried forward unchanged (so in-progress plan edits are
-   *   not destroyed).
-   * - If it is absent or empty, a fresh skeleton is generated from the issue
-   *   body and Studio issue templates.
+   * Per ADR 014 step 8 follow-up (#167), every call invokes
+   * `PlanDrafterService.draft()` to produce a fresh `PlanDraftEnvelope` from
+   * a one-shot pi-coding-agent session. The envelope is injected into the
+   * canonical scratchpad and the work item's `predicted_files` is refreshed
+   * from the envelope's `affected_files`.
+   *
+   * **Always re-drafts.** Re-running prepare on a work item already in
+   * `drafting` state runs the drafter again from scratch — no carry-forward
+   * of prior content. If you want to preserve manual edits, hit Approve
+   * (which transitions to `ready`) before re-clicking Prepare.
+   *
+   * **Fails loud.** If the drafter throws (network error, malformed JSON,
+   * agent failure), the exception propagates and the work item state does
+   * NOT transition. The existing scratchpad and metadata are not modified.
    *
    * Valid pre-states: `planned`, `drafting`. Everything else throws
    * `BadRequestException`.
    */
-  prepare(workItemId: string): PlanResponse {
+  async prepare(workItemId: string): Promise<PlanResponse> {
     const workItem = this.workItemsService.get(workItemId);
     this.assertPreparable(workItem);
 
-    // Transition work item state FIRST so concurrent prepare requests for
-    // the same work item fail fast on the state guard (they will observe
-    // `drafting`, not `planned`, if they lose the race). The state guard
-    // allows drafting → drafting (re-prepare) but rejects everything else.
-    const transitioned =
-      workItem.state === "drafting"
-        ? workItem
-        : this.workItemsService.update(workItemId, { state: "drafting" });
+    // Fetch the issue body once and pass it into both the drafter and the
+    // renderer. The drafter doesn't need its own gh access.
+    const issueBody = fetchIssueBody(workItem.repo, workItem.issue_number);
+
+    // Run the drafter BEFORE any state mutation. If this throws, no state
+    // changes are visible and the caller can retry.
+    const draft = await this.drafter.draft(workItem, issueBody);
+
+    // Drafter succeeded. From here on, all mutations land.
+
+    // Refresh the work item's predicted_files from the drafter's
+    // affected_files. Skip if the drafter returned an empty list (preserve
+    // the current value rather than nuking it).
+    if (draft.affected_files.length > 0) {
+      this.workItemsService.update(workItemId, {
+        predicted_files: draft.affected_files,
+      });
+    }
+
+    // Transition work item state if not already drafting (prepare is
+    // idempotent on the state transition itself; it just re-runs the drafter
+    // and overwrites the scratchpad).
+    if (workItem.state !== "drafting") {
+      this.workItemsService.update(workItemId, { state: "drafting" });
+    }
 
     // Ensure the plan dir exists and write initial metadata if we were first.
     ensurePlanDir(this.artifactRoot, workItemId);
 
+    // Render and overwrite the canonical scratchpad with the drafted content.
+    // We re-fetch the (possibly updated) work item so the renderer sees the
+    // refreshed predicted_files.
+    const refreshed = this.workItemsService.get(workItemId);
+    const templates = this.templateService.listTemplates();
+    const scratchpadContent = this.renderPlanScratchpad(
+      refreshed,
+      issueBody,
+      templates,
+      draft,
+    );
     const canonicalPath = canonicalScratchpadPath(this.artifactRoot, workItemId);
-    let scratchpadContent: string;
-    if (existsSync(canonicalPath)) {
-      const existing = readFileSync(canonicalPath, "utf8");
-      if (existing.trim().length > 0) {
-        scratchpadContent = existing;
-      } else {
-        scratchpadContent = this.generateSkeleton(transitioned);
-        writeFileSync(canonicalPath, scratchpadContent, "utf8");
-      }
-    } else {
-      scratchpadContent = this.generateSkeleton(transitioned);
-      writeFileSync(canonicalPath, scratchpadContent, "utf8");
-    }
+    writeFileSync(canonicalPath, scratchpadContent, "utf8");
 
     // Update plan metadata to reflect drafting state.
     const metadata = this.updatePlanMetadata(workItemId, (current) => ({
@@ -244,19 +272,21 @@ export class PlansService {
   }
 
   /**
-   * Pure rendering function for the plan scratchpad skeleton. Separated from
-   * `buildPlanScratchpad` so tests can drive it with injected issue bodies
-   * and templates without mocking `gh` or the filesystem.
+   * Pure rendering function for the plan scratchpad. Separated from
+   * `buildPlanScratchpad` so tests can drive it with injected issue bodies,
+   * templates, and (optionally) a `PlanDraftEnvelope` from the auto-drafter
+   * (#167) without mocking `gh`, the filesystem, or pi-coding-agent.
+   *
+   * When `draft` is omitted, renders the legacy stub template with
+   * `(to be filled in)` placeholders. When `draft` is provided, every
+   * drafter-driven section is filled from the envelope.
    */
   renderPlanScratchpad(
     workItem: WorkItemRecord,
     issueBody: string | null,
     templates: StudioIssueTemplate[],
+    draft?: PlanDraftEnvelope,
   ): string {
-    const predictedOwned = workItem.predicted_files.length
-      ? workItem.predicted_files.map((path) => `- ${path}`).join("\n")
-      : "- (none predicted yet — populate during plan review)";
-
     const templateSummary = templates.length
       ? templates
           .map((template) => `- ${template.kind}: ${template.name}`)
@@ -267,10 +297,131 @@ export class PlansService {
       ? ["## Issue Body", "", issueBody.trim(), ""]
       : ["## Issue Body", "", "_(issue body unavailable — link to issue: " + (workItem.issue_url ?? "(not linked)") + ")_", ""];
 
+    // ── Drafter-driven sections (or legacy stubs when no draft) ────────────
+    const summarySection = draft
+      ? ["## Summary", "", draft.summary, ""]
+      : [
+          "## Summary",
+          "<!-- One-paragraph statement of what this plan proposes. Fill during drafting. -->",
+          "",
+        ];
+
+    const acceptanceCriteriaSection = draft
+      ? [
+          "## Acceptance Criteria",
+          "",
+          ...(draft.acceptance_criteria.length
+            ? draft.acceptance_criteria.map((c) => `- [ ] ${c}`)
+            : ["- [ ] (drafter returned no acceptance criteria)"]),
+          "",
+        ]
+      : [
+          "## Acceptance Criteria",
+          "<!-- Copy from the issue body if present, refine during drafting. -->",
+          "",
+          "- [ ] (to be filled in)",
+          "",
+        ];
+
+    const implementationPlanSection = draft
+      ? [
+          "## Implementation Plan",
+          "",
+          ...(draft.implementation_tasks.length
+            ? draft.implementation_tasks.flatMap((task) => [
+                `- [ ] ${task.description}`,
+                `  - **Files:** ${task.files.length ? task.files.join(", ") : "(none)"}`,
+                `  - **Why:** ${task.rationale}`,
+                `  - **Testing:** ${task.testing}`,
+              ])
+            : ["- [ ] (drafter returned no implementation tasks)"]),
+          "",
+        ]
+      : [
+          "## Implementation Plan",
+          "<!-- Atomic, committable tasks. Populate during drafting; approver reviews. -->",
+          "",
+          "- [ ] (to be filled in)",
+          "",
+        ];
+
+    const affectedFilesLines = draft
+      ? draft.affected_files.length
+        ? draft.affected_files.map((p) => `- ${p}`)
+        : ["- (drafter returned no affected files)"]
+      : workItem.predicted_files.length
+        ? workItem.predicted_files.map((p) => `- ${p}`)
+        : ["- (none predicted yet — populate during plan review)"];
+
+    const affectedFilesSection = [
+      "## Affected Files",
+      "<!-- Predicted files this plan will touch. Approval refines the work item's predicted_files from this list. -->",
+      "",
+      ...affectedFilesLines,
+      "",
+    ];
+
+    const technicalNotesSection = draft
+      ? [
+          "## Technical Notes",
+          "",
+          "### Architecture Considerations",
+          "",
+          draft.technical_notes.architecture,
+          "",
+          "### Implementation Approach",
+          "",
+          draft.technical_notes.approach,
+          "",
+          "### Potential Challenges",
+          "",
+          draft.technical_notes.challenges,
+          "",
+        ]
+      : [];
+
+    const questionsSection = draft
+      ? [
+          "## Questions / Concerns",
+          "",
+          "### Clarifications Needed",
+          "",
+          ...(draft.questions.length
+            ? draft.questions.map((q) => `- ${q}`)
+            : ["_(none)_"]),
+          "",
+          "### Assumptions Made",
+          "",
+          ...(draft.assumptions.length
+            ? draft.assumptions.map((a) => `- ${a}`)
+            : ["_(none)_"]),
+          "",
+        ]
+      : [
+          "## Questions / Concerns",
+          "<!-- Surface ambiguities here. Resolve before approval. -->",
+          "",
+        ];
+
+    const blockersSection = draft
+      ? [
+          "## Blockers",
+          "",
+          ...(draft.blockers.length
+            ? draft.blockers.map((b) => `- ${b}`)
+            : ["_(none)_"]),
+          "",
+        ]
+      : ["## Blockers", ""];
+
+    const drafterBanner = draft
+      ? "> Auto-drafted by PlansService.prepare via PlanDrafterService (ADR 014 step 8 follow-up, #167)."
+      : "> Drafted by PlansService.prepare (ADR 014 step 4). Worktree not yet created.";
+
     return [
       `# Plan: ${workItem.id} — ${workItem.name}`,
       "",
-      "> Drafted by PlansService.prepare (ADR 014 step 4). Worktree not yet created.",
+      drafterBanner,
       "",
       "## Context",
       `- **Work item:** ${workItem.id}`,
@@ -280,42 +431,28 @@ export class PlansService {
       `- **Branch:** ${workItem.branch ?? "(not set)"}`,
       "",
       ...issueSection,
-      "## Summary",
-      "<!-- One-paragraph statement of what this plan proposes. Fill during drafting. -->",
-      "",
-      "## Acceptance Criteria",
-      "<!-- Copy from the issue body if present, refine during drafting. -->",
-      "",
-      "- [ ] (to be filled in)",
-      "",
-      "## Implementation Plan",
-      "<!-- Atomic, committable tasks. Populate during drafting; approver reviews. -->",
-      "",
-      "- [ ] (to be filled in)",
-      "",
-      "## Affected Files",
-      "<!-- Predicted files this plan will touch. Approval refines the work item's predicted_files from this list. -->",
-      "",
-      predictedOwned,
-      "",
+      ...summarySection,
+      ...acceptanceCriteriaSection,
+      ...implementationPlanSection,
+      ...affectedFilesSection,
+      ...technicalNotesSection,
       "## Quality Checks",
       "- [ ] `npx tsc --noEmit`",
       "- [ ] `npx vitest run`",
       "- [ ] `npx vite build --config web/vite.config.ts`",
       "",
-      "## Questions / Concerns",
-      "<!-- Surface ambiguities here. Resolve before approval. -->",
-      "",
+      ...questionsSection,
       "## Studio Issue Templates Available",
       templateSummary,
       "",
       "## Work Log",
       "",
       `### ${new Date().toISOString().slice(0, 10)} - Plan drafted`,
-      "- Scratchpad created by PlansService.prepare",
+      draft
+        ? "- Scratchpad auto-drafted by PlansService.prepare via PlanDrafterService"
+        : "- Scratchpad created by PlansService.prepare",
       "",
-      "## Blockers",
-      "",
+      ...blockersSection,
     ].join("\n");
   }
 
@@ -406,10 +543,5 @@ export class PlansService {
     };
     writePlanMetadata(this.artifactRoot, workItemId, mutated);
     return mutated;
-  }
-
-  /** Alias used by `prepare` for clarity at the call site. */
-  private generateSkeleton(workItem: WorkItemRecord): string {
-    return this.buildPlanScratchpad(workItem);
   }
 }

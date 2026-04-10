@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { PlansService } from "../plans.service.js";
-import type { PlanResponse } from "../types.js";
+import type { PlanDraftEnvelope, PlanResponse } from "../types.js";
 import {
   canonicalScratchpadPath,
   ensurePlanDir,
@@ -19,7 +19,8 @@ import type { WorkItemRecord, WorkItemState } from "../../graph/types.js";
  *
  * Uses the Object.create harness pattern from the execution test suite to
  * bypass NestJS DI. fetchIssueBody (from src/lib/github-cli.ts) is mocked so
- * prepare runs synchronously without shelling out to `gh`.
+ * prepare runs without shelling out to `gh`. PlanDrafterService is also
+ * mocked so prepare doesn't actually call out to pi-coding-agent.
  */
 
 vi.mock("../../../lib/github-cli.js", () => ({
@@ -35,12 +36,43 @@ interface HarnessTemplateService {
   listTemplates(): StudioIssueTemplate[];
 }
 
+interface HarnessDrafterService {
+  draft(workItem: WorkItemRecord, issueBody: string | null): Promise<PlanDraftEnvelope>;
+}
+
 interface Harness {
   service: PlansService;
   workItems: Map<string, WorkItemRecord>;
   updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }>;
   templates: StudioIssueTemplate[];
   artifactRoot: string;
+  drafter: HarnessDrafterService;
+  drafterCalls: Array<{ workItem: WorkItemRecord; issueBody: string | null }>;
+}
+
+function makeDraftEnvelope(overrides: Partial<PlanDraftEnvelope> = {}): PlanDraftEnvelope {
+  return {
+    summary: "Drafted summary text from the mock drafter.",
+    acceptance_criteria: ["Drafted criterion A", "Drafted criterion B"],
+    implementation_tasks: [
+      {
+        description: "Drafted task 1",
+        files: ["src/foo.ts"],
+        rationale: "Foundation step",
+        testing: "Unit test the foo helper",
+      },
+    ],
+    affected_files: ["src/foo.ts", "src/bar.ts"],
+    questions: ["Drafted open question?"],
+    assumptions: ["Drafted assumption"],
+    blockers: [],
+    technical_notes: {
+      architecture: "Drafted architecture notes",
+      approach: "Drafted approach notes",
+      challenges: "Drafted challenge notes",
+    },
+    ...overrides,
+  };
 }
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
@@ -73,9 +105,13 @@ function makeTemplate(kind: "feature" | "bug" | "task", name: string): StudioIss
   };
 }
 
-function makeHarness(initial: WorkItemRecord): Harness {
+function makeHarness(
+  initial: WorkItemRecord,
+  drafterOverride?: HarnessDrafterService,
+): Harness {
   const workItems = new Map<string, WorkItemRecord>([[initial.id, initial]]);
   const updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }> = [];
+  const drafterCalls: Array<{ workItem: WorkItemRecord; issueBody: string | null }> = [];
   const templates: StudioIssueTemplate[] = [makeTemplate("feature", "Feature Request")];
   const artifactRoot = mkdtempSync(join(tmpdir(), "studio-154-"));
 
@@ -102,13 +138,22 @@ function makeHarness(initial: WorkItemRecord): Harness {
     listTemplates: () => templates,
   };
 
+  // Default drafter: returns a stable envelope and records every call.
+  const drafter: HarnessDrafterService = drafterOverride ?? {
+    async draft(workItem: WorkItemRecord, issueBody: string | null) {
+      drafterCalls.push({ workItem, issueBody });
+      return makeDraftEnvelope();
+    },
+  };
+
   const service = Object.create(PlansService.prototype) as PlansService;
   (service as unknown as { workItemsService: HarnessWorkItemsService }).workItemsService = workItemsService;
   (service as unknown as { templateService: HarnessTemplateService }).templateService = templateService;
+  (service as unknown as { drafter: HarnessDrafterService }).drafter = drafter;
   (service as unknown as { artifactRoot: string }).artifactRoot = artifactRoot;
   (service as unknown as { logger: { log: (m: string) => void } }).logger = { log: () => {} };
 
-  return { service, workItems, updateCalls, templates, artifactRoot };
+  return { service, workItems, updateCalls, templates, artifactRoot, drafter, drafterCalls };
 }
 
 function cleanup(h: Harness) {
@@ -122,67 +167,124 @@ describe("PlansService.prepare", () => {
     if (harness) cleanup(harness);
   });
 
-  it("transitions planned → drafting and writes canonical scratchpad", () => {
+  it("calls drafter, transitions planned → drafting, and writes drafted scratchpad", async () => {
     harness = makeHarness(makeWorkItem());
 
-    const result = harness.service.prepare("studio-154");
+    const result = await harness.service.prepare("studio-154");
 
     expect(result.work_item_id).toBe("studio-154");
     expect(result.metadata.state).toBe("drafting");
-    // The update call from prepare
-    expect(harness.updateCalls).toEqual([{ id: "studio-154", patch: { state: "drafting" } }]);
+    // Drafter was called once with the work item and the mocked issue body
+    expect(harness.drafterCalls).toHaveLength(1);
+    expect(harness.drafterCalls[0].workItem.id).toBe("studio-154");
+    expect(harness.drafterCalls[0].issueBody).toBe("Mocked issue body from fixture.");
 
-    // Scratchpad exists with the skeleton content
+    // Two update calls: predicted_files refresh, then state transition
+    expect(harness.updateCalls).toEqual([
+      { id: "studio-154", patch: { predicted_files: ["src/foo.ts", "src/bar.ts"] } },
+      { id: "studio-154", patch: { state: "drafting" } },
+    ]);
+
+    // Scratchpad contains drafted content (not the legacy stub placeholders)
     const canonical = canonicalScratchpadPath(harness.artifactRoot, "studio-154");
     expect(existsSync(canonical)).toBe(true);
     const content = readFileSync(canonical, "utf8");
     expect(content).toContain("# Plan: studio-154");
-    expect(content).toContain("## Affected Files");
-    expect(content).toContain("## Acceptance Criteria");
-    expect(content).toContain("Mocked issue body from fixture.");
+    expect(content).toContain("Drafted summary text from the mock drafter.");
+    expect(content).toContain("Drafted criterion A");
+    expect(content).toContain("Drafted task 1");
+    expect(content).toContain("Drafted architecture notes");
+    // No legacy stub markers
+    expect(content).not.toContain("(to be filled in)");
   });
 
-  it("is idempotent on drafting → drafting and carries existing scratchpad forward", () => {
+  it("re-drafts on every prepare even when canonical scratchpad already exists", async () => {
     harness = makeHarness(makeWorkItem({ state: "drafting" }));
     ensurePlanDir(harness.artifactRoot, "studio-154");
     const canonical = canonicalScratchpadPath(harness.artifactRoot, "studio-154");
-    writeFileSync(canonical, "# Human edit — do not stomp\n", "utf8");
+    writeFileSync(canonical, "# Stale prior content — should be overwritten\n", "utf8");
 
-    const result = harness.service.prepare("studio-154");
+    const result = await harness.service.prepare("studio-154");
 
-    // No transition update — already drafting
+    // Drafter called even though we're already drafting
+    expect(harness.drafterCalls).toHaveLength(1);
+    // Scratchpad overwritten with the new draft
+    expect(result.scratchpad_content).not.toContain("Stale prior content");
+    expect(result.scratchpad_content).toContain("Drafted summary text from the mock drafter.");
+    expect(readFileSync(canonical, "utf8")).toContain("Drafted summary text from the mock drafter.");
+    // No state transition (already drafting), but predicted_files refresh still happens
+    const stateTransitions = harness.updateCalls.filter((c) => c.patch.state !== undefined);
+    expect(stateTransitions).toEqual([]);
+    const predictedRefresh = harness.updateCalls.find((c) => c.patch.predicted_files !== undefined);
+    expect(predictedRefresh).toBeDefined();
+  });
+
+  it("on drafter failure, does not transition state and does not modify existing scratchpad", async () => {
+    harness = makeHarness(makeWorkItem(), {
+      async draft() {
+        throw new Error("simulated drafter explosion");
+      },
+    });
+    // Pre-write a scratchpad we expect to remain untouched
+    ensurePlanDir(harness.artifactRoot, "studio-154");
+    const canonical = canonicalScratchpadPath(harness.artifactRoot, "studio-154");
+    writeFileSync(canonical, "# Untouched\n", "utf8");
+
+    await expect(harness.service.prepare("studio-154")).rejects.toThrow("simulated drafter explosion");
+
+    // No state mutation
     expect(harness.updateCalls).toEqual([]);
-    // Scratchpad content preserved verbatim
-    expect(result.scratchpad_content).toBe("# Human edit — do not stomp\n");
-    expect(readFileSync(canonical, "utf8")).toBe("# Human edit — do not stomp\n");
-    // But metadata is still written (updated_at bumped, state stays drafting)
-    expect(result.metadata.state).toBe("drafting");
+    // Work item stayed planned
+    expect(harness.workItems.get("studio-154")?.state).toBe("planned");
+    // Scratchpad untouched
+    expect(readFileSync(canonical, "utf8")).toBe("# Untouched\n");
   });
 
-  it("regenerates skeleton if canonical scratchpad exists but is empty", () => {
-    harness = makeHarness(makeWorkItem({ state: "drafting" }));
-    ensurePlanDir(harness.artifactRoot, "studio-154");
-    const canonical = canonicalScratchpadPath(harness.artifactRoot, "studio-154");
-    writeFileSync(canonical, "   \n  \n", "utf8");
+  it("does not refresh predicted_files when drafter envelope.affected_files is empty", async () => {
+    harness = makeHarness(makeWorkItem({ predicted_files: ["src/keep.ts"] }), {
+      async draft() {
+        return makeDraftEnvelope({ affected_files: [] });
+      },
+    });
 
-    const result = harness.service.prepare("studio-154");
+    await harness.service.prepare("studio-154");
 
-    expect(result.scratchpad_content).toContain("# Plan: studio-154");
+    // No predicted_files update — current value preserved
+    const predictedUpdate = harness.updateCalls.find((c) => c.patch.predicted_files !== undefined);
+    expect(predictedUpdate).toBeUndefined();
+    // State transition still happens
+    const stateUpdate = harness.updateCalls.find((c) => c.patch.state === "drafting");
+    expect(stateUpdate).toBeDefined();
+  });
+
+  it("refreshes predicted_files from drafter envelope.affected_files", async () => {
+    harness = makeHarness(makeWorkItem({ predicted_files: ["old.ts"] }), {
+      async draft() {
+        return makeDraftEnvelope({ affected_files: ["new1.ts", "new2.ts"] });
+      },
+    });
+
+    await harness.service.prepare("studio-154");
+
+    const predictedUpdate = harness.updateCalls.find((c) => c.patch.predicted_files !== undefined);
+    expect(predictedUpdate?.patch.predicted_files).toEqual(["new1.ts", "new2.ts"]);
   });
 
   const rejectedStates: WorkItemState[] = ["in_progress", "open_pr", "merged_pr", "done", "ready", "deferred", "cancelled"];
   for (const state of rejectedStates) {
-    it(`rejects prepare when work item is in ${state}`, () => {
+    it(`rejects prepare when work item is in ${state}`, async () => {
       harness = makeHarness(makeWorkItem({ state }));
-      expect(() => harness.service.prepare("studio-154")).toThrow(BadRequestException);
+      await expect(harness.service.prepare("studio-154")).rejects.toThrow(BadRequestException);
+      // Drafter not called
+      expect(harness.drafterCalls).toEqual([]);
       // No state mutation on failure
       expect(harness.updateCalls).toEqual([]);
     });
   }
 
-  it("throws NotFoundException when work item does not exist", () => {
+  it("throws NotFoundException when work item does not exist", async () => {
     harness = makeHarness(makeWorkItem());
-    expect(() => harness.service.prepare("studio-missing")).toThrow(NotFoundException);
+    await expect(harness.service.prepare("studio-missing")).rejects.toThrow(NotFoundException);
   });
 });
 
@@ -514,11 +616,11 @@ describe("PlansService lifecycle (integration)", () => {
     if (harness) cleanup(harness);
   });
 
-  it("completes a full planned → drafting → ready → drafting → ready cycle", () => {
+  it("completes a full planned → drafting → ready → drafting → ready cycle", async () => {
     harness = makeHarness(makeWorkItem({ predicted_files: ["src/foo.ts"] }));
 
     // 1. prepare
-    const afterPrepare: PlanResponse = harness.service.prepare("studio-154");
+    const afterPrepare: PlanResponse = await harness.service.prepare("studio-154");
     expect(afterPrepare.metadata.state).toBe("drafting");
     expect(harness.workItems.get("studio-154")?.state).toBe("drafting");
 

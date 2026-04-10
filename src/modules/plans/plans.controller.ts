@@ -12,8 +12,8 @@ export class PlansController {
   constructor(@Inject(PlansService) private readonly plansService: PlansService) {}
 
   @Post(":work_item_id/prepare")
-  prepare(@Param("work_item_id") workItemId: string): PlanResponse {
-    return this.plansService.prepare(workItemId);
+  async prepare(@Param("work_item_id") workItemId: string): Promise<PlanResponse> {
+    return await this.plansService.prepare(workItemId);
   }
 
   @Post(":work_item_id/approve")
