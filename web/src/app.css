@@ -245,8 +245,8 @@ a:hover {
   --graph-frontier-glow: rgba(240, 246, 252, 0.16);
   --graph-in-progress-outline: rgba(255, 244, 214, 0.92);
   --graph-in-progress-shadow: rgba(210, 153, 34, 0.22);
-  --graph-merged-pr-outline: rgba(214, 255, 244, 0.92);
-  --graph-merged-pr-shadow: rgba(46, 160, 143, 0.28);
+  --graph-merged-pr-outline: rgba(230, 255, 248, 0.98);
+  --graph-merged-pr-shadow: rgba(57, 194, 166, 0.38);
 }
 
 /* In-progress styling uses an inset dashed outline so it remains distinct
@@ -279,34 +279,57 @@ a:hover {
   opacity: 1;
 }
 
-/* merged_pr styling uses a solid inset outline so the 'landed' signal
-   carries independent of hue and composes with frontier stripes + the
-   bottom-anchored ✓PR badge. */
+/* merged_pr styling uses a double-outline 'stamp' treatment (bold outer
+   inset stroke + thinner inner inset stroke) so the 'landed' signal is
+   obvious at normal zoom independent of hue, and composes with frontier
+   stripes + the bottom-anchored ✓PR badge. */
 .graph-canvas .node.graph-node--merged-pr,
 .graph-canvas .node[data-state="merged_pr"] {
-  filter: drop-shadow(0 0 0.3rem var(--graph-merged-pr-shadow));
+  filter: drop-shadow(0 0 0.32rem var(--graph-merged-pr-shadow));
 }
 
 .graph-canvas .node.graph-node--merged-pr .merged-pr-overlay,
 .graph-canvas .node[data-state="merged_pr"] .merged-pr-overlay {
   fill: none;
   stroke: var(--graph-merged-pr-outline);
-  stroke-width: 1.4px;
+  stroke-width: 2.1px;
   stroke-linecap: round;
-  opacity: 0.9;
+  opacity: 0.98;
+  pointer-events: none;
+}
+
+.graph-canvas .node.graph-node--merged-pr .merged-pr-overlay-inner,
+.graph-canvas .node[data-state="merged_pr"] .merged-pr-overlay-inner {
+  fill: none;
+  stroke: var(--graph-merged-pr-outline);
+  stroke-width: 1.1px;
+  stroke-linecap: round;
+  opacity: 0.88;
   pointer-events: none;
 }
 
 .graph-canvas .node.graph-node--merged-pr.selected .merged-pr-overlay,
 .graph-canvas .node[data-state="merged_pr"].selected .merged-pr-overlay {
-  stroke-width: 1.6px;
+  stroke-width: 2.25px;
   opacity: 1;
+}
+
+.graph-canvas .node.graph-node--merged-pr.selected .merged-pr-overlay-inner,
+.graph-canvas .node[data-state="merged_pr"].selected .merged-pr-overlay-inner {
+  stroke-width: 1.2px;
+  opacity: 0.96;
 }
 
 .graph-canvas .node.graph-node--merged-pr:hover .merged-pr-overlay,
 .graph-canvas .node[data-state="merged_pr"]:hover .merged-pr-overlay {
-  stroke-width: 1.55px;
+  stroke-width: 2.2px;
   opacity: 1;
+}
+
+.graph-canvas .node.graph-node--merged-pr:hover .merged-pr-overlay-inner,
+.graph-canvas .node[data-state="merged_pr"]:hover .merged-pr-overlay-inner {
+  stroke-width: 1.15px;
+  opacity: 0.95;
 }
 
 .graph-canvas .node.graph-node--frontier.graph-node--merged-pr,
@@ -376,15 +399,20 @@ a:hover {
 }
 
 .graph-legend .legend-swatch.merged-pr {
-  border: 1px solid rgba(214, 255, 244, 0.4);
-  box-shadow: inset 0 0 0 1px rgba(46, 160, 143, 0.18);
+  /* Double-outline 'stamp' matching the in-graph .merged-pr-overlay +
+     .merged-pr-overlay-inner treatment: bold outer inset + thinner inner
+     inset, symmetric with `.in-progress` dashed-inset swatch. */
+  border: 1px solid rgba(230, 255, 248, 0.98);
+  box-shadow:
+    inset 0 0 0 1px rgba(57, 194, 166, 0.35),
+    0 0 0 0 transparent;
 }
 
 .graph-legend .legend-swatch.merged-pr::after {
   content: "";
   position: absolute;
-  inset: 1px;
-  border: 1px solid rgba(214, 255, 244, 0.95);
+  inset: 2px;
+  border: 1px solid rgba(230, 255, 248, 0.9);
   border-radius: 1px;
   pointer-events: none;
 }
