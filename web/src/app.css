@@ -245,6 +245,8 @@ a:hover {
   --graph-frontier-glow: rgba(240, 246, 252, 0.16);
   --graph-in-progress-outline: rgba(255, 244, 214, 0.92);
   --graph-in-progress-shadow: rgba(210, 153, 34, 0.22);
+  --graph-merged-pr-outline: rgba(214, 255, 244, 0.92);
+  --graph-merged-pr-shadow: rgba(46, 160, 143, 0.28);
 }
 
 /* In-progress styling uses an inset dashed outline so it remains distinct
@@ -275,6 +277,42 @@ a:hover {
 .graph-canvas .node[data-state="in_progress"]:hover .in-progress-overlay {
   stroke-width: 1.45px;
   opacity: 1;
+}
+
+/* merged_pr styling uses a solid inset outline so the 'landed' signal
+   carries independent of hue and composes with frontier stripes + the
+   bottom-anchored ✓PR badge. */
+.graph-canvas .node.graph-node--merged-pr,
+.graph-canvas .node[data-state="merged_pr"] {
+  filter: drop-shadow(0 0 0.3rem var(--graph-merged-pr-shadow));
+}
+
+.graph-canvas .node.graph-node--merged-pr .merged-pr-overlay,
+.graph-canvas .node[data-state="merged_pr"] .merged-pr-overlay {
+  fill: none;
+  stroke: var(--graph-merged-pr-outline);
+  stroke-width: 1.4px;
+  stroke-linecap: round;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.graph-canvas .node.graph-node--merged-pr.selected .merged-pr-overlay,
+.graph-canvas .node[data-state="merged_pr"].selected .merged-pr-overlay {
+  stroke-width: 1.6px;
+  opacity: 1;
+}
+
+.graph-canvas .node.graph-node--merged-pr:hover .merged-pr-overlay,
+.graph-canvas .node[data-state="merged_pr"]:hover .merged-pr-overlay {
+  stroke-width: 1.55px;
+  opacity: 1;
+}
+
+.graph-canvas .node.graph-node--frontier.graph-node--merged-pr,
+.graph-canvas .node.graph-node--frontier[data-state="merged_pr"],
+.graph-canvas .node[data-frontier="true"][data-state="merged_pr"] {
+  filter: drop-shadow(0 0 0.3rem var(--graph-frontier-glow)) drop-shadow(0 0 0.2rem var(--graph-merged-pr-shadow));
 }
 
 /* Frontier styling uses an interior overlay so it composes with the graph
@@ -333,6 +371,20 @@ a:hover {
   position: absolute;
   inset: 1px;
   border: 1px dashed rgba(255, 244, 214, 0.95);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.graph-legend .legend-swatch.merged-pr {
+  border: 1px solid rgba(214, 255, 244, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(46, 160, 143, 0.18);
+}
+
+.graph-legend .legend-swatch.merged-pr::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 1px solid rgba(214, 255, 244, 0.95);
   border-radius: 1px;
   pointer-events: none;
 }
