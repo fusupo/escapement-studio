@@ -1083,6 +1083,7 @@
   .status-sep {
     color: #3b4559;
     margin: 0 2px;
+    user-select: none;
   }
 
   /* ── Pane header (panel title bars) ── */
