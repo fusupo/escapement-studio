@@ -15,11 +15,14 @@
     createWorkItem,
     deleteEdge,
     getExecutionEligibility,
+    getFrontier,
     getGitHubIssueDetails,
     getGraph,
     getHealth,
     getPlan,
+    getReconciliationReports,
     launchExecutionRun,
+    listExecutionRuns,
     listWorkItems,
     preparePlan,
     syncMergedPullRequest,
@@ -45,6 +48,13 @@
   let launchEligibilityLoadingIds = {};
   let launchEligibilityRequestTokenById = {};
   let graphContextMenu = { open: false, x: 0, y: 0, item: null };
+
+  // Status bar data — frontier, execution runs, reconciliation reports
+  let frontierIds = [];
+  let executionRuns = [];
+  let reconciliationReports = [];
+  let lastExecutionFetchTab = null;
+  let lastReconciliationFetchTab = null;
 
   // ADR 014 step 8 — plan state + plan review modal
   let preparingPlan = false;
@@ -133,6 +143,55 @@
   };
 
   $: activeFilterCount = Object.values(filters).filter(Boolean).length;
+
+  // Status bar derived stats
+  $: frontierCount = frontierIds.length;
+  $: blockedCount = (() => {
+    const frontierSet = new Set(frontierIds);
+    return graph.items.filter((item) => item.state === "planned" && !frontierSet.has(item.id)).length;
+  })();
+
+  $: activeRunCount = executionRuns.filter(
+    (r) => ["queued", "preparing", "running", "disambiguating"].includes(r.status)
+  ).length;
+  $: completedTodayCount = (() => {
+    const todayPrefix = new Date().toISOString().slice(0, 10);
+    return executionRuns.filter(
+      (r) => r.status === "completed" && r.completed_at?.startsWith(todayPrefix)
+    ).length;
+  })();
+  $: successRate = (() => {
+    const completed = executionRuns.filter((r) => r.status === "completed").length;
+    const errored = executionRuns.filter((r) => r.status === "error").length;
+    const total = completed + errored;
+    return total > 0 ? Math.round((completed / total) * 100) : null;
+  })();
+
+  $: readyToMergeCount = Array.isArray(reconciliationReports)
+    ? reconciliationReports.filter((r) => {
+        const stats = r.stats || {};
+        return stats.missed_count === 0 && stats.unpredicted_count === 0;
+      }).length
+    : 0;
+  $: conflictsCount = Array.isArray(reconciliationReports)
+    ? reconciliationReports.filter((r) => (r.stats?.missed_count ?? 0) > 0 || (r.stats?.unpredicted_count ?? 0) > 0).length
+    : 0;
+  $: staleCount = Array.isArray(reconciliationReports)
+    ? reconciliationReports.filter((r) => (r.drift_patterns?.length ?? 0) > 0).length
+    : 0;
+
+  // Fetch tab-specific data when tab changes
+  $: if (activeTab === "planning") {
+    void loadFrontier();
+  }
+  $: if (activeTab === "execute" && lastExecutionFetchTab !== "execute") {
+    lastExecutionFetchTab = "execute";
+    void loadExecutionStats();
+  }
+  $: if (activeTab === "reconciliation" && lastReconciliationFetchTab !== "reconciliation") {
+    lastReconciliationFetchTab = "reconciliation";
+    void loadReconciliationStats();
+  }
   $: if (selectedItem?.id) {
     void ensureLaunchEligibility(selectedItem.id);
   }
@@ -256,8 +315,37 @@
     }
   }
 
+  async function loadFrontier() {
+    try {
+      const repo = filters.repo || undefined;
+      const frontier = await getFrontier(repo ? { repo } : {});
+      frontierIds = Array.isArray(frontier) ? frontier.map((item) => item.id) : [];
+    } catch {
+      frontierIds = [];
+    }
+  }
+
+  async function loadExecutionStats() {
+    try {
+      executionRuns = await listExecutionRuns();
+    } catch {
+      executionRuns = [];
+    }
+  }
+
+  async function loadReconciliationStats() {
+    try {
+      reconciliationReports = await getReconciliationReports();
+    } catch {
+      reconciliationReports = [];
+    }
+  }
+
   async function refresh() {
     await loadGraph();
+    if (activeTab === "planning") void loadFrontier();
+    if (activeTab === "execute") void loadExecutionStats();
+    if (activeTab === "reconciliation") void loadReconciliationStats();
   }
 
   function mergeReconciledWorkItems(workItems = []) {
@@ -673,6 +761,7 @@
                   {selectedId}
                   onSelect={handleGraphSelect}
                   onContextMenu={handleGraphContextMenu}
+                  externalFrontierIds={frontierIds}
                 />
               {/if}
             </div>
@@ -816,11 +905,32 @@
         {#if activeTab === "planning"}
           <span class="status-sep">|</span>
           <span class="status-text">{graph.items.length} items</span>
+          <span class="status-sep">·</span>
           <span class="status-text">{graph.edges.length} edges</span>
+          <span class="status-sep">·</span>
+          <span class="status-text">{frontierCount} frontier</span>
+          <span class="status-sep">·</span>
+          <span class="status-text">{blockedCount} blocked</span>
           {#if activeFilterCount > 0}
             <span class="status-sep">|</span>
             <span class="status-text">{activeFilterCount} filter{activeFilterCount > 1 ? "s" : ""} active</span>
           {/if}
+        {:else if activeTab === "execute"}
+          <span class="status-sep">|</span>
+          <span class="status-text">{activeRunCount} active run{activeRunCount !== 1 ? "s" : ""}</span>
+          <span class="status-sep">·</span>
+          <span class="status-text">{completedTodayCount} completed today</span>
+          {#if successRate !== null}
+            <span class="status-sep">·</span>
+            <span class="status-text">{successRate}% success rate</span>
+          {/if}
+        {:else if activeTab === "reconciliation"}
+          <span class="status-sep">|</span>
+          <span class="status-text">{readyToMergeCount} ready to merge</span>
+          <span class="status-sep">·</span>
+          <span class="status-text">{conflictsCount} conflict{conflictsCount !== 1 ? "s" : ""}</span>
+          <span class="status-sep">·</span>
+          <span class="status-text">{staleCount} stale</span>
         {/if}
       </div>
       <div class="status-bar-right">
@@ -973,6 +1083,7 @@
   .status-sep {
     color: #3b4559;
     margin: 0 2px;
+    user-select: none;
   }
 
   /* ── Pane header (panel title bars) ── */
