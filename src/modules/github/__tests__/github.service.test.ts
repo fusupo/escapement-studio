@@ -130,6 +130,7 @@ describe("GitHubService reconciliation", () => {
     const result = await service.readPullRequest("fusupo/escapement-studio", 70);
 
     expect(update).toHaveBeenCalledWith("studio-91", {
+      state: "merged_pr",
       meta: expect.objectContaining({
         pull_request: expect.objectContaining({
           number: 70,
@@ -142,7 +143,131 @@ describe("GitHubService reconciliation", () => {
     expect(result.reconciliation).toEqual({
       updated_work_item_ids: ["studio-91"],
       updated_run_ids: ["exec_123"],
-      work_items: [expect.objectContaining({ id: "studio-91" })],
+      work_items: [expect.objectContaining({ id: "studio-91", state: "merged_pr" })],
+    });
+  });
+
+  describe("merged PR state advancement", () => {
+    function openPrWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
+      return makeWorkItem({
+        state: "open_pr",
+        meta: {
+          pull_request: {
+            number: 70,
+            url: "https://github.com/fusupo/escapement-studio/pull/70",
+            title: "Refresh cached GitHub truth",
+            is_draft: false,
+            head_ref: "studio-91-branch",
+            base_ref: "develop",
+            state: "OPEN",
+            merged_at: null,
+          },
+        },
+        ...overrides,
+      });
+    }
+
+    function buildService(workItem: WorkItemRecord) {
+      const update = vi.fn((id: string, patch: Partial<WorkItemRecord>) => {
+        expect(id).toBe(workItem.id);
+        return applyPatch(workItem, patch);
+      });
+      const service = new GitHubService({ getDb: () => ({}) } as any, {
+        listByRepoPullRequestNumber: vi.fn(() => []),
+        listByRepoBranch: vi.fn(() => [workItem]),
+        update,
+      } as any);
+      service.registerPullRequestTruthRefresher(() => ({ updated_run_ids: [] }));
+      return { service, update };
+    }
+
+    function mockMergedPr(service: GitHubService, mergedAt: string | null) {
+      (service as any).runGhJson = vi.fn().mockResolvedValue({
+        number: 70,
+        url: "https://github.com/fusupo/escapement-studio/pull/70",
+        title: "Refresh cached GitHub truth",
+        body: "PR body",
+        state: mergedAt ? "MERGED" : "OPEN",
+        isDraft: false,
+        baseRefName: "develop",
+        headRefName: "studio-91-branch",
+        mergedAt,
+        mergeCommit: mergedAt ? { oid: "abc123" } : null,
+      });
+    }
+
+    it("advances open_pr to merged_pr when the fetched PR is merged", async () => {
+      const workItem = openPrWorkItem();
+      const { service, update } = buildService(workItem);
+      mockMergedPr(service, "2026-04-09T00:00:00Z");
+
+      const result = await service.readPullRequest("fusupo/escapement-studio", 70);
+
+      expect(update).toHaveBeenCalledTimes(1);
+      const patch = update.mock.calls[0]![1] as Partial<WorkItemRecord>;
+      expect(patch.state).toBe("merged_pr");
+      expect(result.reconciliation?.updated_work_item_ids).toEqual(["studio-91"]);
+      expect(result.reconciliation?.work_items).toHaveLength(1);
+      expect(result.reconciliation?.work_items[0]?.state).toBe("merged_pr");
+    });
+
+    it("leaves already merged_pr work items stable (idempotent)", async () => {
+      const workItem = openPrWorkItem({
+        state: "merged_pr",
+        meta: {
+          pull_request: {
+            number: 70,
+            url: "https://github.com/fusupo/escapement-studio/pull/70",
+            title: "Refresh cached GitHub truth",
+            is_draft: false,
+            head_ref: "studio-91-branch",
+            base_ref: "develop",
+            state: "MERGED",
+            merged_at: "2026-04-09T00:00:00Z",
+            merge_commit_sha: "abc123",
+          },
+        },
+      });
+      const { service, update } = buildService(workItem);
+      mockMergedPr(service, "2026-04-09T00:00:00Z");
+
+      const result = await service.readPullRequest("fusupo/escapement-studio", 70);
+
+      // Nothing changed — neither state nor PR meta — so update is not called.
+      expect(update).not.toHaveBeenCalled();
+      expect(result.reconciliation?.updated_work_item_ids).toEqual([]);
+      expect(result.reconciliation?.work_items[0]?.state).toBe("merged_pr");
+    });
+
+    it("does not rewrite work items in unrelated states to merged_pr", async () => {
+      const workItem = openPrWorkItem({ state: "in_progress" });
+      const { service, update } = buildService(workItem);
+      mockMergedPr(service, "2026-04-09T00:00:00Z");
+
+      const result = await service.readPullRequest("fusupo/escapement-studio", 70);
+
+      // PR meta still refreshes, but state must NOT be touched.
+      expect(update).toHaveBeenCalledTimes(1);
+      const patch = update.mock.calls[0]![1] as Partial<WorkItemRecord>;
+      expect(patch.state).toBeUndefined();
+      expect(patch.meta).toBeDefined();
+      expect(result.reconciliation?.work_items[0]?.state).toBe("in_progress");
+    });
+
+    it("does not change work item state when the fetched PR is not merged", async () => {
+      const workItem = openPrWorkItem();
+      const { service, update } = buildService(workItem);
+      mockMergedPr(service, null);
+
+      const result = await service.readPullRequest("fusupo/escapement-studio", 70);
+
+      // PR meta may refresh (state OPEN vs stored OPEN is already same so no change)
+      // but even if it did, no state field should be included in the patch.
+      if (update.mock.calls.length > 0) {
+        const patch = update.mock.calls[0]![1] as Partial<WorkItemRecord>;
+        expect(patch.state).toBeUndefined();
+      }
+      expect(result.reconciliation?.work_items[0]?.state).toBe("open_pr");
     });
   });
 });
