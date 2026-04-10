@@ -67,16 +67,52 @@ export class PlanDrafterService {
     }
 
     let assistantText: string;
+    let sessionMessagesSnapshot: unknown[] = [];
     try {
       await session.prompt(prompt);
       assistantText = session.getLastAssistantText()?.trim() ?? "";
+      // Snapshot messages BEFORE dispose() so the empty-text diagnostic below
+      // can reach into the session's history without touching a disposed session.
+      // Guarded: not all session implementations (e.g. test mocks) expose `messages`.
+      const rawMessages = (session as unknown as { messages?: unknown[] }).messages;
+      sessionMessagesSnapshot = Array.isArray(rawMessages) ? [...rawMessages] : [];
     } finally {
       session.dispose();
     }
 
     if (!assistantText) {
+      // Diagnostic: inspect the actual last assistant message so we know WHY
+      // the text is empty. Common causes: stopReason="error" (API/rate limit),
+      // stopReason="aborted" with no content, final turn was all tool_use
+      // blocks, or the model returned literally empty text.
+      const lastAssistant = [...sessionMessagesSnapshot].reverse().find(
+        (m) => (m as { role?: string }).role === "assistant",
+      ) as
+        | {
+            stopReason?: string;
+            errorMessage?: string;
+            content?: Array<{ type: string; text?: string; name?: string }>;
+          }
+        | undefined;
+      const diag = lastAssistant
+        ? {
+            stopReason: lastAssistant.stopReason,
+            errorMessage: lastAssistant.errorMessage,
+            contentTypes: (lastAssistant.content ?? []).map((c) =>
+              c.type === "text"
+                ? `text(${c.text?.length ?? 0})`
+                : c.type === "tool_use"
+                  ? `tool_use(${c.name ?? "?"})`
+                  : c.type,
+            ),
+            assistantTurnCount: sessionMessagesSnapshot.filter(
+              (m) => (m as { role?: string }).role === "assistant",
+            ).length,
+          }
+        : { note: "no assistant message in session" };
       throw new Error(
-        `PlanDrafterService.draft: agent session for ${workItem.id} returned an empty assistant message`,
+        `PlanDrafterService.draft: agent session for ${workItem.id} returned an empty assistant message. ` +
+          `Diagnostic: ${JSON.stringify(diag)}`,
       );
     }
 
