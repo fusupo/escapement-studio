@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -45,8 +45,8 @@ export class PlansService {
   private readonly artifactRoot = resolve(getConfig().artifactRoot);
 
   constructor(
-    private readonly workItemsService: WorkItemsService,
-    private readonly templateService: StudioIssueTemplateService,
+    @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
+    @Inject(StudioIssueTemplateService) private readonly templateService: StudioIssueTemplateService,
   ) {}
 
   /* ── Public API ────────────────────────────────────────────────────────── */

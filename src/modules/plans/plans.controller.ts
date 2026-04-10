@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Param, Post } from "@nestjs/common";
 import { PlansService } from "./plans.service.js";
 import type { ApprovePlanDto, PlanResponse, ReopenPlanDto } from "./types.js";
 
@@ -9,7 +9,7 @@ import type { ApprovePlanDto, PlanResponse, ReopenPlanDto } from "./types.js";
  */
 @Controller("api/plans")
 export class PlansController {
-  constructor(private readonly plansService: PlansService) {}
+  constructor(@Inject(PlansService) private readonly plansService: PlansService) {}
 
   @Post(":work_item_id/prepare")
   prepare(@Param("work_item_id") workItemId: string): PlanResponse {
