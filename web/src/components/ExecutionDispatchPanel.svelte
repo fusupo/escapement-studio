@@ -6,6 +6,7 @@
     getRunScratchpad,
     launchExecutionRun,
     listExecutionRuns,
+    listReconciledWorkItems,
     openPullRequest,
     resolveDisambiguation,
     sendFollowUpMessage,
@@ -17,6 +18,12 @@
 
   let preview = null;
   let runs = [];
+  /**
+   * studio-176: map of work_item_id → ReconciledWorkItem (from
+   * /api/work-items/reconciled). Used to decorate run cards with a
+   * reconciled badge so post-restart cases surface prominently.
+   */
+  let reconciledByWorkItem = {};
   let loading = true;
   let refreshing = false;
   let connected = false;
@@ -124,9 +131,23 @@
     if (quiet) { refreshing = true; } else { loading = true; }
     error = "";
     try {
-      const [nextPreview, nextRuns] = await Promise.all([getExecutionPreview(), listExecutionRuns()]);
+      const [nextPreview, nextRuns, nextReconciled] = await Promise.all([
+        getExecutionPreview(),
+        listExecutionRuns(),
+        // Reconciled view is best-effort — a failure here should not take
+        // down the whole dispatch panel, so we fall back to an empty list.
+        listReconciledWorkItems().catch((err) => {
+          console.debug("listReconciledWorkItems failed", err);
+          return [];
+        }),
+      ]);
       preview = nextPreview;
       runs = nextRuns;
+      const nextMap = {};
+      for (const entry of nextReconciled || []) {
+        if (entry?.work_item_id) nextMap[entry.work_item_id] = entry;
+      }
+      reconciledByWorkItem = nextMap;
       for (const run of nextRuns) {
         if (["queued", "preparing", "running", "completed", "disambiguating"].includes(run.status) && !checklistData[run.run_id]) {
           loadChecklist(run.run_id);
@@ -433,14 +454,20 @@
         {#if runs.length > 0}
           <div class="run-pill-strip">
             {#each runs as run}
+              {@const reconciled = reconciledByWorkItem[run.work_item_id]}
+              {@const nextAction = reconciled?.next_action}
+              {@const showReconciledBadge = nextAction && ["open_pr", "relaunch", "investigate"].includes(nextAction)}
               <button
                 class="run-pill"
                 class:active={selectedRunId === run.run_id && activeSelection === "run"}
                 on:click={() => selectRun(run.run_id)}
-                title="{run.work_item_id} — {run.status}"
+                title={reconciled?.rationale || `${run.work_item_id} — ${run.status}`}
               >
                 <span class="run-pill-dot {runStatusTone(run.status)}"></span>
                 <span class="run-pill-label">{run.work_item_id}</span>
+                {#if showReconciledBadge}
+                  <span class="run-pill-next-action" data-next-action={nextAction}>{nextAction.replace("_", " ")}</span>
+                {/if}
               </button>
             {/each}
           </div>
@@ -724,6 +751,31 @@
   .run-pill-label {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* studio-176: reconciled next-action badge on the run pill */
+  .run-pill-next-action {
+    display: inline-flex;
+    padding: 0 5px;
+    border-radius: 2px;
+    background: rgba(37, 99, 235, 0.2);
+    color: #bfdbfe;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .run-pill-next-action[data-next-action="open_pr"] {
+    background: rgba(63, 185, 80, 0.2);
+    color: #86efac;
+  }
+  .run-pill-next-action[data-next-action="investigate"] {
+    background: rgba(248, 81, 73, 0.2);
+    color: #fca5a5;
+  }
+  .run-pill-next-action[data-next-action="relaunch"] {
+    background: rgba(210, 153, 34, 0.2);
+    color: #facc15;
   }
 
   /* Workspace top (header + expandable sections, scrollable if tall) */

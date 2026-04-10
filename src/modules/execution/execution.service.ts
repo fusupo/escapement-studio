@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger, MessageEvent } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, MessageEvent, OnModuleInit } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -19,6 +19,8 @@ import {
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
+import { loadRunRecordsFromDisk } from "./run-disk-store.js";
+import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
@@ -54,7 +56,7 @@ import type {
 } from "./types.js";
 
 @Injectable()
-export class ExecutionService {
+export class ExecutionService implements OnModuleInit {
   private readonly logger = new Logger(ExecutionService.name);
   private readonly streamId = "execution-runs";
   private readonly eventSubject = new Subject<MessageEvent>();
@@ -77,8 +79,63 @@ export class ExecutionService {
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
+    @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
   ) {
     this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
+  }
+
+  /**
+   * Issue #176: at startup, rewrite any runs left in a non-terminal
+   * status to `error` (orphaned by server restart), rehydrate
+   * `recentRuns` from disk so completed runs survive a restart, and
+   * run an initial reconcile pass to populate the derived view.
+   *
+   * This is a read-only-ish pass: the only disk mutation is the orphan
+   * rewrite, which happens before the in-memory buffer is populated.
+   * Any IO errors are logged and swallowed so a broken status file can
+   * never prevent the server from booting.
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.workItemReconciler.runStartupReconcile();
+    } catch (error) {
+      this.logger.warn(
+        `Startup reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    try {
+      this.hydrateRecentRunsFromDisk();
+    } catch (error) {
+      this.logger.warn(
+        `Failed to hydrate recentRuns from disk: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Issue #176: populate `recentRuns` from `runs/<id>/status.json` on
+   * disk, keeping the most recent `recentRunLimit` entries ordered by
+   * `updated_at` descending. Existing in-memory entries are preserved
+   * and deduplicated by `run_id` so a second call during tests is a
+   * no-op for runs already tracked.
+   *
+   * Exposed as a method (not a bare field initializer) so tests can
+   * exercise the rehydration path independently of `onModuleInit`.
+   */
+  hydrateRecentRunsFromDisk(): void {
+    const runsDir = join(this.artifactRoot, "runs");
+    const loaded = loadRunRecordsFromDisk(runsDir);
+    const existingIds = new Set(this.recentRuns.map((run) => run.run_id));
+    for (const run of loaded) {
+      if (existingIds.has(run.run_id)) continue;
+      this.recentRuns.push(run);
+      existingIds.add(run.run_id);
+    }
+    this.recentRuns.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    if (this.recentRuns.length > this.recentRunLimit) {
+      this.recentRuns.splice(this.recentRunLimit);
+    }
   }
 
   stream(): Observable<MessageEvent> {
