@@ -93,6 +93,16 @@
     return `${provider}::${id}`;
   }
 
+  // Build the visible label for an <option> in the grouped model <select>.
+  // Appends '(no auth)' for unavailable models and '— current' for the
+  // active selection so the dropdown clearly identifies the live value.
+  function modelLabel(m, activeKey) {
+    const parts = [m.name];
+    if (!m.available) parts.push("(no auth)");
+    if (modelKey(m.provider, m.id) === activeKey) parts.push("\u2014 current");
+    return parts.join(" ");
+  }
+
   function syncEditState() {
     if (!settings) return;
     editRepos = Object.entries(settings.repos ?? {})
@@ -268,7 +278,7 @@
               <optgroup label={provider}>
                 {#each models as m}
                   <option value={modelKey(m.provider, m.id)}>
-                    {m.name}{m.available ? "" : " (no auth)"}
+                    {modelLabel(m, selectedModelKey)}
                   </option>
                 {/each}
               </optgroup>
