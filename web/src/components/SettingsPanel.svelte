@@ -29,24 +29,37 @@
   async function load() {
     loading = true;
     error = "";
+    modelsLoadError = "";
+    // Load settings and models in parallel so that `availableModels` is populated
+    // by the time we assign `selectedModelKey` via syncEditState(). Previously the
+    // sequential chain (settings → syncEditState → loadModels) set selectedModelKey
+    // before the grouped <option> list existed, so the <select> visually fell back
+    // to '— Use default —' even when a model was saved.
     try {
-      settings = await getSettings();
-      syncEditState();
-      await loadModels();
-    } catch (loadError) {
-      error = loadError.message;
+      const [settingsResult, modelsResult] = await Promise.allSettled([
+        getSettings(),
+        getAvailableModels(),
+      ]);
+
+      if (settingsResult.status === "fulfilled") {
+        settings = settingsResult.value;
+      } else {
+        error = settingsResult.reason?.message ?? String(settingsResult.reason);
+      }
+
+      if (modelsResult.status === "fulfilled") {
+        availableModels = modelsResult.value;
+      } else {
+        modelsLoadError =
+          modelsResult.reason?.message ?? String(modelsResult.reason);
+        availableModels = [];
+      }
+
+      // Sync edit state only after both fetches resolve so the <select>'s bound
+      // value is applied once the <option> children are ready to render.
+      if (settings) syncEditState();
     } finally {
       loading = false;
-    }
-  }
-
-  async function loadModels() {
-    modelsLoadError = "";
-    try {
-      availableModels = await getAvailableModels();
-    } catch (err) {
-      modelsLoadError = err.message;
-      availableModels = [];
     }
   }
 
@@ -91,16 +104,26 @@
       : "";
   }
 
-  function onModelChange(event) {
-    const value = event.target.value;
-    selectedModelKey = value;
-    if (!value) {
+  // Mirror `selectedModelKey` (driven by `bind:value` on the <select>) back into
+  // `editConfig.selectedModel` so dirty-detection and persistence keep working.
+  // Idempotent: no-op if editConfig already matches the key.
+  function applyModelSelection(key) {
+    const current = editConfig?.selectedModel
+      ? modelKey(
+          editConfig.selectedModel.provider,
+          editConfig.selectedModel.modelId,
+        )
+      : "";
+    if (current === key) return;
+    if (!key) {
       editConfig = { ...editConfig, selectedModel: null };
       return;
     }
-    const [provider, modelId] = value.split("::");
+    const [provider, modelId] = key.split("::");
     editConfig = { ...editConfig, selectedModel: { provider, modelId } };
   }
+
+  $: if (settings) applyModelSelection(selectedModelKey);
 
   async function save() {
     saving = true;
@@ -237,7 +260,7 @@
         </div>
         <label>
           Model
-          <select value={selectedModelKey} on:change={onModelChange} disabled={availableModels.length === 0}>
+          <select bind:value={selectedModelKey} disabled={availableModels.length === 0}>
             <option value="">— Use default —</option>
             {#each modelsByProvider as [provider, models]}
               <optgroup label={provider}>
