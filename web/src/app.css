@@ -241,8 +241,7 @@ a:hover {
   min-height: 0;
   border-radius: var(--radius-md);
   background: rgba(13, 17, 23, 0.9);
-  --graph-frontier-stripe-color: rgba(240, 246, 252, 0.24);
-  --graph-frontier-glow: rgba(240, 246, 252, 0.16);
+  --graph-blocked-planned-stripe-color: rgba(240, 246, 252, 0.24);
   --graph-in-progress-outline: rgba(255, 244, 214, 0.92);
   --graph-in-progress-shadow: rgba(210, 153, 34, 0.22);
   --graph-merged-pr-outline: rgba(230, 255, 248, 0.98);
@@ -281,8 +280,8 @@ a:hover {
 
 /* merged_pr styling uses a double-outline 'stamp' treatment (bold outer
    inset stroke + thinner inner inset stroke) so the 'landed' signal is
-   obvious at normal zoom independent of hue, and composes with frontier
-   stripes + the bottom-anchored ✓PR badge. */
+   obvious at normal zoom independent of hue, and composes with the
+   bottom-anchored ✓PR badge. */
 .graph-canvas .node.graph-node--merged-pr,
 .graph-canvas .node[data-state="merged_pr"] {
   filter: drop-shadow(0 0 0.32rem var(--graph-merged-pr-shadow));
@@ -332,50 +331,32 @@ a:hover {
   opacity: 0.95;
 }
 
-.graph-canvas .node.graph-node--frontier.graph-node--merged-pr,
-.graph-canvas .node.graph-node--frontier[data-state="merged_pr"],
-.graph-canvas .node[data-frontier="true"][data-state="merged_pr"] {
-  filter: drop-shadow(0 0 0.3rem var(--graph-frontier-glow)) drop-shadow(0 0 0.2rem var(--graph-merged-pr-shadow));
-}
-
-/* Frontier styling uses an interior overlay so it composes with the graph
-   renderer's existing state fill plus hover/selection stroke affordances. */
-.graph-canvas .node.graph-node--frontier,
-.graph-canvas .node.frontier,
-.graph-canvas .node[data-frontier="true"] {
-  filter: drop-shadow(0 0 0.35rem var(--graph-frontier-glow));
-}
-
-.graph-canvas .node.graph-node--frontier.graph-node--in-progress,
-.graph-canvas .node.graph-node--frontier[data-state="in_progress"],
-.graph-canvas .node[data-frontier="true"][data-state="in_progress"] {
-  filter: drop-shadow(0 0 0.3rem var(--graph-frontier-glow)) drop-shadow(0 0 0.18rem var(--graph-in-progress-shadow));
-}
-
-.graph-canvas .node.graph-node--frontier rect,
-.graph-canvas .node.frontier rect,
-.graph-canvas .node[data-frontier="true"] rect {
+/* Blocked-planned styling uses an interior diagonal stripe overlay to
+   signal 'planned but not yet executable' (i.e. planned items that are
+   not in the frontier set). Stripes decouple from frontier membership so
+   the visual weight reads as 'blocked / waiting on dependencies' rather
+   than 'ready to dispatch'. Frontier membership is still tracked via the
+   data-frontier attribute for tooltips and downstream consumers. */
+.graph-canvas .node.graph-node--blocked-planned rect,
+.graph-canvas .node[data-blocked-planned="true"] rect {
   shape-rendering: geometricPrecision;
 }
 
-.graph-canvas .node.graph-node--frontier .frontier-overlay,
-.graph-canvas .node.frontier .frontier-overlay,
-.graph-canvas .node[data-frontier="true"] .frontier-overlay {
-  fill: url("#graph-frontier-diagonal-stripes");
+.graph-canvas .node.graph-node--blocked-planned .blocked-planned-overlay,
+.graph-canvas .node[data-blocked-planned="true"] .blocked-planned-overlay {
+  fill: url("#graph-blocked-planned-diagonal-stripes");
   stroke: none;
   opacity: 0.34;
   pointer-events: none;
 }
 
-.graph-canvas .node.graph-node--frontier.selected .frontier-overlay,
-.graph-canvas .node.frontier.selected .frontier-overlay,
-.graph-canvas .node[data-frontier="true"].selected .frontier-overlay {
+.graph-canvas .node.graph-node--blocked-planned.selected .blocked-planned-overlay,
+.graph-canvas .node[data-blocked-planned="true"].selected .blocked-planned-overlay {
   opacity: 0.26;
 }
 
-.graph-canvas .node.graph-node--frontier:hover .frontier-overlay,
-.graph-canvas .node.frontier:hover .frontier-overlay,
-.graph-canvas .node[data-frontier="true"]:hover .frontier-overlay {
+.graph-canvas .node.graph-node--blocked-planned:hover .blocked-planned-overlay,
+.graph-canvas .node[data-blocked-planned="true"]:hover .blocked-planned-overlay {
   opacity: 0.4;
 }
 
@@ -417,12 +398,12 @@ a:hover {
   pointer-events: none;
 }
 
-.graph-legend .legend-swatch.frontier {
+.graph-legend .legend-swatch.blocked-planned {
   border: 1px solid rgba(240, 246, 252, 0.28);
   background-color: rgba(88, 166, 255, 0.24);
   background-image: repeating-linear-gradient(
     135deg,
-    var(--graph-frontier-stripe-color, rgba(240, 246, 252, 0.24)) 0 2px,
+    var(--graph-blocked-planned-stripe-color, rgba(240, 246, 252, 0.24)) 0 2px,
     transparent 2px 6px
   );
 }
