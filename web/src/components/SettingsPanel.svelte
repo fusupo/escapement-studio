@@ -243,18 +243,20 @@
           <div class="banner error inline-banner">Failed to load models: {modelsLoadError}</div>
         {/if}
         <div class="settings-row">
-          <span class="settings-label">Current</span>
+          <span class="settings-label">Active model</span>
           <span class="settings-value">
             {#if selectedModelInfo}
               <code>{selectedModelInfo.provider} / {selectedModelInfo.name}</code>
-              {#if !selectedModelInfo.available}
-                <span class="status-pill" style="margin-left: 0.5rem;">No auth configured</span>
+              {#if selectedModelInfo.available}
+                <span class="status-pill healthy" style="margin-left: 0.5rem;">Active</span>
+              {:else}
+                <span class="status-pill warn" style="margin-left: 0.5rem;">No auth configured</span>
               {/if}
             {:else if selectedModelMissing}
               <code>{editConfig.selectedModel?.provider} / {editConfig.selectedModel?.modelId}</code>
-              <span class="status-pill" style="margin-left: 0.5rem;">Not in registry</span>
+              <span class="status-pill warn" style="margin-left: 0.5rem;">Not in registry</span>
             {:else}
-              <em class="muted">Default (pi first-available)</em>
+              <span>Default &mdash; pi picks the first available model</span>
             {/if}
           </span>
         </div>
