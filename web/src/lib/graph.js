@@ -160,6 +160,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     const classes = ["graph-node"];
     if (node._isFrontier) classes.push("graph-node--frontier");
     if (node.state === "in_progress") classes.push("graph-node--in-progress");
+    if (node.state === "merged_pr") classes.push("graph-node--merged-pr");
 
     g.setNode(node.id, {
       label: node.id,
@@ -286,6 +287,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     nodeGroup
       .classed("selected", data.id === selectedId)
       .classed("graph-node--in-progress", data.state === "in_progress")
+      .classed("graph-node--merged-pr", data.state === "merged_pr")
       .attr("data-frontier", data._isFrontier ? "true" : "false")
       .attr("data-state", data.state ?? "unknown");
 
@@ -322,6 +324,18 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
           .attr("height", Math.max(0, height - progressInset * 2))
           .attr("rx", Math.max(0, rx - progressInset / 2))
           .attr("ry", Math.max(0, ry - progressInset / 2));
+      }
+
+      if (data.state === "merged_pr") {
+        const mergedInset = Math.min(2.5, width / 6, height / 6);
+        nodeGroup.insert("rect", "g.label")
+          .attr("class", "merged-pr-overlay")
+          .attr("x", x + mergedInset)
+          .attr("y", y + mergedInset)
+          .attr("width", Math.max(0, width - mergedInset * 2))
+          .attr("height", Math.max(0, height - mergedInset * 2))
+          .attr("rx", Math.max(0, rx - mergedInset / 2))
+          .attr("ry", Math.max(0, ry - mergedInset / 2));
       }
     }
 
