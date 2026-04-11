@@ -80,6 +80,13 @@ describe("state-machine allowlist", () => {
       db.close();
     });
 
+    it("accepts dotted compatibility forms that end in a canonical leaf state", () => {
+      const db = createMigratedDb();
+      expect(() => insertWorkItemWithState(db, "item-dotted", "pre_pr.in_progress")).not.toThrow();
+      expect(() => insertWorkItemWithState(db, "item-dotted-archived", "post_pr.archived")).not.toThrow();
+      db.close();
+    });
+
     it("rejects a state that is not in the canonical set", () => {
       const db = createMigratedDb();
       expect(() => insertWorkItemWithState(db, "item-bad", "totally_made_up")).toThrow();
@@ -90,6 +97,12 @@ describe("state-machine allowlist", () => {
       const db = createMigratedDb();
       // "blocked" was never a canonical state — it is a derived view per ADR 014
       expect(() => insertWorkItemWithState(db, "item-blocked", "blocked")).toThrow();
+      db.close();
+    });
+
+    it("rejects dotted compatibility forms whose leaf state is unknown", () => {
+      const db = createMigratedDb();
+      expect(() => insertWorkItemWithState(db, "item-bad-dotted", "pre_pr.blocked")).toThrow();
       db.close();
     });
   });
