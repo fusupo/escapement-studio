@@ -11,6 +11,13 @@
   export let validationPolicy = null;
   export let scratchpadContent = undefined;
   export let scratchpadLoading = false;
+  // studio-84: merged-PR disposition props. The parent computes
+  // `canDispose` from the reconciled feed (next_action === 'close_out')
+  // and sets `disposing` while a Close or Archive-and-close request is
+  // in flight so both buttons can be disabled together.
+  export let canDispose = false;
+  export let disposing = false;
+  export let dispositionError = "";
 
   const dispatch = createEventDispatcher();
 
@@ -84,6 +91,29 @@
         <p class="muted">Available after completion.</p>
       {/if}
     </div>
+
+    <!-- studio-84: merged-PR disposition actions. Only rendered when the
+         parent says the run is ready (reconciled next_action === 'close_out'). -->
+    {#if canDispose}
+      <div class="detail-card">
+        <div class="detail-card-hdr">
+          <h3>DISPOSITION</h3>
+          <span class="status-pill healthy">ready to close</span>
+        </div>
+        <p class="muted">PR is merged. Close the run to mark the work item done, or archive the plan directory at the same time.</p>
+        <div class="detail-actions">
+          <button class="secondary small" on:click={() => dispatch("closeRun")} disabled={disposing}>
+            {disposing ? "Closing..." : "Close"}
+          </button>
+          <button on:click={() => dispatch("archiveAndCloseRun")} disabled={disposing}>
+            {disposing ? "Working..." : "Archive and close"}
+          </button>
+        </div>
+        {#if dispositionError}
+          <p class="muted disposition-hint">{dispositionError}</p>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Scratchpad -->
     <div class="detail-card">
@@ -299,6 +329,14 @@
   .scratchpad-rendered :global(ol) { padding-left: 16px; }
 
   .scratchpad-rendered :global(code) { overflow-wrap: anywhere; }
+
+  /* studio-84: inline hint shown under the disposition buttons when the
+     backend blocks the call (e.g. cannot_dispose_work_item_active_run). */
+  .disposition-hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--yellow, #d29922);
+  }
 
   .detail-empty {
     padding: 16px 8px;
