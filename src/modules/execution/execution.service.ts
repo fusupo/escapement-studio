@@ -813,6 +813,73 @@ export class ExecutionService implements OnModuleInit {
           "Approved plan loaded from canonical — skipping setup phase.",
         );
         this.appendEvent(run, { type: "setup_phase_skipped" });
+
+        // studio-170: if the approved scratchpad still has open
+        // clarifications or blockers, trigger the existing
+        // disambiguation gate before entering the coding phase so the
+        // user can review and resolve them. Honors the `disambiguate`
+        // opt-out flag the same way `shouldRunSetupPhase` does.
+        if (disambiguate) {
+          let openItems: { questions: string[]; blockers: string[] } = {
+            questions: [],
+            blockers: [],
+          };
+          try {
+            const scratchpadContent = readFileSync(scratchpadPath, "utf8");
+            openItems = this.parseScratchpadOpenItems(scratchpadContent);
+          } catch (error) {
+            this.logger.warn(
+              `executeRun: failed to read approved scratchpad at ${scratchpadPath} ` +
+                `for disambiguation parse: ${this.getErrorMessage(error)}`,
+            );
+          }
+
+          const totalOpen = openItems.questions.length + openItems.blockers.length;
+          if (totalOpen > 0) {
+            const qLabel = `${openItems.questions.length} clarification${openItems.questions.length === 1 ? "" : "s"}`;
+            const bLabel = `${openItems.blockers.length} blocker${openItems.blockers.length === 1 ? "" : "s"}`;
+            const progressSummary = `${qLabel} and ${bLabel} open in approved plan — awaiting review.`;
+
+            this.pushActivity(
+              runId,
+              "info",
+              `Approved plan has open items (${qLabel}, ${bLabel}) — pausing for user review before coding.`,
+            );
+            this.appendEvent(run, { type: "setup_phase_started" });
+
+            run = this.updateRun(runId, {
+              status: "disambiguating",
+              progress_message: progressSummary,
+            })!;
+            this.appendEvent(run, { type: "setup_phase_complete" });
+            this.emitRun("execution_status", run);
+
+            // Block until the user resolves via
+            // POST /api/execution/resolve-disambiguation.
+            const additionalContext = await new Promise<string | undefined>((resolve) => {
+              this.disambiguationGates.set(runId, { resolve });
+            });
+            this.appendEvent(run, { type: "setup_approved" });
+
+            if (additionalContext) {
+              // The session has no prior orientation in the
+              // approved-plan codepath, so include a minimal prompt
+              // with the scratchpad filename and work item id.
+              await session.prompt(
+                `The approved plan for ${run.work_item_id} (${run.work_item_name}) had open items that the user just resolved with this additional context:\n\n${additionalContext}\n\nRead ${scratchpadName} in the current worktree, update the "### Clarifications Needed" and "## Blockers" sections to reflect the resolution, and make any other edits implied by the user's feedback. Then confirm you're ready to start coding.`,
+              );
+              this.syncScratchpadToCanonical(run);
+              this.emitChecklistIfChanged(run);
+            }
+
+            run = this.updateRun(runId, {
+              status: "running",
+              progress_message: "Plan approved — coding phase started.",
+            })!;
+            this.pushActivity(runId, "status_change", "Plan approved. Coding phase started.");
+            this.emitRun("execution_status", run);
+          }
+        }
       }
       if (shouldRunSetupPhase) {
         run = this.updateRun(runId, {
@@ -1622,6 +1689,60 @@ export class ExecutionService implements OnModuleInit {
           this.getErrorMessage(error),
       );
     }
+  }
+
+  /**
+   * Parse a scratchpad's `### Clarifications Needed` and `## Blockers`
+   * sections into string arrays of open items.
+   *
+   * Contract: matches the shape written by `PlansService.prepare`
+   * (plans.service.ts ~lines 383–415) — flat top-level `- ` bullets,
+   * or a single `_(none)_` sentinel when the drafter surfaced no items.
+   *
+   * Behavior:
+   *   - Scans line-by-line for the two headings.
+   *   - Collects lines starting with `- ` as bullet items until the next
+   *     `#`-prefixed heading line (any level — keeps the parser simple
+   *     and matches the flat structure the drafter emits).
+   *   - Filters out blank lines and the `_(none)_` sentinel so an empty
+   *     section reads as an empty array.
+   *   - Missing heading → empty array for that section.
+   *
+   * Used by `executeRun` when an approved plan is loaded to decide
+   * whether the disambiguation gate should fire before coding starts.
+   */
+  private parseScratchpadOpenItems(content: string): {
+    questions: string[];
+    blockers: string[];
+  } {
+    const lines = content.split(/\r?\n/);
+    const collect = (headingMatch: (line: string) => boolean): string[] => {
+      const items: string[] = [];
+      let i = 0;
+      while (i < lines.length) {
+        if (headingMatch(lines[i])) {
+          i += 1;
+          while (i < lines.length) {
+            const line = lines[i];
+            if (/^\s*#/.test(line)) break;
+            const trimmed = line.trim();
+            if (trimmed.startsWith("- ")) {
+              const body = trimmed.slice(2).trim();
+              if (body && body !== "_(none)_") {
+                items.push(body);
+              }
+            }
+            i += 1;
+          }
+          break;
+        }
+        i += 1;
+      }
+      return items;
+    };
+    const questions = collect((line) => /^\s*###\s+Clarifications Needed\s*$/.test(line));
+    const blockers = collect((line) => /^\s*##\s+Blockers\s*$/.test(line));
+    return { questions, blockers };
   }
 
   private syncScratchpadToCanonical(run: ExecutionRunRecord): void {
