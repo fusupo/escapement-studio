@@ -6,7 +6,7 @@ import { getConfig } from "../../config.js";
 import { runsRoot, worktreesRoot } from "../../lib/context-layout.js";
 import { GitHubService } from "../github/github.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
-import type { WorkItemRecord } from "../graph/types.js";
+import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import {
   detectAndMarkOrphans,
   loadRunRecordsFromDisk,
@@ -61,6 +61,21 @@ export interface ReconcilerOptions {
   work_item_id?: string;
 }
 
+/**
+ * Work item states that the reconciler surfaces rows for. Originally only
+ * `in_progress`, but ADR 014 split that into `in_progress → open_pr →
+ * merged_pr → done`, and the disposition UI needs `merged_pr` rows to be
+ * reconciled so `next_action === "close_out"` can fire. `open_pr` is
+ * included so rows waiting on review still appear in the feed with
+ * `next_action === "awaiting_review"`. `done` is excluded — those work
+ * items are finalized and have no further action.
+ */
+const RECONCILABLE_STATES: ReadonlySet<WorkItemState> = new Set([
+  "in_progress",
+  "open_pr",
+  "merged_pr",
+]);
+
 const EMPTY_NEXT_ACTION_COUNTS: Record<NextAction, number> = {
   open_pr: 0,
   awaiting_review: 0,
@@ -112,8 +127,9 @@ export class WorkItemReconcilerService {
 
   /**
    * Join graph + disk + GitHub + worktree and produce a
-   * `ReconciledWorkItem` per `in_progress` work item (or just the one
-   * matching `options.work_item_id`).
+   * `ReconciledWorkItem` per work item in a reconcilable state
+   * (`in_progress`, `open_pr`, `merged_pr`), or just the one matching
+   * `options.work_item_id`.
    *
    * The decision table row order is preserved: earlier rows win when
    * multiple conditions match (e.g. close_out beats awaiting_review when
@@ -226,12 +242,18 @@ export class WorkItemReconcilerService {
     if (options.work_item_id) {
       try {
         const single = this.workItemsService.get(options.work_item_id);
-        return single.state === "in_progress" ? [single] : [];
+        return RECONCILABLE_STATES.has(single.state) ? [single] : [];
       } catch {
         return [];
       }
     }
-    return this.workItemsService.list({ state: "in_progress" });
+    // SQL can't express "state IN (…)" through the current list() API, so
+    // fetch everything and filter in memory. Work-item counts are bounded
+    // (dozens to low hundreds), so the cost is negligible compared to the
+    // per-item `gh` probes that follow.
+    return this.workItemsService
+      .list({})
+      .filter((w) => RECONCILABLE_STATES.has(w.state));
   }
 
   private pickLatestRun(runs: ExecutionRunRecord[]): ExecutionRunRecord | null {

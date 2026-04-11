@@ -216,10 +216,76 @@ describe("WorkItemReconcilerService.reconcile", () => {
     return { service, diskStore, gitRunner, workItemsService, githubService };
   }
 
-  it("returns an empty array when no work items are in_progress", async () => {
+  it("returns an empty array when no work items are in a reconcilable state", async () => {
     const { service } = makeService({
       workItems: [makeWorkItem({ state: "planned" })],
       runs: [],
+    });
+    expect(await service.reconcile()).toEqual([]);
+  });
+
+  // Regression: ADR 014 split in_progress into in_progress → open_pr →
+  // merged_pr → done. Before this fix, selectWorkItems only picked
+  // in_progress, so a work item sitting at merged_pr (with a completed run
+  // and a merged PR) never produced a close_out row and the disposition UI
+  // stayed hidden. The reconciler must now include open_pr and merged_pr.
+  it("includes merged_pr work items and surfaces close_out rows", async () => {
+    const run = makeRun({
+      pull_request: {
+        number: 190,
+        url: "https://github.com/x/y/pull/190",
+        title: "t",
+        body: "b",
+        base_ref: "develop",
+        head_ref: "studio-176-branch",
+        is_draft: false,
+        created_at: "2026-04-10T00:00:00.000Z",
+        state: "MERGED",
+        merged_at: "2026-04-11T01:00:00.000Z",
+        merge_commit_sha: "deadbeef",
+      },
+    });
+    const { service } = makeService({
+      workItems: [makeWorkItem({ state: "merged_pr" })],
+      runs: [run],
+      worktreeExists: true,
+    });
+    const reconciled = await service.reconcile();
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].graph_state).toBe("merged_pr");
+    expect(reconciled[0].next_action).toBe("close_out");
+  });
+
+  it("includes open_pr work items and surfaces awaiting_review rows", async () => {
+    const run = makeRun({
+      pull_request: {
+        number: 191,
+        url: "https://github.com/x/y/pull/191",
+        title: "t",
+        body: "b",
+        base_ref: "develop",
+        head_ref: "studio-176-branch",
+        is_draft: false,
+        created_at: "2026-04-10T00:00:00.000Z",
+        state: "OPEN",
+        merged_at: null,
+      },
+    });
+    const { service } = makeService({
+      workItems: [makeWorkItem({ state: "open_pr" })],
+      runs: [run],
+      worktreeExists: true,
+    });
+    const reconciled = await service.reconcile();
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].graph_state).toBe("open_pr");
+    expect(reconciled[0].next_action).toBe("awaiting_review");
+  });
+
+  it("excludes done work items from the reconciled feed", async () => {
+    const { service } = makeService({
+      workItems: [makeWorkItem({ state: "done" })],
+      runs: [makeRun()],
     });
     expect(await service.reconcile()).toEqual([]);
   });
