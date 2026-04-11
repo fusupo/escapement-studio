@@ -98,6 +98,15 @@ export interface ExecutionRunRecord {
   updated_at: string;
   started_at?: string;
   completed_at?: string;
+  /**
+   * studio-87: ISO timestamp set when a run is disposed as part of a
+   * `merged_pr → done` close flow. Runs with a non-null `disposed_at`
+   * are filtered out of `ExecutionService.recentRuns` hydration and the
+   * recent-runs list in the UI, but the on-disk `runs/<id>/` dir is
+   * preserved so issue #89 (archived execution run history) can surface
+   * it later. Absent / null on all live runs.
+   */
+  disposed_at?: string | null;
   repo?: string | null;
   issue_url?: string | null;
   branch: string;
@@ -272,6 +281,49 @@ export interface TransitionWorkItemDto {
 }
 
 /**
+ * studio-87: summary of a GitHub issue closed as part of the merged-PR
+ * close flow. Populated when the work item is issue-backed (kind=issue,
+ * issue_number present) and `gh issue close` completed successfully.
+ */
+export interface ClosedGitHubIssueSummary {
+  repo: string;
+  number: number;
+  url: string;
+  title: string;
+  state: string;
+}
+
+/**
+ * studio-87: result envelope for `POST /api/execution/close-merged`.
+ *
+ * The endpoint now owns the full orchestration (close GitHub issue →
+ * transition work item → dispose matching recent runs) so the caller
+ * can reflect the combined outcome in one round trip.
+ *
+ * Fields:
+ * - `work_item` — the updated work item record (state=done).
+ * - `closed_issue` — the closed GitHub issue details, or null when the
+ *   work item is not issue-backed or the issue was already closed.
+ * - `removed_run_ids` — ids of runs spliced out of recentRuns and
+ *   marked `disposed_at` on disk. Empty when no run was matched.
+ * - `dispatch_preview` — post-close dispatch preview so the execution
+ *   panel can refresh without an extra round trip. Mirrors the shape
+ *   returned by `syncMergedPullRequest`.
+ */
+export interface CloseMergedPullRequestResult {
+  work_item: {
+    id: string;
+    state: string;
+    branch: string | null;
+    archive_path: string | null;
+    actual_files: string[];
+    meta: Record<string, unknown>;
+    updated_at: string;
+  };
+  closed_issue: ClosedGitHubIssueSummary | null;
+  removed_run_ids: string[];
+  dispatch_preview: ExecutionDispatchPreview;
+}
  * Issue #86: result of archiving execution run artifacts + generated
  * summary for a completed work item.
  *

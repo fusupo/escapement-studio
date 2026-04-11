@@ -9,7 +9,6 @@
   import Sidebar from "./components/Sidebar.svelte";
   import {
     approvePlan,
-    closeGitHubIssue,
     closeMergedPullRequest,
     createEdge,
     createWorkItem,
@@ -25,7 +24,6 @@
     listExecutionRuns,
     listWorkItems,
     preparePlan,
-    syncMergedPullRequest,
     updateWorkItem,
   } from "./lib/api.js";
   import { buildGraphNodeContextMenu } from "./lib/graph-node-actions.js";
@@ -460,23 +458,15 @@
   }
 
   async function handleCloseIssue(item) {
-    if (!item?.repo || !item?.issue_number) return;
+    if (!item?.id) return;
     closingIssue = true;
     error = "";
     try {
-      // ADR 014 step 7: route work item disposition through the state
-      // machine instead of a raw state: "done" PUT. The button's
-      // precondition (canCloseIssue) guarantees the linked PR is already
-      // merged, so post-merge-sync is safe to call here — it transitions
-      // the work item to `merged_pr` if not already there. Then
-      // closeMergedPullRequest does the `merged_pr → done` disposition.
-      await closeGitHubIssue({ repo: item.repo, issue_number: item.issue_number });
-      if (item.state !== "merged_pr" && item.state !== "done") {
-        await syncMergedPullRequest({ work_item_id: item.id });
-      }
-      if (item.state !== "done") {
-        await closeMergedPullRequest(item.id);
-      }
+      // studio-87: the backend owns the full close orchestration
+      // (gh issue close → merged_pr → done transition → dispose matching
+      // recent runs). The sidebar's `canCloseIssue` guard (merged PR +
+      // open issue) is the only precondition the frontend enforces.
+      await closeMergedPullRequest(item.id);
       await loadGraph();
     } catch (closeError) {
       error = closeError.message;

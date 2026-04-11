@@ -114,6 +114,41 @@ The architecture supports this through:
 - browser rendering of proposals as selectable staged changes
 - atomic server-side apply of approved mutations
 
+## Execution run disposition
+
+ADR 014 step 7 defines two terminal flows for a `merged_pr` work item:
+Close (non-archival) and Archive-and-close. Both live on `ExecutionService`
+and share the same source-state and active-run guards.
+
+The Close flow (`POST /api/execution/close-merged`, studio-87) is backend‑
+owned and atomically performs:
+
+1. `assertWorkItemInMergedPr` — guard the source state. An already‑`done`
+   work item short‑circuits the guards so retries after a partial failure
+   still run the finalizer.
+2. `assertNoActiveRunForWorkItem` — refuse while a run is live.
+3. `GitHubService.closeIssue` — skipped when the work item is not issue‑
+   backed. `gh issue close` is idempotent so retries are safe.
+4. `WorkItemsService.update({ state: 'done' })` — skipped on the already‑
+   done retry path.
+5. `removeRunsForWorkItem` finalizer — splices matching runs out of
+   `recentRuns`, stamps `disposed_at` on each `runs/<id>/status.json`, and
+   emits `execution_result` events.
+
+The `disposed_at` marker is how closed runs stay out of the recent‑runs
+list across a server restart without deleting the artifact dir: a run
+with a non‑null `disposed_at` is filtered by `loadRunRecordsFromDisk`
+(and therefore by both `hydrateRecentRunsFromDisk` and the reconciler)
+unless a caller explicitly passes `includeDisposed: true`. The artifacts
+are preserved on disk so issue #89 (archived execution run history) can
+surface them later.
+
+The response envelope (`CloseMergedPullRequestResult`) bundles the
+updated work item, the closed GitHub issue summary, the ids of removed
+runs, and a post‑close `dispatch_preview` so the UI can reflect the
+combined outcome in a single round trip — mirroring the shape returned
+by `syncMergedPullRequest`.
+
 ## Contracts
 
 Detailed specs for the interfaces between these components live in `docs/contracts/`:
