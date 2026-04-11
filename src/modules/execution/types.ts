@@ -324,6 +324,8 @@ export interface CloseMergedPullRequestResult {
   removed_run_ids: string[];
   dispatch_preview: ExecutionDispatchPreview;
 }
+
+/**
  * Issue #86: result of archiving execution run artifacts + generated
  * summary for a completed work item.
  *
@@ -350,6 +352,70 @@ export interface ArchiveRunArtifactsResult {
   readme_path: string | null;
   archived_run_ids: string[];
   skipped_run_ids: Array<{ run_id: string; reason: string }>;
+}
+
+/**
+ * studio-88: persisted audit trail written to `work_item.meta.studio_archive`
+ * when `archiveAndCloseMergedPullRequest` completes successfully.
+ *
+ * Mirrors the shape of `work_item.meta.studio_post_merge_sync` so both
+ * blocks can be shallow-merged into `meta` without colliding. Downstream
+ * consumers (archived-run-history UIs, post-hoc forensics) read this
+ * block to recover `archives/<slug>/` pointers without re-scanning disk.
+ *
+ * Fields:
+ * - `archived_at` — ISO timestamp the archive orchestration completed.
+ * - `readme_path` — absolute path to the README written inside
+ *   `archives/<slug>/`, or `null` when no README was written.
+ * - `archived_run_ids` — run ids moved into the archive bundle in order.
+ * - `skipped_run_ids` — per-run reasons the archiver refused to move
+ *   the run (e.g. `not_terminal:<status>`, `source_missing`).
+ */
+export interface StudioArchiveMeta {
+  archived_at: string;
+  readme_path: string | null;
+  archived_run_ids: string[];
+  skipped_run_ids: Array<{ run_id: string; reason: string }>;
+}
+
+/**
+ * studio-88: result envelope for `POST /api/execution/archive-and-close-merged`.
+ *
+ * Extends the `CloseMergedPullRequestResult` shape with an additional
+ * `archive` block carrying the fields from `ArchiveRunArtifactsResult`
+ * (archive_path / readme_path / archived_run_ids / skipped_run_ids) so the
+ * frontend can surface archive counts + paths without issuing a follow-up
+ * request.
+ *
+ * Fields:
+ * - `work_item` — the updated work item record (state=done,
+ *   archive_path populated, meta.studio_archive block present).
+ * - `closed_issue` — closed GitHub issue details, or null when the work
+ *   item is not issue-backed.
+ * - `removed_run_ids` — ids of runs spliced out of `recentRuns` and
+ *   stamped `disposed_at` on disk. Empty when no run was matched.
+ * - `archive` — archive step result (path + readme + archived + skipped).
+ * - `dispatch_preview` — post-close dispatch preview for a single round trip.
+ */
+export interface ArchiveAndCloseMergedPullRequestResult {
+  work_item: {
+    id: string;
+    state: string;
+    branch: string | null;
+    archive_path: string | null;
+    actual_files: string[];
+    meta: Record<string, unknown>;
+    updated_at: string;
+  };
+  closed_issue: ClosedGitHubIssueSummary | null;
+  removed_run_ids: string[];
+  archive: {
+    archive_path: string;
+    readme_path: string | null;
+    archived_run_ids: string[];
+    skipped_run_ids: Array<{ run_id: string; reason: string }>;
+  };
+  dispatch_preview: ExecutionDispatchPreview;
 }
 
 /**
