@@ -2,7 +2,16 @@ import { Body, Controller, Get, Inject, Param, Post, Query, Sse } from "@nestjs/
 import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./execution.service.js";
-import type { CleanupWorktreeDto, CreateExecutionPullRequestDto, FollowUpMessageDto, LaunchExecutionRunDto, ResolveDisambiguationDto, SyncMergedExecutionDto, TransitionWorkItemDto } from "./types.js";
+import type {
+  CleanupWorktreeDto,
+  CloseMergedPullRequestResult,
+  CreateExecutionPullRequestDto,
+  FollowUpMessageDto,
+  LaunchExecutionRunDto,
+  ResolveDisambiguationDto,
+  SyncMergedExecutionDto,
+  TransitionWorkItemDto,
+} from "./types.js";
 
 @Controller("api/execution")
 export class ExecutionController {
@@ -74,7 +83,7 @@ export class ExecutionController {
   }
 
   @Post("close-merged")
-  closeMergedPullRequest(@Body() body: TransitionWorkItemDto) {
+  closeMergedPullRequest(@Body() body: TransitionWorkItemDto): Promise<CloseMergedPullRequestResult> {
     return this.executionService.closeMergedPullRequest(body.work_item_id);
   }
 

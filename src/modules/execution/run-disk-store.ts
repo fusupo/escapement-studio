@@ -32,11 +32,19 @@ const NON_TERMINAL_STATUSES: ReadonlySet<ExecutionRunStatus> = new Set<Execution
  * throwing — a single broken status file must not kill the whole reconcile
  * pass.
  *
+ * studio-87: by default, runs with a non-null `disposed_at` marker are
+ * filtered out. This is how `merged_pr → done` close flows remove runs
+ * from `ExecutionService.recentRuns` without deleting the artifact dir
+ * — disposed runs survive on disk (issue #89 can surface them later)
+ * but are hidden from the live recent-runs list and the reconciler.
+ * Pass `includeDisposed: true` to include them, e.g. in the close-flow
+ * finalizer itself so it can update the marker in place.
+ *
  * Returns an empty array when the runs root does not exist.
  */
 export function loadRunRecordsFromDisk(
   runsDir: string,
-  options: { onWarn?: (message: string) => void } = {},
+  options: { onWarn?: (message: string) => void; includeDisposed?: boolean } = {},
 ): ExecutionRunRecord[] {
   if (!existsSync(runsDir)) {
     return [];
@@ -91,6 +99,13 @@ export function loadRunRecordsFromDisk(
       continue;
     }
 
+    // studio-87: hide disposed runs from hydration + reconcile by default.
+    // Callers that need to mutate the marker (the close-flow finalizer)
+    // can set `includeDisposed: true` to see them.
+    if (!options.includeDisposed && record.disposed_at) {
+      continue;
+    }
+
     records.push(record);
   }
 
@@ -104,7 +119,7 @@ export function loadRunRecordsFromDisk(
  */
 export function loadRunRecordsForArtifactRoot(
   artifactRoot: string,
-  options: { onWarn?: (message: string) => void } = {},
+  options: { onWarn?: (message: string) => void; includeDisposed?: boolean } = {},
 ): ExecutionRunRecord[] {
   return loadRunRecordsFromDisk(runsRoot(artifactRoot), options);
 }

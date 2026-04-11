@@ -10,7 +10,7 @@ import {
   ensurePlanDir,
   planDir,
 } from "../../../lib/context-layout.js";
-import type { ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
+import type { ExecutionDispatchPreview, ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
 import type { WorkItemRecord, WorkItemState } from "../../graph/types.js";
 
 /**
@@ -31,6 +31,15 @@ interface HarnessService {
   };
   listRecentRuns: () => ExecutionRunRecord[];
 
+  // studio-87 close flow deps
+  githubService: {
+    closeIssue: ReturnType<typeof vi.fn>;
+  };
+  recentRuns: ExecutionRunRecord[];
+  writeStatus: ReturnType<typeof vi.fn>;
+  emitRun: ReturnType<typeof vi.fn>;
+  getPreview: (repo?: string) => ExecutionDispatchPreview;
+
   // Methods under test (prototype — available via Object.create)
   closeMergedPullRequest: ExecutionService["closeMergedPullRequest"];
   archiveAndCloseMergedPullRequest: ExecutionService["archiveAndCloseMergedPullRequest"];
@@ -39,6 +48,18 @@ interface HarnessService {
   assertWorkItemInMergedPr: (id: string) => WorkItemRecord;
   assertNoActiveRunForWorkItem: (id: string) => void;
   movePlanDirToArchives: (id: string) => { moved: boolean; archive_path: string | null };
+  removeRunsForWorkItem: (id: string) => string[];
+}
+
+function makeDispatchPreviewStub(): ExecutionDispatchPreview {
+  return {
+    generated_at: "2026-04-09T00:00:02.000Z",
+    assumptions: [],
+    validation_policy: { max_concurrent_node_heavy_tasks: 1, serialized_checks: [] },
+    summary: { frontier_count: 0, dispatchable_now: 0, blocked_count: 0, human_gate_count: 0 },
+    groups: [],
+    blocked: [],
+  };
 }
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
@@ -87,6 +108,8 @@ function makeService(params: {
   artifactRoot: string;
   workItem?: WorkItemRecord;
   runs?: ExecutionRunRecord[];
+  githubCloseIssue?: ReturnType<typeof vi.fn>;
+  updateImpl?: (id: string, patch: Partial<WorkItemRecord>) => WorkItemRecord;
 }): HarnessService {
   const service = Object.create(ExecutionService.prototype) as HarnessService;
   let currentWorkItem = params.workItem ?? makeWorkItem();
@@ -104,11 +127,38 @@ function makeService(params: {
       if (id !== currentWorkItem.id) {
         throw new NotFoundException(`Work item not found: ${id}`);
       }
+      if (params.updateImpl) {
+        currentWorkItem = params.updateImpl(id, patch);
+        return currentWorkItem;
+      }
       currentWorkItem = { ...currentWorkItem, ...patch, updated_at: "2026-04-09T00:00:01.000Z" };
       return currentWorkItem;
     },
   };
-  service.listRecentRuns = () => params.runs ?? [];
+
+  // studio-87 close-flow deps. recentRuns is the real in-memory buffer
+  // (private field on ExecutionService) so we test the actual splice.
+  service.recentRuns = [...(params.runs ?? [])];
+  service.listRecentRuns = () => [...service.recentRuns];
+  service.githubService = {
+    closeIssue: params.githubCloseIssue ??
+      vi.fn(async (repo: string, issueNumber: number) => ({
+        repo,
+        number: issueNumber,
+        title: "Disposition test issue",
+        body: "",
+        url: `https://github.com/${repo}/issues/${issueNumber}`,
+        state: "CLOSED",
+        labels: [],
+        assignees: [],
+        body_hash: "hash",
+      })),
+  };
+  // Stub filesystem + event emission so we don't need real artifact dirs
+  // or a live Subject. The real method delegates to node:fs / rxjs.
+  service.writeStatus = vi.fn();
+  service.emitRun = vi.fn();
+  service.getPreview = vi.fn(() => makeDispatchPreviewStub()) as HarnessService["getPreview"];
   return service;
 }
 
@@ -231,38 +281,232 @@ describe("ADR 014 step 7: disposition flow", () => {
     });
   });
 
-  describe("closeMergedPullRequest", () => {
-    it("transitions merged_pr → done without touching the plan dir", () => {
+  describe("closeMergedPullRequest (studio-87 full close flow)", () => {
+    it("happy path: closes gh issue, transitions to done, removes runs, returns envelope", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
-      const service = makeService({ artifactRoot: tmpRoot });
-      const result = service.closeMergedPullRequest("studio-157");
+      const matchingRun = makeRun({ run_id: "exec_match", status: "completed" });
+      const otherRun = makeRun({ run_id: "exec_other", work_item_id: "studio-999", status: "completed" });
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        runs: [matchingRun, otherRun],
+      });
 
-      expect(result.state).toBe("done");
+      const result = await service.closeMergedPullRequest("studio-157");
+
+      // Envelope shape
+      expect(result.work_item.state).toBe("done");
+      expect(result.closed_issue).toEqual({
+        repo: "fusupo/escapement-studio",
+        number: 157,
+        url: "https://github.com/fusupo/escapement-studio/issues/157",
+        title: "Disposition test issue",
+        state: "CLOSED",
+      });
+      expect(result.removed_run_ids).toEqual(["exec_match"]);
+      expect(result.dispatch_preview).toBeTruthy();
+      expect(result.dispatch_preview.groups).toEqual([]);
+
+      // github.closeIssue called once with repo + issue number
+      expect(service.githubService.closeIssue).toHaveBeenCalledTimes(1);
+      expect(service.githubService.closeIssue).toHaveBeenCalledWith(
+        "fusupo/escapement-studio",
+        157,
+      );
+
+      // Matching run spliced, other run preserved
+      expect(service.recentRuns.map((r) => r.run_id)).toEqual(["exec_other"]);
+
+      // disposed_at persisted on the run status.json via writeStatus
+      expect(service.writeStatus).toHaveBeenCalledTimes(1);
+      const writtenRun = service.writeStatus.mock.calls[0][0] as ExecutionRunRecord;
+      expect(writtenRun.run_id).toBe("exec_match");
+      expect(writtenRun.disposed_at).toBeTruthy();
+
+      // execution_result emitted for the removed run
+      expect(service.emitRun).toHaveBeenCalledTimes(1);
+      expect(service.emitRun).toHaveBeenCalledWith("execution_result", expect.objectContaining({
+        run_id: "exec_match",
+        disposed_at: expect.any(String),
+      }));
+
       // Plan dir is UNTOUCHED (Close semantics — no archive)
       expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(true);
       expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(false);
     });
 
-    it.each<WorkItemState>(["open_pr", "in_progress", "ready", "drafting", "planned", "done"])(
-      "throws when state is %s (not merged_pr)",
-      (state) => {
+    it("non-issue-backed work item skips the github close step", async () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({
+          kind: "capability",
+          issue_number: null,
+          issue_url: null,
+        }),
+      });
+
+      const result = await service.closeMergedPullRequest("studio-157");
+
+      expect(result.closed_issue).toBeNull();
+      expect(result.work_item.state).toBe("done");
+      expect(service.githubService.closeIssue).not.toHaveBeenCalled();
+    });
+
+    it("gh-close failure bubbles as BadRequestException and leaves state untouched", async () => {
+      const closeSpy = vi.fn(async () => {
+        throw new Error("gh not authenticated");
+      });
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        githubCloseIssue: closeSpy,
+        runs: [makeRun({ run_id: "exec_still_here", status: "completed" })],
+      });
+
+      await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(BadRequestException);
+      await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(
+        /close_merged_failed_github_close.*gh not authenticated/,
+      );
+
+      // Work item still in merged_pr, run still present, writeStatus never called
+      expect(service.workItemsService.get("studio-157").state).toBe("merged_pr");
+      expect(service.recentRuns.map((r) => r.run_id)).toEqual(["exec_still_here"]);
+      expect(service.writeStatus).not.toHaveBeenCalled();
+    });
+
+    it("state transition failure after a successful gh close surfaces and leaves runs intact", async () => {
+      const closeSpy = vi.fn(async (repo: string, issueNumber: number) => ({
+        repo,
+        number: issueNumber,
+        title: "t",
+        body: "",
+        url: "u",
+        state: "CLOSED",
+        labels: [],
+        assignees: [],
+        body_hash: "h",
+      }));
+      const updateImpl = vi.fn(() => {
+        throw new Error("db write failed");
+      });
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        githubCloseIssue: closeSpy,
+        updateImpl,
+        runs: [makeRun({ run_id: "exec_retryable", status: "completed" })],
+      });
+
+      await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(/db write failed/);
+
+      // gh close did happen; the retry-safety contract says a second attempt
+      // re-runs the whole flow. Runs were not yet disposed because the
+      // finalizer runs AFTER the state transition.
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+      expect(service.recentRuns.map((r) => r.run_id)).toEqual(["exec_retryable"]);
+      expect(service.writeStatus).not.toHaveBeenCalled();
+    });
+
+    it("idempotent retry when the work item is already done", async () => {
+      // Simulates a retry after a prior attempt got past the state
+      // transition but died in the finalizer. Guards must short-circuit,
+      // gh close must still run (idempotent), and the finalizer must run
+      // so leftover runs are disposed.
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "done" }),
+        runs: [makeRun({ run_id: "exec_leftover", status: "completed" })],
+      });
+
+      const result = await service.closeMergedPullRequest("studio-157");
+
+      expect(result.work_item.state).toBe("done");
+      expect(result.removed_run_ids).toEqual(["exec_leftover"]);
+      expect(service.recentRuns).toEqual([]);
+      // gh close still ran (idempotent) even though work item was done
+      expect(service.githubService.closeIssue).toHaveBeenCalledTimes(1);
+    });
+
+    it("removes no runs when there are no matching recent runs", async () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        runs: [makeRun({ work_item_id: "studio-999", status: "completed" })],
+      });
+
+      const result = await service.closeMergedPullRequest("studio-157");
+
+      expect(result.removed_run_ids).toEqual([]);
+      expect(service.recentRuns).toHaveLength(1);
+      expect(service.writeStatus).not.toHaveBeenCalled();
+    });
+
+    it.each<WorkItemState>(["open_pr", "in_progress", "ready", "drafting", "planned"])(
+      "throws when state is %s (not merged_pr, not done)",
+      async (state) => {
         const service = makeService({
           artifactRoot: tmpRoot,
           workItem: makeWorkItem({ state }),
         });
-        expect(() => service.closeMergedPullRequest("studio-157")).toThrow(BadRequestException);
-        expect(() => service.closeMergedPullRequest("studio-157")).toThrow(/work_item_not_in_merged_pr/);
+        await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(BadRequestException);
+        await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(
+          /work_item_not_in_merged_pr/,
+        );
       },
     );
 
-    it("throws when an active run exists", () => {
+    it("throws when an active run exists", async () => {
       const service = makeService({
         artifactRoot: tmpRoot,
         runs: [makeRun({ status: "running" })],
       });
-      expect(() => service.closeMergedPullRequest("studio-157")).toThrow(/cannot_dispose_work_item_active_run/);
+      await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(
+        /cannot_dispose_work_item_active_run/,
+      );
+    });
+  });
+
+  describe("removeRunsForWorkItem (studio-87 finalizer)", () => {
+    it("splices matching runs, stamps disposed_at, emits execution_result", () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        runs: [
+          makeRun({ run_id: "exec_a", status: "completed" }),
+          makeRun({ run_id: "exec_b", work_item_id: "studio-999", status: "completed" }),
+          makeRun({ run_id: "exec_c", status: "error" }),
+        ],
+      });
+
+      const removed = service.removeRunsForWorkItem("studio-157");
+
+      expect(removed.sort()).toEqual(["exec_a", "exec_c"]);
+      expect(service.recentRuns.map((r) => r.run_id)).toEqual(["exec_b"]);
+      expect(service.writeStatus).toHaveBeenCalledTimes(2);
+      expect(service.emitRun).toHaveBeenCalledTimes(2);
+      for (const call of service.writeStatus.mock.calls) {
+        const run = call[0] as ExecutionRunRecord;
+        expect(run.disposed_at).toBeTruthy();
+      }
+    });
+
+    it("is a no-op for already-disposed runs (idempotent)", () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        runs: [
+          makeRun({ run_id: "exec_a", status: "completed", disposed_at: "2026-04-08T00:00:00.000Z" }),
+        ],
+      });
+
+      const removed = service.removeRunsForWorkItem("studio-157");
+
+      // Still removed from the buffer (cleaned up) but disposed_at not re-stamped.
+      expect(removed).toEqual(["exec_a"]);
+      expect(service.recentRuns).toEqual([]);
+      expect(service.writeStatus).not.toHaveBeenCalled();
+      expect(service.emitRun).not.toHaveBeenCalled();
+    });
+
+    it("returns empty list when no runs match", () => {
+      const service = makeService({ artifactRoot: tmpRoot });
+      expect(service.removeRunsForWorkItem("studio-157")).toEqual([]);
     });
   });
 

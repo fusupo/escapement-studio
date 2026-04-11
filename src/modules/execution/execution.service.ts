@@ -30,6 +30,8 @@ import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
   ChecklistItem,
+  ClosedGitHubIssueSummary,
+  CloseMergedPullRequestResult,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
   ExecutionChecklistSnapshot,
@@ -2145,10 +2147,184 @@ export class ExecutionService implements OnModuleInit {
    * The active-run guard prevents disposing work items that still have live
    * runs — see `assertNoActiveRunForWorkItem` for the session-scope caveat.
    */
-  closeMergedPullRequest(workItemId: string): WorkItemRecord {
-    this.assertWorkItemInMergedPr(workItemId);
-    this.assertNoActiveRunForWorkItem(workItemId);
-    return this.workItemsService.update(workItemId, { state: "done" });
+  /**
+   * studio-87: Full `merged_pr → done` close orchestration.
+   *
+   * Steps (ordered so every prefix is retry-safe):
+   *   1. assertWorkItemInMergedPr — guard the source state. Short-circuits
+   *      when the work item is already `done` so a retry after a partial
+   *      failure still performs the remaining finalizer steps (gh close
+   *      is idempotent, run removal can run twice safely).
+   *   2. assertNoActiveRunForWorkItem — refuse while a run is live.
+   *   3. `gh issue close` — skipped when the work item is not issue-backed
+   *      (kind != 'issue' or missing issue_number). On failure the
+   *      exception propagates and nothing else is mutated.
+   *   4. workItemsService.update({ state: 'done' }) — skipped when the
+   *      retry entered via an already-done short-circuit.
+   *   5. removeRunsForWorkItem — best-effort finalizer that splices
+   *      matching runs out of `recentRuns`, stamps `disposed_at` on each
+   *      `status.json`, and emits an `execution_result` event per run.
+   *
+   * Returns a full `CloseMergedPullRequestResult` envelope so the UI can
+   * reflect the combined outcome (state transition + gh close + run
+   * removal) in one round trip. Mirrors the shape of
+   * `syncMergedPullRequest` including a post-close `dispatch_preview`.
+   */
+  async closeMergedPullRequest(workItemId: string): Promise<CloseMergedPullRequestResult> {
+    const initialWorkItem = this.workItemsService.get(workItemId);
+
+    // Idempotent short-circuit: if the work item is already `done`, the
+    // previous attempt got past the state transition but may have failed
+    // during the finalizer. Skip the guards + state update, still run the
+    // finalizer so any leftover run records get disposed.
+    const alreadyDone = initialWorkItem.state === "done";
+    if (!alreadyDone) {
+      this.assertWorkItemInMergedPr(workItemId);
+      this.assertNoActiveRunForWorkItem(workItemId);
+    }
+
+    // Step 3: close the linked GitHub issue (issue-backed work items only).
+    // gh issue close is idempotent — closing an already-closed issue is a
+    // no-op per the gh CLI contract, so retries after a partial failure
+    // are safe. A failure here bubbles as BadRequestException and leaves
+    // the work item in `merged_pr` for another attempt.
+    let closedIssue: ClosedGitHubIssueSummary | null = null;
+    if (initialWorkItem.kind === "issue" && initialWorkItem.repo && initialWorkItem.issue_number) {
+      try {
+        const details = await this.githubService.closeIssue(
+          initialWorkItem.repo,
+          initialWorkItem.issue_number,
+        );
+        closedIssue = {
+          repo: details.repo,
+          number: details.number,
+          url: details.url,
+          title: details.title,
+          state: details.state,
+        };
+      } catch (error) {
+        throw new BadRequestException(
+          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
+        );
+      }
+    }
+
+    // Step 4: state transition (skipped on the already-done retry path).
+    const updatedWorkItem = alreadyDone
+      ? initialWorkItem
+      : this.workItemsService.update(workItemId, { state: "done" });
+
+    // Step 5: finalizer — splice runs and stamp disposed_at on disk.
+    const removedRunIds = this.removeRunsForWorkItem(workItemId);
+
+    return {
+      work_item: {
+        id: updatedWorkItem.id,
+        state: updatedWorkItem.state,
+        branch: updatedWorkItem.branch,
+        archive_path: updatedWorkItem.archive_path,
+        actual_files: updatedWorkItem.actual_files,
+        meta: updatedWorkItem.meta,
+        updated_at: updatedWorkItem.updated_at,
+      },
+      closed_issue: closedIssue,
+      removed_run_ids: removedRunIds,
+      dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
+    };
+  }
+
+  /**
+   * studio-87: best-effort finalizer for `closeMergedPullRequest`.
+   *
+   * Removes every run matching `workItemId` from the in-memory
+   * `recentRuns` buffer AND stamps `disposed_at` on each matching
+   * `status.json` on disk so hydration after a server restart will
+   * not resurrect them (see `loadRunRecordsFromDisk`'s
+   * `includeDisposed` filter).
+   *
+   * Handles three cases:
+   *   (a) run is currently in `recentRuns` — update status.json, splice,
+   *       emit `execution_result` so SSE clients see the removal.
+   *   (b) run exists on disk but was evicted from `recentRuns` by the
+   *       16-entry cap — update status.json directly.
+   *   (c) run already has `disposed_at` — skipped (idempotent replay).
+   *
+   * Failures are logged and swallowed; this is a finalizer and the caller
+   * has already completed the state transition. Returns the set of run
+   * ids that were updated or spliced.
+   */
+  private removeRunsForWorkItem(workItemId: string): string[] {
+    const timestamp = this.now();
+    const removedIds = new Set<string>();
+
+    // (a) In-memory recentRuns — walk back-to-front so splice is safe.
+    for (let i = this.recentRuns.length - 1; i >= 0; i--) {
+      const run = this.recentRuns[i];
+      if (run.work_item_id !== workItemId) continue;
+      if (run.disposed_at) {
+        // Already disposed; drop from the buffer but don't re-write.
+        this.recentRuns.splice(i, 1);
+        removedIds.add(run.run_id);
+        continue;
+      }
+      const disposed: ExecutionRunRecord = {
+        ...run,
+        disposed_at: timestamp,
+        updated_at: timestamp,
+      };
+      try {
+        this.writeStatus(disposed);
+      } catch (error) {
+        this.logger.warn(
+          `removeRunsForWorkItem: failed to stamp disposed_at for run ${run.run_id}: ${this.getErrorMessage(error)}`,
+        );
+      }
+      this.recentRuns.splice(i, 1);
+      removedIds.add(run.run_id);
+      try {
+        this.emitRun("execution_result", disposed);
+      } catch (error) {
+        this.logger.warn(
+          `removeRunsForWorkItem: failed to emit execution_result for run ${run.run_id}: ${this.getErrorMessage(error)}`,
+        );
+      }
+    }
+
+    // (b) On-disk runs that were not in recentRuns (hydration gap / cap
+    //     eviction). Pass includeDisposed so we can see already-disposed
+    //     records for idempotent replay, but skip them when writing.
+    try {
+      const runsDir = join(this.artifactRoot, "runs");
+      const diskRuns = loadRunRecordsFromDisk(runsDir, { includeDisposed: true });
+      for (const run of diskRuns) {
+        if (run.work_item_id !== workItemId) continue;
+        if (removedIds.has(run.run_id)) continue;
+        if (run.disposed_at) continue;
+        const disposed: ExecutionRunRecord = {
+          ...run,
+          disposed_at: timestamp,
+          updated_at: timestamp,
+        };
+        try {
+          writeFileSync(
+            join(run.artifact_dir, "status.json"),
+            JSON.stringify(disposed, null, 2),
+            "utf8",
+          );
+          removedIds.add(run.run_id);
+        } catch (error) {
+          this.logger.warn(
+            `removeRunsForWorkItem: failed to stamp disposed_at for on-disk run ${run.run_id}: ${this.getErrorMessage(error)}`,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `removeRunsForWorkItem: failed to scan runs dir: ${this.getErrorMessage(error)}`,
+      );
+    }
+
+    return Array.from(removedIds);
   }
 
   /**
