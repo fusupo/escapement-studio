@@ -1,6 +1,8 @@
 <script>
   import { onMount, afterUpdate } from "svelte";
   import {
+    archiveAndCloseMergedPullRequest,
+    closeMergedPullRequest,
     getExecutionPreview,
     getRunChecklist,
     getRunScratchpad,
@@ -33,6 +35,9 @@
   let stream;
   let launchingIds = [];
   let openingPrRunIds = [];
+  // studio-84: tracks in-flight Close / Archive-and-close disposition
+  // calls per run_id so we can disable buttons and prevent double-dispatch.
+  let disposingRunIds = [];
   let prResults = {};
   let followUpTexts = {};
   let sendingFollowUp = {};
@@ -75,6 +80,17 @@
       merge_order: group.merge_order || [],
     }))
   ) || [];
+
+  /**
+   * studio-84: returns true iff the reconciled feed marks this run's work
+   * item as ready for merged-PR disposition (next_action === 'close_out').
+   * This is the single source of truth for showing the Close /
+   * Archive-and-close buttons and the 'ready to close' pill badge.
+   */
+  function canDisposeRun(run) {
+    if (!run) return false;
+    return reconciledByWorkItem[run.work_item_id]?.next_action === "close_out";
+  }
 
   $: selectedRun = selectedRunId ? runs.find((r) => r.run_id === selectedRunId) ?? null : null;
   $: selectedDispatch = selectedDispatchId ? dispatchNodes.find((n) => n.id === selectedDispatchId) ?? null : null;
