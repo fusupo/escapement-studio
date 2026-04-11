@@ -511,15 +511,15 @@ describe("ADR 014 step 7: disposition flow", () => {
   });
 
   describe("archiveAndCloseMergedPullRequest", () => {
-    it("moves the plan dir, sets archive_path, and transitions to done", () => {
+    it("moves the plan dir, sets archive_path, and transitions to done", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "approved plan", "utf8");
 
       const service = makeService({ artifactRoot: tmpRoot });
-      const result = service.archiveAndCloseMergedPullRequest("studio-157");
+      const result = await service.archiveAndCloseMergedPullRequest("studio-157");
 
-      expect(result.state).toBe("done");
-      expect(result.archive_path).toBe(archiveDir(tmpRoot, "studio-157"));
+      expect(result.work_item.state).toBe("done");
+      expect(result.work_item.archive_path).toBe(archiveDir(tmpRoot, "studio-157"));
       // Plan dir moved
       expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(false);
       expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(true);
@@ -528,18 +528,19 @@ describe("ADR 014 step 7: disposition flow", () => {
       ).toBe("approved plan");
     });
 
-    it("state transition still happens when the plan dir was already gone", () => {
+    it("state transition still happens when the plan dir was already gone", async () => {
       // No ensurePlanDir call — archive step will be a no-op
       const service = makeService({ artifactRoot: tmpRoot });
-      const result = service.archiveAndCloseMergedPullRequest("studio-157");
+      const result = await service.archiveAndCloseMergedPullRequest("studio-157");
 
-      expect(result.state).toBe("done");
-      // archive_path preserved at original value (null in this test)
-      expect(result.archive_path).toBe(null);
-      expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(false);
+      expect(result.work_item.state).toBe("done");
+      // Run archival still establishes the archive location even when the
+      // plan dir was already absent.
+      expect(result.work_item.archive_path).toBe(archiveDir(tmpRoot, "studio-157"));
+      expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(true);
     });
 
-    it("guards reject BEFORE the filesystem is touched", () => {
+    it("guards reject BEFORE the filesystem is touched", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
@@ -547,7 +548,7 @@ describe("ADR 014 step 7: disposition flow", () => {
         artifactRoot: tmpRoot,
         workItem: makeWorkItem({ state: "open_pr" }),
       });
-      expect(() => service.archiveAndCloseMergedPullRequest("studio-157")).toThrow(
+      await expect(service.archiveAndCloseMergedPullRequest("studio-157")).rejects.toThrow(
         /work_item_not_in_merged_pr/,
       );
       // Plan dir still present — guard ran before filesystem
@@ -555,7 +556,7 @@ describe("ADR 014 step 7: disposition flow", () => {
       expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(false);
     });
 
-    it("active-run guard rejects BEFORE the filesystem is touched", () => {
+    it("active-run guard rejects BEFORE the filesystem is touched", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
@@ -563,7 +564,7 @@ describe("ADR 014 step 7: disposition flow", () => {
         artifactRoot: tmpRoot,
         runs: [makeRun({ status: "running" })],
       });
-      expect(() => service.archiveAndCloseMergedPullRequest("studio-157")).toThrow(
+      await expect(service.archiveAndCloseMergedPullRequest("studio-157")).rejects.toThrow(
         /cannot_dispose_work_item_active_run/,
       );
       expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(true);

@@ -32,10 +32,12 @@ import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
   ArchivedRunBundle,
+  ArchiveAndCloseMergedPullRequestResult,
   ArchiveRunArtifactsResult,
   ChecklistItem,
   ClosedGitHubIssueSummary,
   CloseMergedPullRequestResult,
+  StudioArchiveMeta,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
   ExecutionChecklistSnapshot,
@@ -2478,32 +2480,208 @@ export class ExecutionService implements OnModuleInit {
   }
 
   /**
-   * ADR 014 step 7: disposition flow for `merged_pr → done` with archival.
+   * studio-88: Full `merged_pr → done` archive-and-close orchestration.
    *
-   * Archive-and-close variant — moves `plans/<slug>/` to `archives/<slug>/`
-   * via `fs.renameSync`, writes the canonical archive path onto the work item,
-   * and transitions to `done`. If the plan dir is already gone (e.g. a prior
-   * partial archive attempt), the filesystem step is a no-op and the state
-   * transition still happens.
+   * Mirrors `closeMergedPullRequest` beat-for-beat but adds the archival
+   * steps (plan-dir move + run-artifact move + README) between gh-close
+   * and the work item state update. Every prefix is designed to be
+   * retry-safe — a failure at any step leaves a consistent state that a
+   * subsequent retry can complete.
    *
-   * Guard order matters: state + active-run checks BEFORE touching the
-   * filesystem. The filesystem move happens BEFORE the state update so a
-   * failed `renameSync` leaves the work item in `merged_pr` (retryable). If
-   * the state update fails after a successful move, a retry will find the
-   * plan dir already gone, observe the move as a no-op, and complete the
-   * state transition cleanly.
+   * Steps (ordered for retry safety):
+   *   1. Idempotent short-circuit — if the work item is already `done`
+   *      the previous attempt finished past the state transition but
+   *      may have failed in the finalizer. Skip guards + state update
+   *      but still run gh close (idempotent) and the run-removal
+   *      finalizer so leftover runs get disposed.
+   *   2. assertWorkItemInMergedPr — guard the source state.
+   *   3. assertNoActiveRunForWorkItem — refuse while a run is live.
+   *   4. Capture an authoritative run snapshot BEFORE any mutation. This
+   *      merges the in-memory `recentRuns` with the on-disk
+   *      `loadRunRecordsForArtifactRoot` scan, filtered to this work
+   *      item. The snapshot is handed to the archiver later via its
+   *      `runs` option so the archiver sees the runs even after the
+   *      finalizer stamps `disposed_at` on them (default disk scans skip
+   *      disposed records).
+   *   5. `gh issue close` — issue-backed work items only. Idempotent per
+   *      the gh CLI contract. On failure we throw
+   *      `close_merged_failed_github_close` before any filesystem
+   *      mutation so the retry can re-attempt the entire flow.
+   *   6. `movePlanDirToArchives` — no-op when the plan dir is already
+   *      gone (prior partial archive). Throws
+   *      `archive_already_exists` on a collision so operators can
+   *      resolve manually.
+   *   7. `archiveRunArtifactsForWorkItem` — bypasses the thin
+   *      `archiveRunArtifacts` wrapper because we already captured the
+   *      snapshot and re-ran the guards upstream. Writes runs into
+   *      `archives/<slug>/runs/<run_id>/` and renders `README.md`. A
+   *      source-missing run on retry is a warning, not a failure.
+   *   8. `workItemsService.update` to `done` with `archive_path` set and
+   *      `meta.studio_archive` recorded. Shallow-merges over any
+   *      existing `studio_post_merge_sync` block so neither clobbers
+   *      the other.
+   *   9. `removeRunsForWorkItem` — best-effort finalizer. Splices
+   *      matching runs out of `recentRuns` and stamps `disposed_at` on
+   *      each `status.json`.
    *
-   * If `archives/<slug>/` already exists, the move refuses rather than
-   * clobbering — operators must manually resolve the collision.
+   * Returns a full `ArchiveAndCloseMergedPullRequestResult` envelope so
+   * the UI can reflect the combined outcome in one round trip.
    */
-  archiveAndCloseMergedPullRequest(workItemId: string): WorkItemRecord {
-    this.assertWorkItemInMergedPr(workItemId);
-    this.assertNoActiveRunForWorkItem(workItemId);
+  async archiveAndCloseMergedPullRequest(
+    workItemId: string,
+  ): Promise<ArchiveAndCloseMergedPullRequestResult> {
+    const initialWorkItem = this.workItemsService.get(workItemId);
+
+    // Step 1: idempotent short-circuit when the previous attempt got past
+    // the state transition but failed in the finalizer. Skip guards +
+    // state update, still run gh close (idempotent) and the finalizer.
+    const alreadyDone = initialWorkItem.state === "done";
+    if (!alreadyDone) {
+      // Steps 2 + 3: source state + active-run guards.
+      this.assertWorkItemInMergedPr(workItemId);
+      this.assertNoActiveRunForWorkItem(workItemId);
+    }
+
+    // Step 4: capture a run snapshot BEFORE any mutation so the archiver
+    // can operate on the authoritative run list even after the finalizer
+    // stamps `disposed_at` (default disk scans skip disposed records,
+    // which would otherwise make a retry see an empty list).
+    const runSnapshot = this.captureRunSnapshotForWorkItem(workItemId);
+
+    // Step 5: gh issue close (issue-backed work items only). Errors here
+    // bubble as BadRequestException BEFORE any filesystem mutation so the
+    // retry can re-attempt the whole flow.
+    let closedIssue: ClosedGitHubIssueSummary | null = null;
+    if (initialWorkItem.kind === "issue" && initialWorkItem.repo && initialWorkItem.issue_number) {
+      try {
+        const details = await this.githubService.closeIssue(
+          initialWorkItem.repo,
+          initialWorkItem.issue_number,
+        );
+        closedIssue = {
+          repo: details.repo,
+          number: details.number,
+          url: details.url,
+          title: details.title,
+          state: details.state,
+        };
+      } catch (error) {
+        throw new BadRequestException(
+          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
+        );
+      }
+    }
+
+    // Step 6: move the plan dir into `archives/<slug>/` if it still
+    // exists. A no-op when a prior retry already moved it — the state
+    // update downstream will still run with whatever archive_path the
+    // work item already carries. `archive_already_exists` from the
+    // destination collision path bubbles as BadRequestException.
     const moveResult = this.movePlanDirToArchives(workItemId);
-    return this.workItemsService.update(workItemId, {
-      state: "done",
-      archive_path: moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path,
-    });
+
+    // Step 7: archive run artifacts + README. Bypass the
+    // `archiveRunArtifacts` wrapper so we can reuse the pre-captured
+    // snapshot (avoiding a redundant disk re-scan that would drop
+    // disposed runs on retry) and skip the wrapper's active-run guard
+    // which we already ran above.
+    let archiveResult: ArchiveRunArtifactsResult;
+    try {
+      archiveResult = archiveRunArtifactsForWorkItem(this.artifactRoot, initialWorkItem, {
+        runs: runSnapshot,
+        onWarn: (message) => this.logger.warn(message),
+      });
+    } catch (error) {
+      const message = this.getErrorMessage(error);
+      if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
+        throw new BadRequestException(message);
+      }
+      throw error;
+    }
+
+    // Step 8: state transition (skipped on the already-done retry path).
+    // Shallow-merge the archive audit block into `meta` alongside any
+    // existing `studio_post_merge_sync` block from the earlier
+    // merged_pr transition.
+    const archivePath = archiveResult.archive_path ?? moveResult.archive_path ?? initialWorkItem.archive_path;
+    const studioArchive: StudioArchiveMeta = {
+      archived_at: this.now(),
+      readme_path: archiveResult.readme_path,
+      archived_run_ids: archiveResult.archived_run_ids,
+      skipped_run_ids: archiveResult.skipped_run_ids,
+    };
+    const nextMeta: Record<string, unknown> = {
+      ...initialWorkItem.meta,
+      studio_archive: studioArchive,
+    };
+
+    const updatedWorkItem = alreadyDone
+      ? this.workItemsService.update(workItemId, {
+          archive_path: archivePath,
+          meta: nextMeta,
+        })
+      : this.workItemsService.update(workItemId, {
+          state: "done",
+          archive_path: archivePath,
+          meta: nextMeta,
+        });
+
+    // Step 9: finalizer — splice matching runs out of recentRuns and
+    // stamp `disposed_at` on each `status.json`.
+    const removedRunIds = this.removeRunsForWorkItem(workItemId);
+
+    return {
+      work_item: {
+        id: updatedWorkItem.id,
+        state: updatedWorkItem.state,
+        branch: updatedWorkItem.branch,
+        archive_path: updatedWorkItem.archive_path,
+        actual_files: updatedWorkItem.actual_files,
+        meta: updatedWorkItem.meta,
+        updated_at: updatedWorkItem.updated_at,
+      },
+      closed_issue: closedIssue,
+      removed_run_ids: removedRunIds,
+      archive: {
+        archive_path: archiveResult.archive_path,
+        readme_path: archiveResult.readme_path,
+        archived_run_ids: archiveResult.archived_run_ids,
+        skipped_run_ids: archiveResult.skipped_run_ids,
+      },
+      dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
+    };
+  }
+
+  /**
+   * studio-88 helper: capture an authoritative run snapshot for a work
+   * item by merging the in-memory `recentRuns` buffer with the on-disk
+   * scan, deduped by `run_id` (in-memory wins). Used by
+   * `archiveAndCloseMergedPullRequest` to hand the archiver a list that
+   * survives the downstream `removeRunsForWorkItem` finalizer stamping
+   * `disposed_at` on each record.
+   */
+  private captureRunSnapshotForWorkItem(workItemId: string): ExecutionRunRecord[] {
+    const seen = new Set<string>();
+    const merged: ExecutionRunRecord[] = [];
+    for (const run of this.listRecentRuns()) {
+      if (run.work_item_id !== workItemId) continue;
+      if (seen.has(run.run_id)) continue;
+      merged.push(run);
+      seen.add(run.run_id);
+    }
+    try {
+      const diskRuns = loadRunRecordsForArtifactRoot(this.artifactRoot);
+      for (const run of diskRuns) {
+        if (run.work_item_id !== workItemId) continue;
+        if (seen.has(run.run_id)) continue;
+        merged.push(run);
+        seen.add(run.run_id);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `captureRunSnapshotForWorkItem: failed to scan disk for ${workItemId}: ${this.getErrorMessage(error)}`,
+      );
+    }
+    return merged;
   }
 
   /**
