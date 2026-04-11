@@ -396,7 +396,9 @@ export interface ArchivedRunBundle {
     scratchpad_filename?: string;
     metadata_filename?: string;
   };
- /**
+}
+
+/**
  * studio-88: persisted audit trail written to `work_item.meta.studio_archive`
  * when `archiveAndCloseMergedPullRequest` completes successfully.
  *
