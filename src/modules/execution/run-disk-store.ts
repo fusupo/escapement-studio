@@ -259,7 +259,12 @@ function atomicWriteJson(path: string, value: unknown): void {
  * filling them with safe defaults, but a missing `run_id` / `status` /
  * `updated_at` / `branch` / `artifact_dir` is treated as corruption.
  */
-function coerceRecord(raw: unknown): ExecutionRunRecord | null {
+/**
+ * Shared runtime guard for both live-run hydration and archived-run reads.
+ * Exported so issue #89's archive reader reuses the exact same validation
+ * semantics as `loadRunRecordsFromDisk`.
+ */
+export function coerceRecord(raw: unknown): ExecutionRunRecord | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
 

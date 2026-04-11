@@ -99,6 +99,14 @@ export function listExecutionRuns() {
   return request("/api/execution/runs");
 }
 
+export function listArchivedExecutionRuns() {
+  return request("/api/execution/archived-runs");
+}
+
+export function getArchivedExecutionRunBundle(workItemId) {
+  return request(`/api/execution/archived-runs/${encodeURIComponent(workItemId)}`);
+}
+
 /**
  * studio-176: reconciled work-item view. Returns one entry per
  * in_progress work item with a `next_action` derived from the graph,

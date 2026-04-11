@@ -27,6 +27,16 @@ export class ExecutionController {
     return this.executionService.listRecentRuns();
   }
 
+  @Get("archived-runs")
+  getArchivedRunBundles() {
+    return this.executionService.listArchivedRunBundles();
+  }
+
+  @Get("archived-runs/:workItemId")
+  getArchivedRunBundle(@Param("workItemId") workItemId: string) {
+    return this.executionService.getArchivedRunBundle(workItemId);
+  }
+
   @Get("eligibility")
   getLaunchEligibility(@Query("work_item_id") workItemId?: string, @Query("base_ref") baseRef?: string) {
     return this.executionService.getLaunchEligibility(workItemId, baseRef);

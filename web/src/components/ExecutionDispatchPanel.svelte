@@ -7,6 +7,7 @@
     getRunChecklist,
     getRunScratchpad,
     launchExecutionRun,
+    listArchivedExecutionRuns,
     listExecutionRuns,
     listReconciledWorkItems,
     openPullRequest,
@@ -16,10 +17,14 @@
   import ExecutionDispatchList from "./ExecutionDispatchList.svelte";
   import ExecutionDetailPane from "./ExecutionDetailPane.svelte";
   import ExecutionChecklist from "./ExecutionChecklist.svelte";
+  import ExecutionArchivedList from "./ExecutionArchivedList.svelte";
   import { renderMarkdown } from "../lib/markdown.js";
 
   let preview = null;
   let runs = [];
+  let archivedBundles = [];
+  let archivedLoading = false;
+  let archivedError = "";
   /**
    * studio-176: map of work_item_id → ReconciledWorkItem (from
    * /api/work-items/reconciled). Used to decorate run cards with a
@@ -150,9 +155,11 @@
 
   async function loadData({ quiet = false } = {}) {
     if (quiet) { refreshing = true; } else { loading = true; }
+    archivedLoading = true;
     error = "";
+    archivedError = "";
     try {
-      const [nextPreview, nextRuns, nextReconciled] = await Promise.all([
+      const [nextPreview, nextRuns, nextReconciled, nextArchivedBundles] = await Promise.all([
         getExecutionPreview(),
         listExecutionRuns(),
         // Reconciled view is best-effort — a failure here should not take
@@ -161,9 +168,15 @@
           console.debug("listReconciledWorkItems failed", err);
           return [];
         }),
+        listArchivedExecutionRuns().catch((err) => {
+          console.debug("listArchivedExecutionRuns failed", err);
+          archivedError = err.message;
+          return [];
+        }),
       ]);
       preview = nextPreview;
       runs = nextRuns;
+      archivedBundles = nextArchivedBundles;
       const nextMap = {};
       for (const entry of nextReconciled || []) {
         if (entry?.work_item_id) nextMap[entry.work_item_id] = entry;
@@ -179,6 +192,7 @@
     } finally {
       loading = false;
       refreshing = false;
+      archivedLoading = false;
     }
   }
 
@@ -531,6 +545,11 @@
 
       <!-- Right: Workspace (run pills + active run content) -->
       <div class="exec-col-workspace">
+        <details class="workspace-expandable archived-section">
+          <summary>Archived runs</summary>
+          <ExecutionArchivedList bundles={archivedBundles} loading={archivedLoading} error={archivedError} onCopy={copyValue} />
+        </details>
+
         <!-- Run pill strip -->
         {#if runs.length > 0}
           <div class="run-pill-strip">
@@ -1050,6 +1069,11 @@
     border-radius: var(--radius-sm, 3px);
     background: var(--bg-surface, #13171f);
     font-size: 12px;
+  }
+
+  .archived-section {
+    margin: 8px 8px 0;
+    flex-shrink: 0;
   }
 
   .workspace-expandable summary {

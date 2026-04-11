@@ -324,6 +324,8 @@ export interface CloseMergedPullRequestResult {
   removed_run_ids: string[];
   dispatch_preview: ExecutionDispatchPreview;
 }
+
+/**
  * Issue #86: result of archiving execution run artifacts + generated
  * summary for a completed work item.
  *
@@ -350,6 +352,50 @@ export interface ArchiveRunArtifactsResult {
   readme_path: string | null;
   archived_run_ids: string[];
   skipped_run_ids: Array<{ run_id: string; reason: string }>;
+}
+
+/**
+ * Issue #89: compact per-run summary surfaced from an archived bundle.
+ *
+ * Derived from archived `runs/<run_id>/status.json` files and narrowed to
+ * the fields the archived-runs UI needs. `result_summary` is truncated by
+ * the archive reader so list/detail payloads stay small.
+ */
+export interface ArchivedRunSummary {
+  run_id: string;
+  status: ExecutionRunStatus;
+  branch: string;
+  base_ref: string;
+  created_at: string;
+  completed_at?: string;
+  changed_file_count: number;
+  result_summary?: string;
+  pull_request?: ExecutionPullRequestRecord;
+  archived_run_dir: string;
+}
+
+/**
+ * Issue #89: read-only archived bundle surfaced by the execution archive
+ * list/detail endpoints.
+ *
+ * `readme_content` is omitted from list responses and included by the
+ * detail endpoint only.
+ */
+export interface ArchivedRunBundle {
+  work_item_id: string;
+  work_item_name: string;
+  slug: string;
+  archive_path: string;
+  readme_path: string | null;
+  readme_exists: boolean;
+  readme_content?: string | null;
+  archived_at: string;
+  pull_request?: ExecutionPullRequestRecord | null;
+  runs: ArchivedRunSummary[];
+  plan_artifacts?: {
+    scratchpad_filename?: string;
+    metadata_filename?: string;
+  };
 }
 
 /**
