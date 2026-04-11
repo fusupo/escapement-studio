@@ -1,6 +1,8 @@
 <script>
   import { onMount, afterUpdate } from "svelte";
   import {
+    archiveAndCloseMergedPullRequest,
+    closeMergedPullRequest,
     getExecutionPreview,
     getRunChecklist,
     getRunScratchpad,
@@ -33,6 +35,14 @@
   let stream;
   let launchingIds = [];
   let openingPrRunIds = [];
+  // studio-84: tracks in-flight Close / Archive-and-close disposition
+  // calls per run_id so we can disable buttons and prevent double-dispatch.
+  let disposingRunIds = [];
+  // studio-84: per-run last disposition error, shown inline under the
+  // DISPOSITION buttons in addition to the top error banner. Primarily
+  // targets the `cannot_dispose_work_item_active_run` guard so operators
+  // see why the action was blocked without reading the toast.
+  let dispositionErrors = {};
   let prResults = {};
   let followUpTexts = {};
   let sendingFollowUp = {};
@@ -75,6 +85,17 @@
       merge_order: group.merge_order || [],
     }))
   ) || [];
+
+  /**
+   * studio-84: returns true iff the reconciled feed marks this run's work
+   * item as ready for merged-PR disposition (next_action === 'close_out').
+   * This is the single source of truth for showing the Close /
+   * Archive-and-close buttons and the 'ready to close' pill badge.
+   */
+  function canDisposeRun(run) {
+    if (!run) return false;
+    return reconciledByWorkItem[run.work_item_id]?.next_action === "close_out";
+  }
 
   $: selectedRun = selectedRunId ? runs.find((r) => r.run_id === selectedRunId) ?? null : null;
   $: selectedDispatch = selectedDispatchId ? dispatchNodes.find((n) => n.id === selectedDispatchId) ?? null : null;
@@ -172,6 +193,61 @@
       error = e.message;
     } finally {
       openingPrRunIds = openingPrRunIds.filter((id) => id !== run.run_id);
+    }
+  }
+
+  /**
+   * studio-84: disposition helpers. Both dispatch to the existing backend
+   * endpoints (REST /api/execution/close-merged and /archive-and-close-merged),
+   * then optimistically remove the run from the client-side Recent list and
+   * kick a quiet loadData() so the reconciled + preview state refreshes.
+   * On failure the error is surfaced via the existing `error` banner.
+   */
+  function dispositionHintFor(message) {
+    if (!message) return "";
+    // The backend guard (execution.service.ts assertNoActiveRunForWorkItem)
+    // prefixes with this code; surface a compact inline hint for it.
+    if (message.includes("cannot_dispose_work_item_active_run")) {
+      return "Blocked: another run for this work item is still active. Wait for it to finish, then retry.";
+    }
+    return message;
+  }
+
+  async function handleCloseRun(run) {
+    if (!run || disposingRunIds.includes(run.run_id)) return;
+    disposingRunIds = [...disposingRunIds, run.run_id];
+    error = "";
+    dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
+    try {
+      await closeMergedPullRequest(run.work_item_id);
+      runs = runs.filter((r) => r.run_id !== run.run_id);
+      if (selectedRunId === run.run_id) selectedRunId = null;
+      dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
+      await loadData({ quiet: true });
+    } catch (e) {
+      error = e.message;
+      dispositionErrors = { ...dispositionErrors, [run.run_id]: dispositionHintFor(e.message) };
+    } finally {
+      disposingRunIds = disposingRunIds.filter((id) => id !== run.run_id);
+    }
+  }
+
+  async function handleArchiveAndCloseRun(run) {
+    if (!run || disposingRunIds.includes(run.run_id)) return;
+    disposingRunIds = [...disposingRunIds, run.run_id];
+    error = "";
+    dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
+    try {
+      await archiveAndCloseMergedPullRequest(run.work_item_id);
+      runs = runs.filter((r) => r.run_id !== run.run_id);
+      if (selectedRunId === run.run_id) selectedRunId = null;
+      dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
+      await loadData({ quiet: true });
+    } catch (e) {
+      error = e.message;
+      dispositionErrors = { ...dispositionErrors, [run.run_id]: dispositionHintFor(e.message) };
+    } finally {
+      disposingRunIds = disposingRunIds.filter((id) => id !== run.run_id);
     }
   }
 
@@ -430,6 +506,9 @@
           dispatchNode={activeSelection === "dispatch" ? selectedDispatch : null}
           pullRequest={selectedPullRequest}
           openingPr={selectedRun ? openingPrRunIds.includes(selectedRun.run_id) : false}
+          canDispose={selectedRun ? canDisposeRun(selectedRun) : false}
+          disposing={selectedRun ? disposingRunIds.includes(selectedRun.run_id) : false}
+          dispositionError={selectedRun ? (dispositionErrors[selectedRun.run_id] || "") : ""}
           assumptions={preview.assumptions || []}
           validationPolicy={preview.validation_policy}
           on:copybranch={() => {
@@ -441,6 +520,8 @@
             else if (activeSelection === "dispatch" && selectedDispatch) copyValue(selectedDispatch.worktree_path, `Copied worktree`);
           }}
           on:openpr={() => selectedRun && handleOpenPR(selectedRun)}
+          on:closeRun={() => selectedRun && handleCloseRun(selectedRun)}
+          on:archiveAndCloseRun={() => selectedRun && handleArchiveAndCloseRun(selectedRun)}
           on:launch={() => selectedDispatch && launchNode(selectedDispatch)}
           scratchpadContent={selectedRun ? scratchpadContent[selectedRun.run_id] : undefined}
           scratchpadLoading={selectedRun ? !!scratchpadLoading[selectedRun.run_id] : false}
@@ -456,7 +537,7 @@
             {#each runs as run}
               {@const reconciled = reconciledByWorkItem[run.work_item_id]}
               {@const nextAction = reconciled?.next_action}
-              {@const showReconciledBadge = nextAction && ["open_pr", "relaunch", "investigate"].includes(nextAction)}
+              {@const showReconciledBadge = nextAction && ["open_pr", "relaunch", "investigate", "close_out"].includes(nextAction)}
               <button
                 class="run-pill"
                 class:active={selectedRunId === run.run_id && activeSelection === "run"}
@@ -776,6 +857,11 @@
   .run-pill-next-action[data-next-action="relaunch"] {
     background: rgba(210, 153, 34, 0.2);
     color: #facc15;
+  }
+  /* studio-84: merged-PR disposition ready state */
+  .run-pill-next-action[data-next-action="close_out"] {
+    background: rgba(63, 185, 80, 0.25);
+    color: #86efac;
   }
 
   /* Workspace top (header + expandable sections, scrollable if tall) */

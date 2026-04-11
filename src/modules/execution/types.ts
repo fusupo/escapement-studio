@@ -324,3 +324,39 @@ export interface CloseMergedPullRequestResult {
   removed_run_ids: string[];
   dispatch_preview: ExecutionDispatchPreview;
 }
+ * Issue #86: result of archiving execution run artifacts + generated
+ * summary for a completed work item.
+ *
+ * Produced by `archiveRunArtifactsForWorkItem` and surfaced through the
+ * thin `ExecutionService.archiveRunArtifacts` wrapper. Callers (currently
+ * #88's disposition wiring) persist `archive_path` onto the work item and
+ * report `archived_run_ids` / `skipped_run_ids` back to operators.
+ *
+ * - `archive_path` is the `archives/<slug>/` directory that contains the
+ *   moved run dirs and the generated `README.md`.
+ * - `readme_path` is the absolute path to the written README (may equal
+ *   `<archive_path>/README.md`). `null` when no README was written — e.g.
+ *   a no-op archive with zero runs to move.
+ * - `archived_run_ids` lists every run successfully moved into the
+ *   archive bundle, in the order they were processed.
+ * - `skipped_run_ids` records per-run reasons for runs the helper chose
+ *   not to move (currently only `not_terminal` — the active-run guard
+ *   short-circuits before any run is inspected, so active runs never
+ *   show up here).
+ */
+export interface ArchiveRunArtifactsResult {
+  work_item_id: string;
+  archive_path: string;
+  readme_path: string | null;
+  archived_run_ids: string[];
+  skipped_run_ids: Array<{ run_id: string; reason: string }>;
+}
+
+/**
+ * Issue #86: the terminal execution run statuses eligible for archival.
+ *
+ * `completed`, `error`, and `blocked` are the three terminal statuses
+ * `ExecutionRunStatus` can reach. `queued | preparing | disambiguating
+ * | running` runs are refused by the pre-archive active-run guard.
+ */
+export type ArchivableRunStatus = Extract<ExecutionRunStatus, "completed" | "error" | "blocked">;
