@@ -1624,6 +1624,60 @@ export class ExecutionService implements OnModuleInit {
     }
   }
 
+  /**
+   * Parse a scratchpad's `### Clarifications Needed` and `## Blockers`
+   * sections into string arrays of open items.
+   *
+   * Contract: matches the shape written by `PlansService.prepare`
+   * (plans.service.ts ~lines 383–415) — flat top-level `- ` bullets,
+   * or a single `_(none)_` sentinel when the drafter surfaced no items.
+   *
+   * Behavior:
+   *   - Scans line-by-line for the two headings.
+   *   - Collects lines starting with `- ` as bullet items until the next
+   *     `#`-prefixed heading line (any level — keeps the parser simple
+   *     and matches the flat structure the drafter emits).
+   *   - Filters out blank lines and the `_(none)_` sentinel so an empty
+   *     section reads as an empty array.
+   *   - Missing heading → empty array for that section.
+   *
+   * Used by `executeRun` when an approved plan is loaded to decide
+   * whether the disambiguation gate should fire before coding starts.
+   */
+  private parseScratchpadOpenItems(content: string): {
+    questions: string[];
+    blockers: string[];
+  } {
+    const lines = content.split(/\r?\n/);
+    const collect = (headingMatch: (line: string) => boolean): string[] => {
+      const items: string[] = [];
+      let i = 0;
+      while (i < lines.length) {
+        if (headingMatch(lines[i])) {
+          i += 1;
+          while (i < lines.length) {
+            const line = lines[i];
+            if (/^\s*#/.test(line)) break;
+            const trimmed = line.trim();
+            if (trimmed.startsWith("- ")) {
+              const body = trimmed.slice(2).trim();
+              if (body && body !== "_(none)_") {
+                items.push(body);
+              }
+            }
+            i += 1;
+          }
+          break;
+        }
+        i += 1;
+      }
+      return items;
+    };
+    const questions = collect((line) => /^\s*###\s+Clarifications Needed\s*$/.test(line));
+    const blockers = collect((line) => /^\s*##\s+Blockers\s*$/.test(line));
+    return { questions, blockers };
+  }
+
   private syncScratchpadToCanonical(run: ExecutionRunRecord): void {
     const slug = workItemSlug(run.work_item_id);
     const worktreeScratchpad = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
