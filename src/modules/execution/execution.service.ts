@@ -19,7 +19,8 @@ import {
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
-import { loadRunRecordsFromDisk } from "./run-disk-store.js";
+import { loadRunRecordsForArtifactRoot, loadRunRecordsFromDisk } from "./run-disk-store.js";
+import { archiveRunArtifactsForWorkItem } from "./run-archiver.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
@@ -29,6 +30,7 @@ import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
+  ArchiveRunArtifactsResult,
   ChecklistItem,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
@@ -2266,6 +2268,65 @@ export class ExecutionService implements OnModuleInit {
    * Called by `archiveAndCloseMergedPullRequest` and (eventually) the
    * `cancelled` disposition path.
    */
+  /**
+   * Issue #86: archive execution run artifacts + a generated README for a
+   * completed work item.
+   *
+   * Thin wrapper around `archiveRunArtifactsForWorkItem` — loads the work
+   * item, re-uses `assertNoActiveRunForWorkItem` as the pre-archive guard
+   * (which provides a `BadRequestException` for a consistent HTTP surface),
+   * hands the disk-scanned run list to the helper so the archiver and the
+   * active-run guard share the same source of truth, and returns the
+   * helper's `ArchiveRunArtifactsResult` unchanged.
+   *
+   * Deliberately NOT yet called from `archiveAndCloseMergedPullRequest` —
+   * that wiring belongs to issue #88's disposition flow so #86 can land
+   * and be reviewed as a self-contained backend slice.
+   */
+  archiveRunArtifacts(workItemId: string): ArchiveRunArtifactsResult {
+    const normalized = workItemId?.trim();
+    if (!normalized) {
+      throw new BadRequestException("work_item_id is required");
+    }
+    const workItem = this.workItemsService.get(normalized);
+    this.assertNoActiveRunForWorkItem(normalized);
+
+    // Merge in-memory `recentRuns` with the disk scan so the archiver sees
+    // runs that exist only on disk (post-restart) and in-memory runs that
+    // haven't been flushed. Dedupe by run_id — in-memory wins because it
+    // carries the freshest activity log.
+    const diskRuns = loadRunRecordsForArtifactRoot(this.artifactRoot);
+    const seen = new Set<string>();
+    const merged: ExecutionRunRecord[] = [];
+    for (const run of this.listRecentRuns()) {
+      if (run.work_item_id !== normalized) continue;
+      if (seen.has(run.run_id)) continue;
+      merged.push(run);
+      seen.add(run.run_id);
+    }
+    for (const run of diskRuns) {
+      if (run.work_item_id !== normalized) continue;
+      if (seen.has(run.run_id)) continue;
+      merged.push(run);
+      seen.add(run.run_id);
+    }
+
+    try {
+      return archiveRunArtifactsForWorkItem(this.artifactRoot, workItem, {
+        runs: merged,
+        onWarn: (message) => this.logger.warn(message),
+      });
+    } catch (error) {
+      const message = this.getErrorMessage(error);
+      // Translate the archiver's raw Error codes into BadRequestException
+      // so the HTTP surface matches the other disposition guards.
+      if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
+        throw new BadRequestException(message);
+      }
+      throw error;
+    }
+  }
+
   private movePlanDirToArchives(workItemId: string): { moved: boolean; archive_path: string | null } {
     const src = planDir(this.artifactRoot, workItemId);
     const dest = archiveDir(this.artifactRoot, workItemId);
