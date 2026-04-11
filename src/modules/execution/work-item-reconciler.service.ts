@@ -180,7 +180,7 @@ export class WorkItemReconcilerService {
    * `null` so the UI can render a safe default (no disposition action).
    */
   private async probeIssueState(workItem: WorkItemRecord): Promise<"open" | "closed" | null> {
-    if (!workItem.repo || !Number.isInteger(workItem.issue_number)) {
+    if (!workItem.repo || typeof workItem.issue_number !== "number" || !Number.isInteger(workItem.issue_number)) {
       return null;
     }
     try {
