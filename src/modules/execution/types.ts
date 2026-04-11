@@ -355,6 +355,48 @@ export interface ArchiveRunArtifactsResult {
 }
 
 /**
+ * Issue #89: compact per-run summary surfaced from an archived bundle.
+ *
+ * Derived from archived `runs/<run_id>/status.json` files and narrowed to
+ * the fields the archived-runs UI needs. `result_summary` is truncated by
+ * the archive reader so list/detail payloads stay small.
+ */
+export interface ArchivedRunSummary {
+  run_id: string;
+  status: ExecutionRunStatus;
+  branch: string;
+  base_ref: string;
+  created_at: string;
+  completed_at?: string;
+  changed_file_count: number;
+  result_summary?: string;
+  pull_request?: ExecutionPullRequestRecord;
+  archived_run_dir: string;
+}
+
+/**
+ * Issue #89: read-only archived bundle surfaced by the execution archive
+ * list/detail endpoints.
+ *
+ * `readme_content` is omitted from list responses and included by the
+ * detail endpoint only.
+ */
+export interface ArchivedRunBundle {
+  work_item_id: string;
+  work_item_name: string;
+  slug: string;
+  archive_path: string;
+  readme_path: string | null;
+  readme_exists: boolean;
+  readme_content?: string | null;
+  archived_at: string;
+  pull_request?: ExecutionPullRequestRecord | null;
+  runs: ArchivedRunSummary[];
+  plan_artifacts?: {
+    scratchpad_filename?: string;
+    metadata_filename?: string;
+  };
+ /**
  * studio-88: persisted audit trail written to `work_item.meta.studio_archive`
  * when `archiveAndCloseMergedPullRequest` completes successfully.
  *
@@ -416,6 +458,31 @@ export interface ArchiveAndCloseMergedPullRequestResult {
     skipped_run_ids: Array<{ run_id: string; reason: string }>;
   };
   dispatch_preview: ExecutionDispatchPreview;
+}
+
+/**
+ * studio-88: persisted audit trail written to `work_item.meta.studio_archive`
+ * when `archiveAndCloseMergedPullRequest` completes successfully.
+ *
+ * Mirrors the shape of `work_item.meta.studio_post_merge_sync` so both
+ * blocks can be shallow-merged into `meta` without colliding. Downstream
+ * consumers (archived-run-history UIs, post-hoc forensics) read this
+ * block to recover `archives/<slug>/` pointers without re-scanning disk.
+ *
+ * Fields:
+ * - `archived_at` — ISO timestamp the archive orchestration completed.
+ * - `readme_path` — absolute path to the README written inside
+ *   `archives/<slug>/`, or `null` when no README was written.
+ */
+export interface ExecutionStudioArchiveRecord {
+  archived_at: string;
+  readme_path: string | null;
+  pull_request?: ExecutionPullRequestRecord | null;
+  runs: ArchivedRunSummary[];
+  plan_artifacts?: {
+    scratchpad_filename?: string;
+    metadata_filename?: string;
+  };
 }
 
 /**

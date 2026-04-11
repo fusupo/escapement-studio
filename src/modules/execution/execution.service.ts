@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger, MessageEvent, OnModuleInit } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, MessageEvent, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -21,6 +21,7 @@ import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { loadRunRecordsForArtifactRoot, loadRunRecordsFromDisk } from "./run-disk-store.js";
 import { archiveRunArtifactsForWorkItem } from "./run-archiver.js";
+import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
@@ -30,6 +31,7 @@ import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
+  ArchivedRunBundle,
   ArchiveAndCloseMergedPullRequestResult,
   ArchiveRunArtifactsResult,
   ChecklistItem,
@@ -1034,6 +1036,31 @@ export class ExecutionService implements OnModuleInit {
     }
 
     return { run_id: runId, content: null };
+  }
+
+  listArchivedRunBundles(): ArchivedRunBundle[] {
+    return listArchivedRunBundles(this.artifactRoot, {
+      onWarn: (message) => this.logger.warn(message),
+    });
+  }
+
+  getArchivedRunBundle(workItemId: string): ArchivedRunBundle {
+    const normalized = workItemId?.trim();
+    if (!normalized) {
+      throw new BadRequestException("work_item_id is required");
+    }
+
+    // Keep the detail endpoint aligned with the rest of the execution API:
+    // unknown work item ids are rejected before we look for archive files.
+    this.workItemsService.get(normalized);
+
+    const bundle = readArchivedRunBundle(this.artifactRoot, normalized, {
+      onWarn: (message) => this.logger.warn(message),
+    });
+    if (!bundle) {
+      throw new NotFoundException(`No archived run bundle found for ${normalized}`);
+    }
+    return bundle;
   }
 
   async sendFollowUp(input: FollowUpMessageDto): Promise<FollowUpMessageResult> {
