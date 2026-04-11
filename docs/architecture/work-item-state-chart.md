@@ -112,5 +112,11 @@ That boundary is important for later phases because multiple runs may exist for 
 Author-time validation used for this phase:
 
 - `xmllint --noout src/modules/graph/work-item.scxml`
-- a local target-walk script to verify every transition target resolves, including `../open_pr` and `pre_pr_history`
-- `dot -Tsvg` over a parser-derived Graphviz representation to produce the committed SVG
+- schema validation remains author-time/manual for now rather than a committed CI script
+- a local target-walk check to verify every transition target resolves, including `../open_pr` and `pre_pr_history`
+
+Diagram generation is reproducible via:
+
+- `npm run generate:work-item-state-chart`
+
+That command runs `scripts/generate-work-item-state-chart.py`, which parses the committed SCXML, emits a Graphviz representation, and writes `docs/architecture/work-item-state-chart.svg`.
