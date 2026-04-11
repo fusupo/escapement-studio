@@ -176,6 +176,25 @@ export function syncMergedPullRequest(payload) {
   });
 }
 
+/**
+ * studio-87: full `merged_pr -> done` close orchestration.
+ *
+ * POSTs to `/api/execution/close-merged`. The backend owns the full
+ * ordering (close GitHub issue -> transition work item -> dispose
+ * matching recent runs), so callers don't need to chain
+ * `closeGitHubIssue` / `syncMergedPullRequest` manually.
+ *
+ * Response shape: `CloseMergedPullRequestResult`
+ *   - `work_item`   -- updated work item record (state=done)
+ *   - `closed_issue` -- closed GitHub issue summary, or null when the
+ *                       work item is not issue-backed
+ *   - `removed_run_ids` -- ids of runs spliced out of Recent execution
+ *                          runs and marked `disposed_at` on disk
+ *   - `dispatch_preview` -- post-close dispatch preview so the panel
+ *                           can refresh without an extra round trip
+ *
+ * @param {string} workItemId
+ */
 export function closeMergedPullRequest(workItemId) {
   return request("/api/execution/close-merged", {
     method: "POST",
