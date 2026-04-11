@@ -511,7 +511,7 @@
             {#each runs as run}
               {@const reconciled = reconciledByWorkItem[run.work_item_id]}
               {@const nextAction = reconciled?.next_action}
-              {@const showReconciledBadge = nextAction && ["open_pr", "relaunch", "investigate"].includes(nextAction)}
+              {@const showReconciledBadge = nextAction && ["open_pr", "relaunch", "investigate", "close_out"].includes(nextAction)}
               <button
                 class="run-pill"
                 class:active={selectedRunId === run.run_id && activeSelection === "run"}
@@ -831,6 +831,11 @@
   .run-pill-next-action[data-next-action="relaunch"] {
     background: rgba(210, 153, 34, 0.2);
     color: #facc15;
+  }
+  /* studio-84: merged-PR disposition ready state */
+  .run-pill-next-action[data-next-action="close_out"] {
+    background: rgba(63, 185, 80, 0.25);
+    color: #86efac;
   }
 
   /* Workspace top (header + expandable sections, scrollable if tall) */
