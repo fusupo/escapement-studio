@@ -38,6 +38,11 @@
   // studio-84: tracks in-flight Close / Archive-and-close disposition
   // calls per run_id so we can disable buttons and prevent double-dispatch.
   let disposingRunIds = [];
+  // studio-84: per-run last disposition error, shown inline under the
+  // DISPOSITION buttons in addition to the top error banner. Primarily
+  // targets the `cannot_dispose_work_item_active_run` guard so operators
+  // see why the action was blocked without reading the toast.
+  let dispositionErrors = {};
   let prResults = {};
   let followUpTexts = {};
   let sendingFollowUp = {};
@@ -198,17 +203,30 @@
    * kick a quiet loadData() so the reconciled + preview state refreshes.
    * On failure the error is surfaced via the existing `error` banner.
    */
+  function dispositionHintFor(message) {
+    if (!message) return "";
+    // The backend guard (execution.service.ts assertNoActiveRunForWorkItem)
+    // prefixes with this code; surface a compact inline hint for it.
+    if (message.includes("cannot_dispose_work_item_active_run")) {
+      return "Blocked: another run for this work item is still active. Wait for it to finish, then retry.";
+    }
+    return message;
+  }
+
   async function handleCloseRun(run) {
     if (!run || disposingRunIds.includes(run.run_id)) return;
     disposingRunIds = [...disposingRunIds, run.run_id];
     error = "";
+    dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
     try {
       await closeMergedPullRequest(run.work_item_id);
       runs = runs.filter((r) => r.run_id !== run.run_id);
       if (selectedRunId === run.run_id) selectedRunId = null;
+      dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
       await loadData({ quiet: true });
     } catch (e) {
       error = e.message;
+      dispositionErrors = { ...dispositionErrors, [run.run_id]: dispositionHintFor(e.message) };
     } finally {
       disposingRunIds = disposingRunIds.filter((id) => id !== run.run_id);
     }
@@ -218,13 +236,16 @@
     if (!run || disposingRunIds.includes(run.run_id)) return;
     disposingRunIds = [...disposingRunIds, run.run_id];
     error = "";
+    dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
     try {
       await archiveAndCloseMergedPullRequest(run.work_item_id);
       runs = runs.filter((r) => r.run_id !== run.run_id);
       if (selectedRunId === run.run_id) selectedRunId = null;
+      dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
       await loadData({ quiet: true });
     } catch (e) {
       error = e.message;
+      dispositionErrors = { ...dispositionErrors, [run.run_id]: dispositionHintFor(e.message) };
     } finally {
       disposingRunIds = disposingRunIds.filter((id) => id !== run.run_id);
     }
@@ -487,6 +508,7 @@
           openingPr={selectedRun ? openingPrRunIds.includes(selectedRun.run_id) : false}
           canDispose={selectedRun ? canDisposeRun(selectedRun) : false}
           disposing={selectedRun ? disposingRunIds.includes(selectedRun.run_id) : false}
+          dispositionError={selectedRun ? (dispositionErrors[selectedRun.run_id] || "") : ""}
           assumptions={preview.assumptions || []}
           validationPolicy={preview.validation_policy}
           on:copybranch={() => {
