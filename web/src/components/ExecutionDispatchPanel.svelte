@@ -485,6 +485,8 @@
           dispatchNode={activeSelection === "dispatch" ? selectedDispatch : null}
           pullRequest={selectedPullRequest}
           openingPr={selectedRun ? openingPrRunIds.includes(selectedRun.run_id) : false}
+          canDispose={selectedRun ? canDisposeRun(selectedRun) : false}
+          disposing={selectedRun ? disposingRunIds.includes(selectedRun.run_id) : false}
           assumptions={preview.assumptions || []}
           validationPolicy={preview.validation_policy}
           on:copybranch={() => {
@@ -496,6 +498,8 @@
             else if (activeSelection === "dispatch" && selectedDispatch) copyValue(selectedDispatch.worktree_path, `Copied worktree`);
           }}
           on:openpr={() => selectedRun && handleOpenPR(selectedRun)}
+          on:closeRun={() => selectedRun && handleCloseRun(selectedRun)}
+          on:archiveAndCloseRun={() => selectedRun && handleArchiveAndCloseRun(selectedRun)}
           on:launch={() => selectedDispatch && launchNode(selectedDispatch)}
           scratchpadContent={selectedRun ? scratchpadContent[selectedRun.run_id] : undefined}
           scratchpadLoading={selectedRun ? !!scratchpadLoading[selectedRun.run_id] : false}
