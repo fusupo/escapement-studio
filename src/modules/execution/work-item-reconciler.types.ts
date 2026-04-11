@@ -50,6 +50,12 @@ export interface ReconciledWorktree {
  *   underlying `gh` call fails, or when no PR exists for the branch
  * - `worktree` is `null` only when no branch is known; otherwise it is a
  *   probe result (may have `exists: false`)
+ * - `github_issue_state` is the lowercased GitHub issue state ("open" |
+ *   "closed") when the work item has a linked issue and the probe
+ *   succeeded; `null` when the work item has no linked issue or when the
+ *   probe failed / was skipped (see #85). Used by the Execution tab to
+ *   gate merged-run disposition actions — the UI only shows Close /
+ *   Archive-and-close buttons when this field is `"open"`.
  * - `rationale` is a short human-readable string summarizing which inputs
  *   drove the `next_action` verdict; used by the UI and startup log
  */
@@ -59,6 +65,7 @@ export interface ReconciledWorkItem {
   latest_run: ExecutionRunRecord | null;
   github_pr: ReconciledPullRequest | null;
   worktree: ReconciledWorktree | null;
+  github_issue_state: "open" | "closed" | null;
   next_action: NextAction;
   rationale: string;
 }

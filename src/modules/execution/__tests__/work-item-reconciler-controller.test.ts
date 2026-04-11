@@ -10,6 +10,7 @@ function makeReconciled(id: string): ReconciledWorkItem {
     latest_run: null,
     github_pr: null,
     worktree: null,
+    github_issue_state: null,
     next_action: "relaunch",
     rationale: "stub",
   };
