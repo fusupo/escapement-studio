@@ -136,6 +136,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     node._pr = extractPullRequest(node);
     node._prStatus = classifyPrStatus(node._pr);
     node._isFrontier = frontierIds.has(node.id);
+    node._isBlockedPlanned = node.state === "planned" && !frontierIds.has(node.id);
     return node;
   });
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -158,7 +159,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     const color = STATE_COLORS[node.state] ?? "#484f58";
     const isSelected = node.id === selectedId;
     const classes = ["graph-node"];
-    if (node._isFrontier) classes.push("graph-node--frontier");
+    if (node._isBlockedPlanned) classes.push("graph-node--blocked-planned");
     if (node.state === "in_progress") classes.push("graph-node--in-progress");
     if (node.state === "merged_pr") classes.push("graph-node--merged-pr");
 
@@ -215,19 +216,19 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       .attr("opacity", 0.8);
   }
 
-  const frontierPattern = defs.append("pattern")
-    .attr("id", "graph-frontier-diagonal-stripes")
+  const blockedPlannedPattern = defs.append("pattern")
+    .attr("id", "graph-blocked-planned-diagonal-stripes")
     .attr("patternUnits", "userSpaceOnUse")
     .attr("width", 8)
     .attr("height", 8)
     .attr("patternTransform", "rotate(45)");
 
-  frontierPattern.append("rect")
+  blockedPlannedPattern.append("rect")
     .attr("width", 8)
     .attr("height", 8)
     .attr("fill", "transparent");
 
-  frontierPattern.append("line")
+  blockedPlannedPattern.append("line")
     .attr("x1", 0)
     .attr("y1", 0)
     .attr("x2", 0)
@@ -288,7 +289,9 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       .classed("selected", data.id === selectedId)
       .classed("graph-node--in-progress", data.state === "in_progress")
       .classed("graph-node--merged-pr", data.state === "merged_pr")
+      .classed("graph-node--blocked-planned", data._isBlockedPlanned)
       .attr("data-frontier", data._isFrontier ? "true" : "false")
+      .attr("data-blocked-planned", data._isBlockedPlanned ? "true" : "false")
       .attr("data-state", data.state ?? "unknown");
 
     const baseRect = nodeGroup.select("rect");
@@ -301,17 +304,17 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       const rx = Number(baseRect.attr("rx") || 0);
       const ry = Number(baseRect.attr("ry") || 0);
 
-      if (data._isFrontier) {
-        const frontierInset = Math.min(1.5, width / 6, height / 6);
+      if (data._isBlockedPlanned) {
+        const blockedInset = Math.min(1.5, width / 6, height / 6);
         nodeGroup.insert("rect", "g.label")
-          .attr("class", "frontier-overlay")
-          .attr("fill", "url(#graph-frontier-diagonal-stripes)")
-          .attr("x", x + frontierInset)
-          .attr("y", y + frontierInset)
-          .attr("width", Math.max(0, width - frontierInset * 2))
-          .attr("height", Math.max(0, height - frontierInset * 2))
-          .attr("rx", Math.max(0, rx - frontierInset / 2))
-          .attr("ry", Math.max(0, ry - frontierInset / 2));
+          .attr("class", "blocked-planned-overlay")
+          .attr("fill", "url(#graph-blocked-planned-diagonal-stripes)")
+          .attr("x", x + blockedInset)
+          .attr("y", y + blockedInset)
+          .attr("width", Math.max(0, width - blockedInset * 2))
+          .attr("height", Math.max(0, height - blockedInset * 2))
+          .attr("rx", Math.max(0, rx - blockedInset / 2))
+          .attr("ry", Math.max(0, ry - blockedInset / 2));
       }
 
       if (data.state === "in_progress") {
