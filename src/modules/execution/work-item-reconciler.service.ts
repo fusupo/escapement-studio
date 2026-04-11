@@ -138,6 +138,12 @@ export class WorkItemReconcilerService {
       const latestRun = this.pickLatestRun(runsByWorkItem.get(workItem.id) ?? []);
       const worktree = this.probeWorktree(workItem, latestRun);
       const githubPr = await this.probePullRequest(workItem, latestRun);
+      // Issue #85: only probe issue state when the PR is merged —
+      // non-close_out rows never consume `github_issue_state`, and
+      // `gh issue view` is rate-limited, so skip the call otherwise.
+      const githubIssueState = this.shouldProbeIssueState(githubPr)
+        ? await this.probeIssueState(workItem)
+        : null;
       const { nextAction, rationale } = decideNextAction({ workItem, latestRun, worktree, githubPr });
 
       out.push({
@@ -146,12 +152,48 @@ export class WorkItemReconcilerService {
         latest_run: latestRun,
         github_pr: githubPr,
         worktree,
+        github_issue_state: githubIssueState,
         next_action: nextAction,
         rationale,
       });
     }
 
     return out;
+  }
+
+  /**
+   * Issue #85: only fetch GitHub issue state when the reconciled PR is
+   * merged. The Execution tab's Close / Archive-and-close gate only
+   * consumes `github_issue_state` for close_out rows, so skipping the
+   * `gh issue view` call on every in-progress reconcile keeps the
+   * common case cheap.
+   */
+  private shouldProbeIssueState(githubPr: ReconciledPullRequest | null): boolean {
+    if (!githubPr) return false;
+    return githubPr.state === "MERGED" || Boolean(githubPr.merged_at);
+  }
+
+  /**
+   * Issue #85: probe the linked GitHub issue and return its normalized
+   * state ("open" | "closed"). Mirrors `probePullRequest`'s graceful
+   * degradation — a failing `gh issue view` logs a warning and returns
+   * `null` so the UI can render a safe default (no disposition action).
+   */
+  private async probeIssueState(workItem: WorkItemRecord): Promise<"open" | "closed" | null> {
+    if (!workItem.repo || !Number.isInteger(workItem.issue_number)) {
+      return null;
+    }
+    try {
+      const issue = await this.githubService.readIssue(workItem.repo, workItem.issue_number);
+      const raw = (issue?.state ?? "").toString().toLowerCase();
+      if (raw === "open" || raw === "closed") return raw;
+      return null;
+    } catch (error) {
+      this.logger.warn(
+        `readIssue failed for ${workItem.repo}#${workItem.issue_number}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
   }
 
   /**
