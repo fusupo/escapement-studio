@@ -460,6 +460,31 @@ export interface ArchiveAndCloseMergedPullRequestResult {
 }
 
 /**
+ * studio-88: persisted audit trail written to `work_item.meta.studio_archive`
+ * when `archiveAndCloseMergedPullRequest` completes successfully.
+ *
+ * Mirrors the shape of `work_item.meta.studio_post_merge_sync` so both
+ * blocks can be shallow-merged into `meta` without colliding. Downstream
+ * consumers (archived-run-history UIs, post-hoc forensics) read this
+ * block to recover `archives/<slug>/` pointers without re-scanning disk.
+ *
+ * Fields:
+ * - `archived_at` — ISO timestamp the archive orchestration completed.
+ * - `readme_path` — absolute path to the README written inside
+ *   `archives/<slug>/`, or `null` when no README was written.
+ */
+export interface ExecutionStudioArchiveRecord {
+  archived_at: string;
+  readme_path: string | null;
+  pull_request?: ExecutionPullRequestRecord | null;
+  runs: ArchivedRunSummary[];
+  plan_artifacts?: {
+    scratchpad_filename?: string;
+    metadata_filename?: string;
+  };
+}
+
+/**
  * Issue #86: the terminal execution run statuses eligible for archival.
  *
  * `completed`, `error`, and `blocked` are the three terminal statuses
