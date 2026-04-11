@@ -26,9 +26,24 @@ import { SettingsService } from "../settings/settings.service.js";
  * Failures throw — `PlansService.prepare` is responsible for surfacing them
  * to the HTTP client without transitioning work item state.
  */
+type DraftAttemptResult =
+  | { kind: "ok"; envelope: PlanDraftEnvelope }
+  | { kind: "retry_empty"; error: Error };
+
 @Injectable()
 export class PlanDrafterService {
   private readonly logger = new Logger(PlanDrafterService.name);
+
+  /**
+   * Max attempts for `draft()` to recover from transient model flakes.
+   * Observed failure: the model emits a `tool_use` block whose streamed
+   * JSON arguments are malformed (e.g. unquoted property name). `partial-json`
+   * rejects the buffer, `pi-ai` stamps `stopReason="error"`, the session ends
+   * with a broken assistant turn as the last message, and our helper sees
+   * empty text. A fresh session usually succeeds on retry because the
+   * failure is non-deterministic model output.
+   */
+  private static readonly MAX_DRAFT_ATTEMPTS = 2;
 
   constructor(
     @Inject(SettingsService) private readonly settingsService: SettingsService,
@@ -49,6 +64,45 @@ export class PlanDrafterService {
     this.logger.log(
       `Drafting plan for ${workItem.id} (prompt size: ${prompt.length} chars)`,
     );
+
+    let lastError: Error | null = null;
+    for (let attempt = 1; attempt <= PlanDrafterService.MAX_DRAFT_ATTEMPTS; attempt++) {
+      const result = await this.runDraftAttempt({ prompt, workItem });
+      if (result.kind === "ok") {
+        const envelope = result.envelope;
+        this.logger.log(
+          `Drafted plan for ${workItem.id}${attempt > 1 ? ` (attempt ${attempt})` : ""}: ` +
+            `${envelope.implementation_tasks.length} tasks, ` +
+            `${envelope.affected_files.length} files, ${envelope.questions.length} open questions`,
+        );
+        return envelope;
+      }
+      lastError = result.error;
+      if (attempt === PlanDrafterService.MAX_DRAFT_ATTEMPTS) {
+        throw lastError;
+      }
+      this.logger.warn(
+        `PlanDrafterService.draft: attempt ${attempt}/${PlanDrafterService.MAX_DRAFT_ATTEMPTS} ` +
+          `for ${workItem.id} hit a retryable session error; starting a fresh session. ` +
+          `Underlying: ${lastError.message}`,
+      );
+    }
+    throw lastError ?? new Error("PlanDrafterService.draft: exhausted attempts with no error");
+  }
+
+  /**
+   * Single drafting attempt: create a fresh session, prompt it, snapshot
+   * messages, dispose, and either return the parsed envelope or — when the
+   * session died mid-stream with `stopReason="error"` and no text content —
+   * return a `retry_empty` result so `draft()` can retry. Non-retryable
+   * failures (setup errors, prompt throws, parse errors, empty text with
+   * a non-error stop reason) throw directly.
+   */
+  private async runDraftAttempt(args: {
+    prompt: string;
+    workItem: WorkItemRecord;
+  }): Promise<DraftAttemptResult> {
+    const { prompt, workItem } = args;
 
     const cwd = process.cwd();
     const { session, modelFallbackMessage } = await createAgentSession({
@@ -82,9 +136,10 @@ export class PlanDrafterService {
 
     if (!assistantText) {
       // Diagnostic: inspect the actual last assistant message so we know WHY
-      // the text is empty. Common causes: stopReason="error" (API/rate limit),
-      // stopReason="aborted" with no content, final turn was all tool_use
-      // blocks, or the model returned literally empty text.
+      // the text is empty. Common causes: stopReason="error" (API/rate limit
+      // or malformed tool-input JSON from the model), stopReason="aborted"
+      // with no content, final turn was all tool_use blocks, or the model
+      // returned literally empty text.
       const lastAssistant = [...sessionMessagesSnapshot].reverse().find(
         (m) => (m as { role?: string }).role === "assistant",
       ) as
@@ -110,18 +165,20 @@ export class PlanDrafterService {
             ).length,
           }
         : { note: "no assistant message in session" };
-      throw new Error(
+      const error = new Error(
         `PlanDrafterService.draft: agent session for ${workItem.id} returned an empty assistant message. ` +
           `Diagnostic: ${JSON.stringify(diag)}`,
       );
+      const hadTextContent = (lastAssistant?.content ?? []).some((c) => c.type === "text");
+      const retryable = lastAssistant?.stopReason === "error" && !hadTextContent;
+      if (retryable) {
+        return { kind: "retry_empty", error };
+      }
+      throw error;
     }
 
     const envelope = this.parseEnvelope(assistantText);
-    this.logger.log(
-      `Drafted plan for ${workItem.id}: ${envelope.implementation_tasks.length} tasks, ` +
-        `${envelope.affected_files.length} files, ${envelope.questions.length} open questions`,
-    );
-    return envelope;
+    return { kind: "ok", envelope };
   }
 
   /**

@@ -17,22 +17,40 @@ import type { WorkItemRecord } from "../../graph/types.js";
 
 let mockAssistantText: string | null = "";
 let mockBehavior: "ok" | "throw_in_create" | "throw_in_prompt" = "ok";
+let mockSessionMessages: unknown[] = [];
+type MockAttempt = {
+  assistantText: string | null;
+  messages?: unknown[];
+  behavior?: "ok" | "throw_in_create" | "throw_in_prompt";
+};
+let mockAttemptQueue: MockAttempt[] = [];
+let mockCreateSessionCallCount = 0;
 
 vi.mock("@mariozechner/pi-coding-agent", () => {
   return {
     createAgentSession: vi.fn(async () => {
-      if (mockBehavior === "throw_in_create") {
+      mockCreateSessionCallCount++;
+      // Queue takes priority when present; lets tests exercise multi-attempt
+      // behavior (e.g. first attempt returns a retryable empty, second returns
+      // valid JSON). Falls back to the single-shot `mock*` vars otherwise.
+      const attempt = mockAttemptQueue.shift();
+      const behavior = attempt?.behavior ?? mockBehavior;
+      const assistantText = attempt ? attempt.assistantText : mockAssistantText;
+      const sessionMessages = attempt?.messages ?? mockSessionMessages;
+
+      if (behavior === "throw_in_create") {
         throw new Error("createAgentSession blew up");
       }
       const session = {
         sessionId: "mock-session",
+        messages: sessionMessages,
         async prompt(_text: string) {
-          if (mockBehavior === "throw_in_prompt") {
+          if (behavior === "throw_in_prompt") {
             throw new Error("session.prompt blew up");
           }
         },
         getLastAssistantText() {
-          return mockAssistantText;
+          return assistantText;
         },
         dispose() {
           // no-op
@@ -112,6 +130,9 @@ function validEnvelopeJson(): string {
 beforeEach(() => {
   mockAssistantText = validEnvelopeJson();
   mockBehavior = "ok";
+  mockSessionMessages = [];
+  mockAttemptQueue = [];
+  mockCreateSessionCallCount = 0;
 });
 
 describe("PlanDrafterService.loadSkillBody", () => {
@@ -364,5 +385,77 @@ describe("PlanDrafterService.draft (integration with mocked pi-coding-agent)", (
     mockBehavior = "throw_in_prompt";
     const service = makeService();
     await expect(service.draft(makeWorkItem(), null)).rejects.toThrow(/session.prompt blew up/);
+  });
+
+  // #85 regression — the model emitted a tool_use block with malformed JSON
+  // arguments, partial-json rejected it, pi-ai stamped stopReason="error",
+  // the session ended with a broken assistant turn as the last message,
+  // and our helper saw empty text. draft() should retry with a fresh
+  // session on this specific failure mode.
+  it("retries once when the first session dies mid-stream with stopReason=error", async () => {
+    mockAttemptQueue = [
+      {
+        assistantText: "",
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage:
+              "Expected double-quoted property name in JSON at position 106",
+            content: [{ type: "toolCall", name: "Grep" }],
+          },
+        ],
+      },
+      {
+        assistantText: validEnvelopeJson(),
+        messages: [],
+      },
+    ];
+    const service = makeService();
+    const result = await service.draft(makeWorkItem(), "issue body");
+    expect(result.summary).toBe("Drafted summary");
+    expect(mockCreateSessionCallCount).toBe(2);
+  });
+
+  it("does NOT retry when empty text comes from a non-error stop reason", async () => {
+    // stopReason="end_turn" with no text blocks is probably a real bug,
+    // not a flake, so fail fast with the diagnostic.
+    mockAttemptQueue = [
+      {
+        assistantText: "",
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "end_turn",
+            content: [{ type: "toolCall", name: "Read" }],
+          },
+        ],
+      },
+      // Queue includes a would-be-successful attempt — it should NOT be consumed.
+      { assistantText: validEnvelopeJson(), messages: [] },
+    ];
+    const service = makeService();
+    await expect(service.draft(makeWorkItem(), null)).rejects.toThrow(/empty assistant message/);
+    expect(mockCreateSessionCallCount).toBe(1);
+  });
+
+  it("rethrows the diagnostic error after exhausting retries", async () => {
+    // Two consecutive retryable failures — draft() should give up after
+    // MAX_DRAFT_ATTEMPTS and throw the last diagnostic error.
+    const retryableAttempt: MockAttempt = {
+      assistantText: "",
+      messages: [
+        {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "parse error",
+          content: [{ type: "toolCall", name: "Grep" }],
+        },
+      ],
+    };
+    mockAttemptQueue = [retryableAttempt, retryableAttempt];
+    const service = makeService();
+    await expect(service.draft(makeWorkItem(), null)).rejects.toThrow(/empty assistant message/);
+    expect(mockCreateSessionCallCount).toBe(2);
   });
 });
