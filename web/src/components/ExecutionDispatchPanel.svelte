@@ -191,6 +191,45 @@
     }
   }
 
+  /**
+   * studio-84: disposition helpers. Both dispatch to the existing backend
+   * endpoints (REST /api/execution/close-merged and /archive-and-close-merged),
+   * then optimistically remove the run from the client-side Recent list and
+   * kick a quiet loadData() so the reconciled + preview state refreshes.
+   * On failure the error is surfaced via the existing `error` banner.
+   */
+  async function handleCloseRun(run) {
+    if (!run || disposingRunIds.includes(run.run_id)) return;
+    disposingRunIds = [...disposingRunIds, run.run_id];
+    error = "";
+    try {
+      await closeMergedPullRequest(run.work_item_id);
+      runs = runs.filter((r) => r.run_id !== run.run_id);
+      if (selectedRunId === run.run_id) selectedRunId = null;
+      await loadData({ quiet: true });
+    } catch (e) {
+      error = e.message;
+    } finally {
+      disposingRunIds = disposingRunIds.filter((id) => id !== run.run_id);
+    }
+  }
+
+  async function handleArchiveAndCloseRun(run) {
+    if (!run || disposingRunIds.includes(run.run_id)) return;
+    disposingRunIds = [...disposingRunIds, run.run_id];
+    error = "";
+    try {
+      await archiveAndCloseMergedPullRequest(run.work_item_id);
+      runs = runs.filter((r) => r.run_id !== run.run_id);
+      if (selectedRunId === run.run_id) selectedRunId = null;
+      await loadData({ quiet: true });
+    } catch (e) {
+      error = e.message;
+    } finally {
+      disposingRunIds = disposingRunIds.filter((id) => id !== run.run_id);
+    }
+  }
+
   function canSendFollowUp(run) {
     return ["running", "preparing", "completed", "disambiguating"].includes(run.status);
   }
