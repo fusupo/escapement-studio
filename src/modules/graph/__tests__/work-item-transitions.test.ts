@@ -136,8 +136,11 @@ describe("WorkItemsController.transition", () => {
     const disallowed: Array<[WorkItemState, WorkItemState]> = [
       ["planned", "in_progress"], // must launch, not manually set
       ["planned", "done"],
+      ["run_errored", "ready"],
+      ["closed", "done"],
       ["done", "planned"],
       ["merged_pr", "done"], // disposition flow (step 7) uses dedicated endpoints, not this allowlist
+      ["archived", "planned"],
       ["cancelled", "planned"],
       ["ready", "in_progress"], // must launch, not manually set
     ];
@@ -175,8 +178,11 @@ describe("state-transitions helpers", () => {
     expect(isValidHumanTransition("merged_pr", "done")).toBe(false);
   });
 
-  it("VALID_HUMAN_TRANSITIONS has no entries for terminal states", () => {
+  it("VALID_HUMAN_TRANSITIONS has no entries for terminal and placeholder states", () => {
+    expect(VALID_HUMAN_TRANSITIONS.run_errored).toHaveLength(0);
+    expect(VALID_HUMAN_TRANSITIONS.closed).toHaveLength(0);
     expect(VALID_HUMAN_TRANSITIONS.done).toHaveLength(0);
+    expect(VALID_HUMAN_TRANSITIONS.archived).toHaveLength(0);
     expect(VALID_HUMAN_TRANSITIONS.cancelled).toHaveLength(0);
     expect(VALID_HUMAN_TRANSITIONS.merged_pr).toHaveLength(0);
   });
