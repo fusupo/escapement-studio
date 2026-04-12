@@ -8,6 +8,8 @@ function leafState(state) {
   return state?.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
 }
 
+const DELETE_ELIGIBLE_STATES = new Set(["planned", "drafting", "ready"]);
+
 export function buildGraphNodeContextMenu({
   item,
   launchEligibility,
@@ -17,6 +19,8 @@ export function buildGraphNodeContextMenu({
   planStateLoading = false,
   preparingPlan = false,
   approvingPlan = false,
+  deletingWorkItem = false,
+  connectedEdges = [],
 } = {}) {
   if (!item) {
     return null;
@@ -49,6 +53,10 @@ export function buildGraphNodeContextMenu({
         : formatDispatchNodeSummary(launchEligibility.dispatch_node);
 
   const actions = [];
+  const deleteEligible = item.kind === "issue"
+    && !!item.repo
+    && !!item.issue_number
+    && DELETE_ELIGIBLE_STATES.has(workItemState);
 
   if (item.issue_url) {
     actions.push({
@@ -107,6 +115,19 @@ export function buildGraphNodeContextMenu({
     disabled: !launchGateOk,
     emphasis: "primary",
   });
+
+  if (deleteEligible) {
+    actions.push({
+      id: "delete-work-item",
+      kind: "button",
+      label: deletingWorkItem ? "Deleting…" : "Delete work item",
+      description: connectedEdges.length > 0
+        ? `Destructive delete. Removes the issue-backed node and ${connectedEdges.length} connected edge${connectedEdges.length === 1 ? "" : "s"}.`
+        : "Destructive delete. Removes the GitHub issue when possible and deletes the Studio node instead of cancelling it.",
+      disabled: deletingWorkItem,
+      emphasis: "danger",
+    });
+  }
 
   return {
     title: item.id,

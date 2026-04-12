@@ -230,6 +230,14 @@ export function archiveAndCloseMergedPullRequest(workItemId) {
   });
 }
 
+export function deleteWorkItem(payload) {
+  return request("/api/execution/delete-work-item", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 // ADR 014 step 8 — plan lifecycle endpoints.
 // See src/modules/plans/plans.controller.ts. The GET endpoint returns
 // { work_item_id, metadata, scratchpad_content } and 404s when no plan
