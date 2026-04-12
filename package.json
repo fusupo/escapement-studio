@@ -19,6 +19,7 @@
     "@nestjs/common": "^11.1.6",
     "@nestjs/core": "^11.1.6",
     "@nestjs/platform-express": "^11.1.6",
+    "@nestjs/schedule": "^6.1.1",
     "@scion-scxml/core": "^2.6.24",
     "better-sqlite3": "^11.10.0",
     "dagre-d3-es": "^7.0.14",

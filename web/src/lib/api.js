@@ -103,6 +103,17 @@ export function listArchivedExecutionRuns() {
   return request("/api/execution/archived-runs");
 }
 
+/**
+ * studio-197: trigger a full cache refresh + HSM dispatch sweep.
+ * Optionally scoped to a single repo.
+ */
+export function refreshGitHubCache(repo) {
+  const url = repo
+    ? `/api/github-cache/refresh?repo=${encodeURIComponent(repo)}`
+    : "/api/github-cache/refresh";
+  return request(url, { method: "POST", headers: jsonHeaders, body: JSON.stringify({}) });
+}
+
 export function getArchivedExecutionRunBundle(workItemId) {
   return request(`/api/execution/archived-runs/${encodeURIComponent(workItemId)}`);
 }

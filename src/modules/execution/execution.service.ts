@@ -22,6 +22,7 @@ import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-w
 import { loadRunRecordsForArtifactRoot, loadRunRecordsFromDisk } from "./run-disk-store.js";
 import { archiveRunArtifactsForWorkItem } from "./run-archiver.js";
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
+import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
@@ -88,6 +89,7 @@ export class ExecutionService implements OnModuleInit {
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
+    @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
   ) {
@@ -562,6 +564,19 @@ export class ExecutionService implements OnModuleInit {
         type: "gh.pr_opened",
         pull_request: prPayload,
       });
+      // studio-197: write-through to batch cache so next reconcile sees the PR.
+      if (workItem.repo) {
+        this.githubBatchCache.upsertPullRequest(workItem.repo, {
+          number: pullRequest.number,
+          state: "OPEN",
+          merged_at: null,
+          head_ref: pullRequest.head_ref,
+          base_ref: pullRequest.base_ref,
+          url: pullRequest.url,
+          title: pullRequest.title,
+          is_draft: pullRequest.is_draft ?? false,
+        });
+      }
       // Write additional fields that the HSM doesn't manage.
       const existingMeta = this.workItemsService.get(run.work_item_id).meta ?? {};
       this.workItemsService.update(run.work_item_id, {
@@ -617,6 +632,17 @@ export class ExecutionService implements OnModuleInit {
         base_ref: pullRequest.base_ref,
         merged_at: pullRequest.merged_at,
       },
+    });
+    // studio-197: write-through to batch cache so next reconcile sees MERGED.
+    this.githubBatchCache.upsertPullRequest(workItem.repo, {
+      number: pullRequest.number,
+      state: "MERGED",
+      merged_at: pullRequest.merged_at,
+      head_ref: pullRequest.head_ref,
+      base_ref: pullRequest.base_ref,
+      url: pullRequest.url,
+      title: pullRequest.title,
+      is_draft: false,
     });
     this.workItemsService.update(workItem.id, {
       actual_files: actualFilesSelection.files,
@@ -2446,12 +2472,26 @@ export class ExecutionService implements OnModuleInit {
       );
     }
 
+    // studio-197: write-through closed issue to batch cache.
+    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
+    if (closedIssue) {
+      const wi = this.workItemsService.get(workItemId);
+      if (wi.repo) {
+        this.githubBatchCache.upsertIssue(wi.repo, {
+          number: closedIssue.number,
+          state: "closed",
+          closed_at: new Date().toISOString(),
+          url: closedIssue.url,
+          title: closedIssue.title,
+        });
+      }
+    }
+
     // Post-dispatch finalizer: dispose matching runs.
     const removedRunIds = this.removeRunsForWorkItem(workItemId);
 
     // Build the response envelope.
     const updatedWorkItem = this.workItemsService.get(workItemId);
-    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
 
     return {
       work_item: {
@@ -2627,11 +2667,25 @@ export class ExecutionService implements OnModuleInit {
       );
     }
 
+    // studio-197: write-through closed issue to batch cache.
+    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
+    if (closedIssue) {
+      const wi = this.workItemsService.get(workItemId);
+      if (wi.repo) {
+        this.githubBatchCache.upsertIssue(wi.repo, {
+          number: closedIssue.number,
+          state: "closed",
+          closed_at: new Date().toISOString(),
+          url: closedIssue.url,
+          title: closedIssue.title,
+        });
+      }
+    }
+
     // Post-dispatch finalizer.
     const removedRunIds = this.removeRunsForWorkItem(workItemId);
 
     const updatedWorkItem = this.workItemsService.get(workItemId);
-    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
     const archiveData = result.handler_data?.archive_result as {
       archive_path: string;
       readme_path: string | null;
