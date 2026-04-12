@@ -225,10 +225,9 @@ describe("WorkItemReconcilerService.reconcile", () => {
   });
 
   // Regression: ADR 014 split in_progress into in_progress → open_pr →
-  // merged_pr → done. Before this fix, selectWorkItems only picked
-  // in_progress, so a work item sitting at merged_pr (with a completed run
-  // and a merged PR) never produced a close_out row and the disposition UI
-  // stayed hidden. The reconciler must now include open_pr and merged_pr.
+  // merged_pr → done, and issue #193 widens the reconcilable set further
+  // to include run_errored and closed. Before this fix, selectWorkItems
+  // only picked in_progress, so downstream operator rows stayed hidden.
   it("includes merged_pr work items and surfaces close_out rows", async () => {
     const run = makeRun({
       pull_request: {
@@ -282,9 +281,52 @@ describe("WorkItemReconcilerService.reconcile", () => {
     expect(reconciled[0].next_action).toBe("awaiting_review");
   });
 
-  it("excludes done work items from the reconciled feed", async () => {
+  it("includes run_errored work items in the reconciled feed", async () => {
     const { service } = makeService({
-      workItems: [makeWorkItem({ state: "done" })],
+      workItems: [makeWorkItem({ state: "run_errored" })],
+      runs: [makeRun({ status: "error", progress_message: "boom" })],
+      worktreeExists: true,
+    });
+    const reconciled = await service.reconcile();
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].graph_state).toBe("run_errored");
+    expect(reconciled[0].next_action).toBe("investigate");
+  });
+
+  it("includes closed work items in the reconciled feed", async () => {
+    const run = makeRun({
+      pull_request: {
+        number: 192,
+        url: "https://github.com/x/y/pull/192",
+        title: "t",
+        body: "b",
+        base_ref: "develop",
+        head_ref: "studio-176-branch",
+        is_draft: false,
+        created_at: "2026-04-10T00:00:00.000Z",
+        state: "CLOSED",
+        merged_at: null,
+      },
+    });
+    const { service } = makeService({
+      workItems: [makeWorkItem({ state: "closed" })],
+      runs: [run],
+      worktreeExists: true,
+    });
+    const reconciled = await service.reconcile();
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].graph_state).toBe("closed");
+    expect(reconciled[0].next_action).toBe("abandon");
+  });
+
+  it("excludes done, archived, cancelled, and deferred work items from the reconciled feed", async () => {
+    const { service } = makeService({
+      workItems: [
+        makeWorkItem({ id: "studio-done", state: "done" }),
+        makeWorkItem({ id: "studio-archived", state: "archived" }),
+        makeWorkItem({ id: "studio-cancelled", state: "cancelled" }),
+        makeWorkItem({ id: "studio-deferred", state: "deferred" }),
+      ],
       runs: [makeRun()],
     });
     expect(await service.reconcile()).toEqual([]);

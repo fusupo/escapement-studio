@@ -58,17 +58,15 @@ export class SQLiteService {
       .prepare("INSERT OR IGNORE INTO studio_metadata (key, value) VALUES ('graph_version', '0')")
       .run();
 
-    // Extend upstream CHECK constraint to include expanded ADR 014 state set
+    // Extend upstream CHECK constraint to include the HSM-aligned state set.
     this.migrateWorkItemStates();
   }
 
   private migrateWorkItemStates() {
-    // Guard sentinel is merged_pr (ADR 014 step 3). If already present, the
-    // expanded state set is in place and the migration is a no-op. Instances
-    // that have the step-1/2 schema with open_pr but not merged_pr will fall
-    // through and run the recreate.
+    // Guard sentinel is `archived`. Older Studio schemas already include
+    // `merged_pr`, so that earlier sentinel would skip this broader migration.
     const tableInfo = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_items'").get() as { sql: string } | undefined;
-    if (!tableInfo?.sql || tableInfo.sql.includes("merged_pr")) {
+    if (!tableInfo?.sql || tableInfo.sql.includes("'archived'")) {
       return; // already migrated or no table
     }
 
@@ -82,17 +80,40 @@ export class SQLiteService {
         kind        TEXT NOT NULL DEFAULT 'issue'
                     CHECK (kind IN ('issue','capability','phase','track')),
         state       TEXT NOT NULL DEFAULT 'planned'
-                    CHECK (state IN (
-                      'planned',
-                      'drafting',
-                      'ready',
-                      'in_progress',
-                      'open_pr',
-                      'merged_pr',
-                      'done',
-                      'deferred',
-                      'cancelled'
-                    )),
+                    CHECK (
+                      state IN (
+                        'planned',
+                        'drafting',
+                        'ready',
+                        'in_progress',
+                        'run_errored',
+                        'open_pr',
+                        'merged_pr',
+                        'closed',
+                        'deferred',
+                        'done',
+                        'archived',
+                        'cancelled'
+                      )
+                      OR (
+                        instr(state, '.') > 1
+                        AND instr(substr(state, instr(state, '.') + 1), '.') = 0
+                        AND substr(state, instr(state, '.') + 1) IN (
+                          'planned',
+                          'drafting',
+                          'ready',
+                          'in_progress',
+                          'run_errored',
+                          'open_pr',
+                          'merged_pr',
+                          'closed',
+                          'deferred',
+                          'done',
+                          'archived',
+                          'cancelled'
+                        )
+                      )
+                    ),
         repo            TEXT,
         issue_number    INTEGER,
         issue_url       TEXT,

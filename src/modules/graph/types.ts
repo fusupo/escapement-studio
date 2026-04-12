@@ -33,10 +33,13 @@ export type WorkItemState =
   | "drafting"
   | "ready"
   | "in_progress"
+  | "run_errored"
   | "open_pr"
   | "merged_pr"
-  | "done"
+  | "closed"
   | "deferred"
+  | "done"
+  | "archived"
   | "cancelled";
 export type EdgeRel = "depends_on" | "is_part_of" | "implemented_by";
 export type EdgeConfidence = "certain" | "inferred" | "ambiguous";
