@@ -227,6 +227,43 @@ export interface DispatchResult {
   applied_actions: string[];
   mutation_applied: boolean;
   rejected: boolean;
+  handler_data?: Record<string, unknown>;
+}
+
+/**
+ * studio-196: context bag passed to each async action handler during dispatch.
+ *
+ * - `meta`           — mutable clone of the work item's meta; changes are
+ *                      persisted in the same mutation batch as the state
+ *                      transition.
+ * - `handler_data`   — transient key-value bag returned in `DispatchResult`
+ *                      but NOT persisted. Handlers use it to surface data
+ *                      (e.g. closed-issue details) to the caller.
+ * - `patch_overrides` — additional top-level work item fields (e.g.
+ *                      `archive_path`) that are merged into the mutation
+ *                      patch alongside the state transition.
+ */
+export interface HsmActionHandlerContext {
+  meta: Record<string, unknown>;
+  handler_data: Record<string, unknown>;
+  patch_overrides: Partial<UpdateWorkItemDto>;
+}
+
+/**
+ * studio-196: async side-effect handler for an HSM action.
+ *
+ * Registered by external modules (execution) via
+ * `WorkItemHsmService.registerActionHandler()`. The handler receives the
+ * work item snapshot at dispatch time and the event that triggered the
+ * transition. It runs BEFORE the state write — if it throws, the
+ * transition aborts and state is unchanged.
+ */
+export interface HsmActionHandler {
+  (
+    workItem: WorkItemRecord,
+    event: WorkItemHsmEvent,
+    context: HsmActionHandlerContext,
+  ): Promise<void>;
 }
 
 export type ApplyGraphMutationsResult =

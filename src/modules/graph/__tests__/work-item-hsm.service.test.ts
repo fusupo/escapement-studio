@@ -80,10 +80,10 @@ describe("WorkItemHsmService", () => {
     expect(() => service.onModuleInit()).toThrow();
   });
 
-  it("dispatches user.start_draft from planned to pre_pr.drafting with one update mutation", () => {
+  it("dispatches user.start_draft from planned to pre_pr.drafting with one update mutation", async () => {
     const harness = createHarness("planned");
 
-    const result = harness.service.dispatch("studio-200", { type: "user.start_draft" });
+    const result = await harness.service.dispatch("studio-200", { type: "user.start_draft" });
 
     expect(result.next_state).toBe("pre_pr.drafting");
     expect(result.mutation_applied).toBe(true);
@@ -93,10 +93,10 @@ describe("WorkItemHsmService", () => {
     });
   });
 
-  it("rejects illegal events without mutation and logs a debug rejection", () => {
+  it("rejects illegal events without mutation and logs a debug rejection", async () => {
     const harness = createHarness("planned");
 
-    const result = harness.service.dispatch("studio-200", { type: "user.finalize" });
+    const result = await harness.service.dispatch("studio-200", { type: "user.finalize" });
 
     expect(result.rejected).toBe(true);
     expect(result.mutation_applied).toBe(false);
@@ -104,10 +104,10 @@ describe("WorkItemHsmService", () => {
     expect(loggerDebugSpy).toHaveBeenCalledWith(expect.stringContaining("rejected by HSM"));
   });
 
-  it("rehydrates from pre_pr.in_progress and opens a PR state with stamped meta", () => {
+  it("rehydrates from pre_pr.in_progress and opens a PR state with stamped meta", async () => {
     const harness = createHarness("pre_pr.in_progress");
 
-    const result = harness.service.dispatch("studio-200", {
+    const result = await harness.service.dispatch("studio-200", {
       type: "run.completed",
       run_id: "run-1",
       pr_exists: true,
@@ -150,22 +150,96 @@ describe("WorkItemHsmService", () => {
     ["closed", { type: "user.archive_and_finalize" }, "archived"],
   ];
 
-  it.each(transitionCases)("transitions %s via %o to %s", (from, event, expected) => {
+  it.each(transitionCases)("transitions %s via %o to %s", async (from, event, expected) => {
     const harness = createHarness(from);
-    const result = harness.service.dispatch("studio-200", event);
+    const result = await harness.service.dispatch("studio-200", event);
     expect(result.next_state).toBe(expected);
   });
 
-  it("restores pre_pr history on user.undefer", () => {
+  it("restores pre_pr history on user.undefer", async () => {
     const harness = createHarness("deferred", {
       studio_hsm: {
         deferred_from_state: "pre_pr.ready",
       },
     });
 
-    const result = harness.service.dispatch("studio-200", { type: "user.undefer" });
+    const result = await harness.service.dispatch("studio-200", { type: "user.undefer" });
 
     expect(result.next_state).toBe("pre_pr.ready");
     expect(harness.getCurrent().meta).toMatchObject({ studio_hsm: {} });
+  });
+
+  describe("action handler registry (studio-196)", () => {
+    it("registered async handler is called during dispatch", async () => {
+      const harness = createHarness("merged_pr");
+      const handler = vi.fn(async () => {});
+      harness.service.registerActionHandler("closeGhIssue", handler);
+
+      await harness.service.dispatch("studio-200", { type: "user.finalize" });
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "studio-200" }),
+        { type: "user.finalize" },
+        expect.objectContaining({ meta: expect.any(Object), handler_data: expect.any(Object) }),
+      );
+    });
+
+    it("handler that throws prevents state write", async () => {
+      const harness = createHarness("merged_pr");
+      harness.service.registerActionHandler("closeGhIssue", async () => {
+        throw new Error("gh close failed");
+      });
+
+      await expect(harness.service.dispatch("studio-200", { type: "user.finalize" })).rejects.toThrow(
+        "gh close failed",
+      );
+
+      // State unchanged — graphWriter.apply never called
+      expect(harness.graphWriter.apply).not.toHaveBeenCalled();
+      expect(harness.getCurrent().state).toBe("merged_pr");
+    });
+
+    it("handler_data populated by handler is returned in DispatchResult", async () => {
+      const harness = createHarness("merged_pr");
+      harness.service.registerActionHandler("closeGhIssue", async (_wi, _ev, ctx) => {
+        ctx.handler_data.closed_issue = { repo: "test/repo", number: 42 };
+      });
+
+      const result = await harness.service.dispatch("studio-200", { type: "user.finalize" });
+
+      expect(result.handler_data).toEqual({ closed_issue: { repo: "test/repo", number: 42 } });
+    });
+
+    it("patch_overrides from handler are merged into the mutation", async () => {
+      const harness = createHarness("merged_pr");
+      harness.service.registerActionHandler("runArchiver", async (_wi, _ev, ctx) => {
+        ctx.patch_overrides.archive_path = "/archives/studio-200";
+      });
+
+      // Use archive_and_finalize which triggers runArchiver (and closeGhIssue on merged_pr)
+      harness.service.registerActionHandler("closeGhIssue", async () => {});
+      await harness.service.dispatch("studio-200", { type: "user.archive_and_finalize" });
+
+      const appliedCall = (harness.graphWriter.apply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(appliedCall.mutations[0].patch).toMatchObject({
+        state: "archived",
+        archive_path: "/archives/studio-200",
+      });
+    });
+
+    it("throws when registering a duplicate handler name", () => {
+      const harness = createHarness("planned");
+      harness.service.registerActionHandler("closeGhIssue", async () => {});
+      expect(() => harness.service.registerActionHandler("closeGhIssue", async () => {})).toThrow(
+        /already registered/,
+      );
+    });
+
+    it("handler_data is undefined when no handler populates it", async () => {
+      const harness = createHarness("planned");
+      const result = await harness.service.dispatch("studio-200", { type: "user.start_draft" });
+      expect(result.handler_data).toBeUndefined();
+    });
   });
 });

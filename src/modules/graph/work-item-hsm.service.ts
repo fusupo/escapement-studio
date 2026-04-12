@@ -8,6 +8,7 @@ import { GraphWriterService } from "./graph-writer.service.js";
 import type { ApplyGraphMutationsResult } from "./types.js";
 import type {
   DispatchResult,
+  HsmActionHandler,
   HsmLeafState,
   PersistedDeferredState,
   PersistedPrePrState,
@@ -58,6 +59,8 @@ interface ParsedChart {
 interface RuntimeContext {
   actions: string[];
   meta: Record<string, unknown>;
+  handler_data: Record<string, unknown>;
+  patch_overrides: Partial<UpdateWorkItemDto>;
   event: WorkItemHsmEvent;
   prevState: WorkItemState;
 }
@@ -69,6 +72,7 @@ export class WorkItemHsmService implements OnModuleInit {
   private chart!: ParsedChart;
   private stateById = new Map<string, ParsedState>();
   private parentById = new Map<string, string | null>();
+  private readonly actionHandlers = new Map<string, HsmActionHandler>();
 
   constructor(
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
@@ -84,6 +88,8 @@ export class WorkItemHsmService implements OnModuleInit {
     const machine = new Statechart(this.toScionModel(chart, {
       actions: [],
       meta: {},
+      handler_data: {},
+      patch_overrides: {},
       event: { type: "user.start_draft" },
       prevState: "planned",
     }));
@@ -92,7 +98,14 @@ export class WorkItemHsmService implements OnModuleInit {
     this.chart = chart;
   }
 
-  dispatch(workItemId: string, event: WorkItemHsmEvent): DispatchResult {
+  registerActionHandler(actionName: string, handler: HsmActionHandler): void {
+    if (this.actionHandlers.has(actionName)) {
+      throw new Error(`HSM action handler already registered: ${actionName}`);
+    }
+    this.actionHandlers.set(actionName, handler);
+  }
+
+  async dispatch(workItemId: string, event: WorkItemHsmEvent): Promise<DispatchResult> {
     this.ensureInitialized();
 
     const workItem = this.workItems.get(workItemId);
@@ -123,9 +136,22 @@ export class WorkItemHsmService implements OnModuleInit {
       this.applyAction(action, runtime);
     }
 
+    // Execute registered async side-effect handlers BEFORE the state write.
+    // If any handler throws, abort — state unchanged.
+    for (const action of runtime.actions) {
+      const handler = this.actionHandlers.get(action);
+      if (handler) {
+        await handler(workItem, event, {
+          meta: runtime.meta,
+          handler_data: runtime.handler_data,
+          patch_overrides: runtime.patch_overrides,
+        });
+      }
+    }
+
     this.clearDeferredHistoryIfNeeded(runtime.meta, prevState, nextState);
 
-    const patch: UpdateWorkItemDto = { state: nextState };
+    const patch: UpdateWorkItemDto = { state: nextState, ...runtime.patch_overrides };
     if (JSON.stringify(runtime.meta) !== JSON.stringify(workItem.meta)) {
       patch.meta = runtime.meta;
     }
@@ -144,6 +170,7 @@ export class WorkItemHsmService implements OnModuleInit {
       applied_actions: runtime.actions,
       mutation_applied: true,
       rejected: false,
+      handler_data: Object.keys(runtime.handler_data).length > 0 ? runtime.handler_data : undefined,
     };
   }
 
@@ -179,6 +206,8 @@ export class WorkItemHsmService implements OnModuleInit {
     return {
       actions: [],
       meta: this.cloneMeta(workItem.meta),
+      handler_data: {},
+      patch_overrides: {},
       event,
       prevState,
     };
