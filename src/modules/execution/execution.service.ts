@@ -1854,6 +1854,29 @@ export class ExecutionService implements OnModuleInit {
     return { path: worktreeScratchpad, source };
   }
 
+  createHsmRunRecord(workItem: WorkItemRecord, options: {
+    branch?: string | null;
+    baseRef?: string | null;
+    worktreePath?: string | null;
+    prompt?: string;
+  } = {}): ExecutionRunRecord {
+    const branch = options.branch?.trim() || workItem.branch?.trim() || `${workItem.id}-branch`;
+    const baseRef = options.baseRef?.trim() || getDefaultWorkingBranch(workItem.repo);
+    const worktreePath = options.worktreePath?.trim() || join(this.worktreeRoot, branch);
+    const run = this.createRunRecord({
+      workItem,
+      branch,
+      baseRef,
+      worktreePath,
+      safetyChecks: [],
+      prompt: options.prompt ?? "Created by WorkItemHsmService dispatch.",
+      status: "queued",
+      resultSummary: "Execution run queued by HSM dispatch.",
+    });
+    this.persistRun(run);
+    return run;
+  }
+
   private createRunRecord(input: {
     workItem: WorkItemRecord;
     branch: string;
