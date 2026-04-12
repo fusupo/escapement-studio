@@ -57,6 +57,14 @@ describe("buildGraphNodeContextMenu", () => {
         disabled: false,
         emphasis: "primary",
       },
+      {
+        id: "delete-work-item",
+        kind: "button",
+        label: "Delete work item",
+        description: "Destructive delete. Removes the GitHub issue when possible and deletes the Studio node instead of cancelling it.",
+        disabled: false,
+        emphasis: "danger",
+      },
     ]);
   });
 
