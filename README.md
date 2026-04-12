@@ -99,23 +99,26 @@ This runs the server TypeScript check plus the production frontend build.
 19. Approve the staged GitHub sync and confirm only the managed `studio-sync` issue body block changes.
 20. Review the execution dispatch panel and confirm it loads a dispatch preview from `GET /api/execution/preview`.
 21. Confirm each dispatchable node shows worktree/branch safety checks before launch.
-22. Launch a dispatchable execution run and confirm status updates stream into the browser from `GET /api/execution/stream`.
-23. Confirm the launched run creates an isolated worktree under the configured repo artifact root (for example `/home/marc/escapement-studio-ctx/worktrees/`) and artifacts under the matching repo artifact root `runs/` directory.
-24. Trigger a blocked launch condition (for example, reuse an existing branch/worktree) and confirm the browser shows a blocked execution run with clear safety errors.
-25. Confirm the completed execution run auto-populates the related work item `actual_files` from the recorded `changed_files`.
-26. Restart the Studio server after a completed execution run and confirm the Execute tab still shows the recent run, including `result_summary`, changed files, PR metadata, chat history, and canonical scratchpad content.
-27. Restart the Studio server while an execution run is still active and confirm the run is rehydrated as `error` with an explicit orphan/restart note instead of disappearing.
-28. If the worktree still exists, open the run checklist after restart and confirm it is reconstructed from the worktree scratchpad.
-29. Open the reconciliation panel and confirm `GET /api/reconciliation/reports` shows matches, missed predicted files, unpredicted actual files, and drift summaries for reconciled work items.
-30. Ask the planner to delegate a `reconciliation-analyst` or call `reconciliation_query`, then stage a planning-memory update based on the reported drift and approve it through the existing memory approval flow.
-31. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
-32. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results, recent specialist runs, recent execution runs, and reconciliation reports are restored.
-33. Verify the graph view still loads data from `/api/graph`.
-34. Select a node to edit it in the sidebar.
-35. Create a new work item in the sidebar and confirm it appears in the graph.
-36. Create an edge between two nodes and confirm it appears in the graph and edge list.
-37. Delete an edge from the sidebar.
-38. Change repo/state/track/phase filters and confirm the rendered graph updates.
+22. In the planning graph, select an eligible issue-backed node and confirm the details sidebar Execution card clearly identifies the selected node and shows an enabled **Launch execution** action.
+23. Select a blocked issue-backed node and confirm the same Execution card keeps the selected-node context visible while showing the backend-provided launch-unavailable reason.
+24. Select a non-issue node (for example a track, phase, or capability) and confirm the Execution card explains that launch is only available for issue-backed work items and does not show the **Launch execution** button.
+25. Launch a dispatchable execution run from the details sidebar and confirm status updates stream into the browser from `GET /api/execution/stream` and the app switches into the Execute tab.
+26. Confirm the launched run creates an isolated worktree under the configured repo artifact root (for example `/home/marc/escapement-studio-ctx/worktrees/`) and artifacts under the matching repo artifact root `runs/` directory.
+27. Trigger a blocked launch condition (for example, reuse an existing branch/worktree) and confirm the browser shows a blocked execution run with clear safety errors.
+28. Confirm the completed execution run auto-populates the related work item `actual_files` from the recorded `changed_files`.
+29. Restart the Studio server after a completed execution run and confirm the Execute tab still shows the recent run, including `result_summary`, changed files, PR metadata, chat history, and canonical scratchpad content.
+30. Restart the Studio server while an execution run is still active and confirm the run is rehydrated as `error` with an explicit orphan/restart note instead of disappearing.
+31. If the worktree still exists, open the run checklist after restart and confirm it is reconstructed from the worktree scratchpad.
+32. Open the reconciliation panel and confirm `GET /api/reconciliation/reports` shows matches, missed predicted files, unpredicted actual files, and drift summaries for reconciled work items.
+33. Ask the planner to delegate a `reconciliation-analyst` or call `reconciliation_query`, then stage a planning-memory update based on the reported drift and approve it through the existing memory approval flow.
+34. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
+35. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results, recent specialist runs, recent execution runs, and reconciliation reports are restored.
+36. Verify the graph view still loads data from `/api/graph`.
+37. Select a node to edit it in the sidebar.
+38. Create a new work item in the sidebar and confirm it appears in the graph.
+39. Create an edge between two nodes and confirm it appears in the graph and edge list.
+40. Delete an edge from the sidebar.
+41. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 

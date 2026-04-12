@@ -214,10 +214,19 @@
   $: showApprovePlan = planSubState === "drafting";
   $: showReviewPlan = planSubState === "drafting" || planSubState === "ready";
   $: launchStateOk = leafState(selectedItem?.state) === "ready";
-  $: launchDisabled = !launchEligibility?.can_launch
+  $: launchIssueBacked = !!launchEligibility?.issue_backed;
+  $: launchAvailable = !!launchEligibility?.can_launch && launchStateOk && launchIssueBacked;
+  $: launchDisabled = !launchAvailable
     || launchEligibilityLoading
-    || launchingExecution
-    || !launchStateOk;
+    || launchingExecution;
+  $: selectedExecutionLabel = selectedItem?.name || selectedItem?.id || "Selected node";
+  $: selectedExecutionMeta = [
+    selectedItem?.id,
+    selectedItem?.kind,
+    selectedItem?.issue_number && selectedItem?.repo
+      ? `#${selectedItem.issue_number} in ${selectedItem.repo}`
+      : null,
+  ].filter(Boolean);
 
   $: if (!selectedItem && edgeForm.from_id && !graph.items.some((item) => item.id === edgeForm.from_id)) {
     edgeForm = { ...defaultEdge };
@@ -372,26 +381,35 @@
           </div>
         {/if}
 
+        <p><strong>{selectedExecutionLabel}</strong></p>
+        {#if selectedExecutionMeta.length > 0}
+          <p class="muted">{selectedExecutionMeta.join(" · ")}</p>
+        {/if}
+
         {#if launchEligibilityLoading}
           <p class="muted">Checking frontier eligibility…</p>
         {:else if launchEligibility}
-          <span class="status-pill {launchEligibility.can_launch && launchStateOk ? 'healthy' : 'warn'}">{launchEligibility.can_launch && launchStateOk ? 'dispatchable' : 'blocked'}</span>
-          {#if launchEligibility.dispatch_node}
+          <span class="status-pill {launchAvailable ? 'healthy' : 'warn'}">{launchAvailable ? 'dispatchable' : 'blocked'}</span>
+          {#if launchIssueBacked && launchEligibility.dispatch_node}
             <p class="muted">
               Branch <code>{launchEligibility.dispatch_node.branch}</code>
               · Base <code>{launchEligibility.dispatch_node.default_base_ref}</code>
             </p>
           {/if}
-          {#if !launchEligibility.can_launch && launchEligibility.launch_unavailable_reason}
+          {#if !launchIssueBacked}
+            <p class="muted">Execution launch is only available for issue-backed work items.</p>
+          {:else if !launchEligibility.can_launch && launchEligibility.launch_unavailable_reason}
             <p class="muted">{launchEligibility.launch_unavailable_reason}</p>
           {:else if launchEligibility.can_launch && !launchStateOk}
             <p class="muted">Approve the plan first — work item state is {selectedItem?.state ?? "unknown"}, expected <code>ready</code>.</p>
-          {:else if launchEligibility.can_launch && launchStateOk}
-            <p class="muted">This node is currently on the frontier and can be launched into execution.</p>
+          {:else if launchAvailable}
+            <p class="muted">Launch execution will start a run for this selected node.</p>
           {/if}
-          <button on:click={() => onLaunchExecution(selectedItem)} disabled={launchDisabled}>
-            {launchingExecution ? "Launching..." : "Launch execution"}
-          </button>
+          {#if launchIssueBacked}
+            <button on:click={() => onLaunchExecution(selectedItem)} disabled={launchDisabled}>
+              {launchingExecution ? "Launching..." : "Launch execution"}
+            </button>
+          {/if}
         {:else}
           <p class="muted">Select a node to inspect execution availability.</p>
         {/if}
