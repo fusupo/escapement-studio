@@ -146,7 +146,10 @@
   $: frontierCount = frontierIds.length;
   $: blockedCount = (() => {
     const frontierSet = new Set(frontierIds);
-    return graph.items.filter((item) => item.state === "planned" && !frontierSet.has(item.id)).length;
+    return graph.items.filter((item) => {
+      const leaf = item.state?.startsWith("pre_pr.") ? item.state.slice("pre_pr.".length) : item.state;
+      return leaf === "planned" && !frontierSet.has(item.id);
+    }).length;
   })();
 
   $: activeRunCount = executionRuns.filter(

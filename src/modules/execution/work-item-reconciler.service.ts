@@ -73,7 +73,9 @@ export interface ReconcilerOptions {
  */
 const RECONCILABLE_STATES: ReadonlySet<WorkItemState> = new Set([
   "in_progress",
+  "pre_pr.in_progress",
   "run_errored",
+  "pre_pr.run_errored",
   "open_pr",
   "merged_pr",
   "closed",

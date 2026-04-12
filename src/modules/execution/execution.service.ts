@@ -1537,7 +1537,8 @@ export class ExecutionService implements OnModuleInit {
    * gate strictly `ready`.
    */
   private isLaunchableState(state: WorkItemState): boolean {
-    return state === "ready" || state === "planned";
+    const leaf = state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+    return leaf === "ready" || leaf === "planned";
   }
 
   private checkLaunchableState(workItem: WorkItemRecord): ExecutionSafetyCheck {

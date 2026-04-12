@@ -4,6 +4,11 @@
   // ADR 014 step 8 — work item states where a plan should already exist on
   // disk. For planned items the plan may not exist yet (GET 404). Terminal
   // states (done, cancelled, deferred) are skipped to avoid pointless fetches.
+  /** Normalize dotted HSM state (e.g. pre_pr.drafting) to its leaf. */
+  function leafState(state) {
+    return state?.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+  }
+
   const PLAN_FETCHABLE_STATES = new Set([
     "drafting",
     "ready",
@@ -133,7 +138,7 @@
   // where a plan should exist. Use a token pattern (mirrors linkedPrLookupToken
   // above) so stale responses can't clobber fresh selections.
   $: planFetchKey = selectedItem?.id && selectedItem?.kind === "issue"
-    && PLAN_FETCHABLE_STATES.has(selectedItem.state)
+    && PLAN_FETCHABLE_STATES.has(leafState(selectedItem.state))
     ? `${selectedItem.id}:${selectedItem.state}`
     : null;
   $: if (planFetchKey !== lastPlanFetchKey) {
@@ -205,10 +210,10 @@
 
   $: planSubState = planStatus?.metadata?.state ?? null;
   $: showPreparePlan = selectedItem?.kind === "issue"
-    && PLAN_SHOW_PREPARE_STATES.has(selectedItem?.state);
+    && PLAN_SHOW_PREPARE_STATES.has(leafState(selectedItem?.state));
   $: showApprovePlan = planSubState === "drafting";
   $: showReviewPlan = planSubState === "drafting" || planSubState === "ready";
-  $: launchStateOk = selectedItem?.state === "ready";
+  $: launchStateOk = leafState(selectedItem?.state) === "ready";
   $: launchDisabled = !launchEligibility?.can_launch
     || launchEligibilityLoading
     || launchingExecution
@@ -327,7 +332,7 @@
               <span class="status-pill">loading…</span>
             {:else if planSubState}
               <span class="status-pill {planStatusTone(planSubState)}">{planSubState}</span>
-            {:else if selectedItem?.state === "planned"}
+            {:else if leafState(selectedItem?.state) === "planned"}
               <span class="status-pill">not prepared</span>
             {:else}
               <span class="status-pill">unknown</span>

@@ -157,7 +157,7 @@ export class PlansService {
    */
   async reopen(workItemId: string, _dto: ReopenPlanDto = {}): Promise<PlanResponse> {
     const workItem = this.workItemsService.get(workItemId);
-    if (workItem.state !== "ready") {
+    if (this.leafState(workItem.state) !== "ready") {
       throw new BadRequestException(
         `Cannot reopen plan for ${workItemId}: expected state 'ready', got '${workItem.state}'`,
       );
