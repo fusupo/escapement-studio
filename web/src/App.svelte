@@ -10,6 +10,7 @@
   import Sidebar from "./components/Sidebar.svelte";
   import {
     approvePlan,
+    cancelWorkItem,
     closeMergedPullRequest,
     createEdge,
     createWorkItem,
@@ -46,6 +47,7 @@
   let health = null;
   let activeTab = "planning";
   let closingIssue = false;
+  let cancelingWorkItem = false;
   let deletingWorkItem = false;
   let launchingExecution = false;
   let launchEligibilityById = {};
@@ -70,6 +72,7 @@
   let planStateLoadingIds = {};
   let planStateRequestTokenById = {};
   let planReview = null; // { workItemId, scratchpadContent } | null
+  let cancelDialog = null;
   let deleteDialog = null;
 
   // Panel collapse state
@@ -142,6 +145,7 @@
     planStateLoading: contextMenuPlanStateLoading,
     preparingPlan,
     approvingPlan,
+    cancelingWorkItem,
     deletingWorkItem,
     connectedEdges: graphContextMenu.item
       ? graph.edges.filter((edge) => edge.from_id === graphContextMenu.item.id || edge.to_id === graphContextMenu.item.id)
@@ -457,6 +461,46 @@
     }
   }
 
+  function openCancelDialog(item = selectedItem) {
+    if (!item?.id) return;
+    cancelDialog = {
+      item,
+      confirmCancel: false,
+      cancelNote: "",
+      submitting: false,
+    };
+    closeGraphContextMenu();
+  }
+
+  function closeCancelDialog() {
+    if (cancelDialog?.submitting) return;
+    cancelDialog = null;
+  }
+
+  async function confirmCancelWorkItem() {
+    if (!cancelDialog?.item?.id || cancelDialog.submitting) return;
+
+    cancelDialog = { ...cancelDialog, submitting: true };
+    cancelingWorkItem = true;
+    error = "";
+    notice = "";
+    try {
+      const result = await cancelWorkItem({
+        work_item_id: cancelDialog.item.id,
+        confirm_cancel: true,
+        cancel_note: cancelDialog.cancelNote?.trim() || undefined,
+      });
+      await loadGraph();
+      notice = `Cancelled ${result.work_item.id} and closed issue #${result.closed_issue.number}.`;
+      cancelDialog = null;
+    } catch (cancelError) {
+      error = cancelError.message;
+      cancelDialog = { ...cancelDialog, submitting: false };
+    } finally {
+      cancelingWorkItem = false;
+    }
+  }
+
   function openDeleteDialog(item = selectedItem) {
     if (!item?.id) return;
     const connectedEdges = graph.edges.filter((edge) => edge.from_id === item.id || edge.to_id === item.id);
@@ -537,6 +581,12 @@
       closeGraphContextMenu();
       if (planReview) {
         closePlanReview();
+      }
+      if (cancelDialog) {
+        closeCancelDialog();
+      }
+      if (deleteDialog) {
+        closeDeleteDialog();
       }
     }
   }
@@ -845,8 +895,10 @@
                   onCreateEdge={handleCreateEdge}
                   onDeleteEdge={handleDeleteEdge}
                   onCloseIssue={handleCloseIssue}
+                  onCancelWorkItem={openCancelDialog}
                   onDeleteWorkItem={openDeleteDialog}
                   {closingIssue}
+                  {cancelingWorkItem}
                   {deletingWorkItem}
                 />
               </div>
@@ -905,6 +957,8 @@
           } else if (event.detail.id === "review-plan") {
             handleReviewPlan(item, planStateById[item.id] ?? null);
             closeGraphContextMenu();
+          } else if (event.detail.id === "cancel-work-item") {
+            openCancelDialog(item);
           } else if (event.detail.id === "delete-work-item") {
             openDeleteDialog(item);
           }
@@ -937,6 +991,55 @@
             <button class="small" on:click={closePlanReview} aria-label="Close plan review">×</button>
           </header>
           <pre class="plan-review-body">{planReview.scratchpadContent}</pre>
+        </div>
+      </div>
+    {/if}
+
+    {#if cancelDialog}
+      <div class="plan-review-overlay" role="presentation" on:click={closeCancelDialog}>
+        <div
+          class="plan-review-card delete-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cancel-work-item-title"
+          on:click|stopPropagation
+        >
+          <header class="plan-review-header">
+            <h3 id="cancel-work-item-title">Cancel {cancelDialog.item.id}</h3>
+            <button class="small" on:click={closeCancelDialog} disabled={cancelDialog.submitting} aria-label="Close cancel dialog">×</button>
+          </header>
+
+          <div class="delete-dialog-body">
+            <p><strong>Cancel preserves the Studio node and history.</strong> This closes GitHub issue #{cancelDialog.item.issue_number} in {cancelDialog.item.repo}, archives any plan artifacts, and marks the work item <code>cancelled</code>.</p>
+            <label>
+              <span class="muted">Optional cancellation note</span>
+              <textarea
+                rows="4"
+                bind:value={cancelDialog.cancelNote}
+                placeholder="Optional note posted to the GitHub issue before it is closed."
+                disabled={cancelDialog.submitting}
+              ></textarea>
+            </label>
+            <label class="checkbox-row">
+              <input
+                type="checkbox"
+                checked={cancelDialog.confirmCancel}
+                on:change={(event) => cancelDialog = { ...cancelDialog, confirmCancel: event.currentTarget.checked }}
+              />
+              <span>I approve cancelling this work item and closing its GitHub issue.</span>
+            </label>
+          </div>
+
+          <footer class="delete-dialog-actions">
+            <button class="small" on:click={closeCancelDialog} disabled={cancelDialog.submitting}>Keep work item active</button>
+            <button
+              class="small"
+              on:click={confirmCancelWorkItem}
+              disabled={!cancelDialog.confirmCancel || cancelDialog.submitting}
+            >
+              {cancelDialog.submitting ? "Cancelling…" : "Cancel work item"}
+            </button>
+          </footer>
         </div>
       </div>
     {/if}

@@ -8,7 +8,9 @@ function leafState(state) {
   return state?.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
 }
 
+const CANCEL_ELIGIBLE_STATES = new Set(["planned", "drafting", "ready", "in_progress", "deferred"]);
 const DELETE_ELIGIBLE_STATES = new Set(["planned", "drafting", "ready"]);
+const HIDE_LAUNCH_STATES = new Set(["cancelled", "done", "archived", "closed"]);
 
 export function buildGraphNodeContextMenu({
   item,
@@ -19,6 +21,7 @@ export function buildGraphNodeContextMenu({
   planStateLoading = false,
   preparingPlan = false,
   approvingPlan = false,
+  cancelingWorkItem = false,
   deletingWorkItem = false,
   connectedEdges = [],
 } = {}) {
@@ -53,6 +56,10 @@ export function buildGraphNodeContextMenu({
         : formatDispatchNodeSummary(launchEligibility.dispatch_node);
 
   const actions = [];
+  const cancelEligible = item.kind === "issue"
+    && !!item.repo
+    && !!item.issue_number
+    && CANCEL_ELIGIBLE_STATES.has(workItemState);
   const deleteEligible = item.kind === "issue"
     && !!item.repo
     && !!item.issue_number
@@ -107,14 +114,27 @@ export function buildGraphNodeContextMenu({
     });
   }
 
-  actions.push({
-    id: "launch-execution",
-    kind: "button",
-    label: launchingExecution ? "Launching…" : "Launch execution",
-    description: launchDescription,
-    disabled: !launchGateOk,
-    emphasis: "primary",
-  });
+  if (!HIDE_LAUNCH_STATES.has(workItemState)) {
+    actions.push({
+      id: "launch-execution",
+      kind: "button",
+      label: launchingExecution ? "Launching…" : "Launch execution",
+      description: launchDescription,
+      disabled: !launchGateOk,
+      emphasis: "primary",
+    });
+  }
+
+  if (cancelEligible) {
+    actions.push({
+      id: "cancel-work-item",
+      kind: "button",
+      label: cancelingWorkItem ? "Cancelling…" : "Cancel work item",
+      description: "Non-destructive cancel. Closes the linked GitHub issue, marks the Studio node cancelled, and preserves planning history.",
+      disabled: cancelingWorkItem,
+      emphasis: "warn",
+    });
+  }
 
   if (deleteEligible) {
     actions.push({

@@ -230,6 +230,14 @@ export function archiveAndCloseMergedPullRequest(workItemId) {
   });
 }
 
+export function cancelWorkItem(payload) {
+  return request("/api/execution/cancel-work-item", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function deleteWorkItem(payload) {
   return request("/api/execution/delete-work-item", {
     method: "POST",
