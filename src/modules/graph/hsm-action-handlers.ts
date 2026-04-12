@@ -143,11 +143,11 @@ export class HsmActionHandlers {
       get sessionId() {
         return handle.sessionId;
       },
-      completion: handle.completion.then((draft) => {
+      completion: handle.completion.then(async (draft) => {
         if (cancelled) {
           return;
         }
-        this.plansService.persistDraftEnvelope(ctx.workItem.id, draft, issueBody, {
+        await this.plansService.persistDraftEnvelope(ctx.workItem.id, draft, issueBody, {
           transitionToDrafting: false,
         });
       }),

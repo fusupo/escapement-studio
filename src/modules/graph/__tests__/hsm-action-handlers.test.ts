@@ -3,6 +3,10 @@ import { HsmActionHandlers } from "../hsm-action-handlers.js";
 import { HsmGuardHandlers } from "../hsm-guard-handlers.js";
 import type { WorkItemRecord } from "../types.js";
 
+vi.mock("../../../lib/github-cli.js", () => ({
+  fetchIssueBody: vi.fn(() => "Mocked issue body from HSM handler test."),
+}));
+
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
   return {
     id: "studio-202",
@@ -24,6 +28,30 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
 }
 
 const now = () => "2026-04-12T12:00:00.000Z";
+
+function makeDraftEnvelope() {
+  return {
+    summary: "Drafted summary",
+    acceptance_criteria: ["Criterion A"],
+    implementation_tasks: [
+      {
+        description: "Task 1",
+        files: ["src/foo.ts"],
+        rationale: "why",
+        testing: "test it",
+      },
+    ],
+    affected_files: ["src/foo.ts"],
+    questions: [],
+    assumptions: [],
+    blockers: [],
+    technical_notes: {
+      architecture: "arch",
+      approach: "approach",
+      challenges: "challenges",
+    },
+  };
+}
 
 describe("HsmActionHandlers", () => {
   it("createRunRecord persists a run and returns the run id", async () => {
@@ -111,6 +139,84 @@ describe("HsmActionHandlers", () => {
 
     expect(executionService.archiveRunArtifacts).toHaveBeenCalledWith("studio-202");
     expect(result.patch).toMatchObject({ archive_path: "/tmp/archive/studio-202" });
+  });
+
+  it("kickOffPlanDrafter waits for persistDraftEnvelope before completion resolves", async () => {
+    let resolvePersist: undefined | (() => void);
+    const persistDraftEnvelope = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePersist = resolve;
+        }),
+    );
+    const drafter = {
+      startDraft: vi.fn(() => ({
+        sessionId: "draft-session-1",
+        completion: Promise.resolve(makeDraftEnvelope()),
+        cancel: vi.fn(),
+      })),
+    };
+    const handlers = new HsmActionHandlers(
+      {} as never,
+      {} as never,
+      {} as never,
+      drafter as never,
+      { persistDraftEnvelope } as never,
+    );
+
+    const handle = handlers.kickOffPlanDrafter({
+      workItem: makeWorkItem({ state: "drafting" }),
+      event: { type: "user.start_draft" },
+      now,
+    });
+
+    let completed = false;
+    const completion = handle.completion.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+
+    expect(persistDraftEnvelope).toHaveBeenCalledWith(
+      "studio-202",
+      expect.objectContaining({ summary: "Drafted summary" }),
+      "Mocked issue body from HSM handler test.",
+      { transitionToDrafting: false },
+    );
+    expect(completed).toBe(false);
+
+    expect(resolvePersist).toBeTypeOf("function");
+    resolvePersist?.();
+    await completion;
+    expect(completed).toBe(true);
+  });
+
+  it("kickOffPlanDrafter propagates persistDraftEnvelope failures", async () => {
+    const drafter = {
+      startDraft: vi.fn(() => ({
+        sessionId: "draft-session-1",
+        completion: Promise.resolve(makeDraftEnvelope()),
+        cancel: vi.fn(),
+      })),
+    };
+    const handlers = new HsmActionHandlers(
+      {} as never,
+      {} as never,
+      {} as never,
+      drafter as never,
+      {
+        persistDraftEnvelope: vi.fn(async () => {
+          throw new Error("persist failed");
+        }),
+      } as never,
+    );
+
+    const handle = handlers.kickOffPlanDrafter({
+      workItem: makeWorkItem({ state: "drafting" }),
+      event: { type: "user.start_draft" },
+      now,
+    });
+
+    await expect(handle.completion).rejects.toThrow("persist failed");
   });
 });
 
