@@ -209,6 +209,10 @@
     graphContextMenu = { open: false, x: 0, y: 0, item: null };
   }
 
+  function leafState(state) {
+    return state?.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+  }
+
   function normalizeLaunchEligibilityError(workItemId, message) {
     return {
       work_item_id: workItemId,
@@ -586,21 +590,28 @@
     launchingExecution = true;
     error = "";
     try {
+      const itemLeafState = leafState(item?.state);
       // ADR 014 step 8 — stricter UI gate than the backend: require work
       // item state to be `ready` so users can't skip plan approval via the
       // UI, even though the backend still accepts `planned` as a
       // transitional fallback.
-      if (item?.state !== "ready") {
+      if (itemLeafState !== "ready") {
         error = `Approve the plan first — work item state is ${item?.state ?? "unknown"}, expected ready.`;
         return;
       }
+
       const eligibility = await ensureLaunchEligibility(workItemId, { force: true });
+      if (!eligibility?.issue_backed) {
+        error = "Launch execution is only available for issue-backed work items.";
+        return;
+      }
       if (!eligibility?.can_launch) {
         error = eligibility?.launch_unavailable_reason || "Launch execution is not available for this node.";
         return;
       }
 
       const result = await launchExecutionRun({ work_item_id: workItemId, disambiguate: true });
+      await ensureLaunchEligibility(workItemId, { force: true });
       closeGraphContextMenu();
       if (result?.run) {
         activeTab = "execute";
