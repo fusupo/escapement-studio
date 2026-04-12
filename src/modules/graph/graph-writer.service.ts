@@ -8,6 +8,7 @@ import {
   type CreateEdgeDto,
   type CreateWorkItemDto,
   type EdgeConfidence,
+  type EdgeRecord,
   type EdgeRel,
   type GraphMutation,
   type GraphMutationError,
@@ -122,6 +123,27 @@ export class GraphWriterService {
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Graph write failed");
     }
+  }
+
+  getConnectedEdges(workItemId: string): EdgeRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM edges WHERE from_id = ? OR to_id = ? ORDER BY id")
+      .all(workItemId, workItemId) as RawEdgeRecord[];
+
+    return rows.map((row) => ({
+      ...row,
+      meta: this.parseMeta(row.meta),
+    }));
+  }
+
+  deleteWorkItemWithEdges(workItemId: string, edgeIds: number[]): ApplyGraphMutationsResult {
+    const normalizedEdgeIds = [...new Set(edgeIds.filter((edgeId) => Number.isInteger(edgeId)))];
+    return this.apply({
+      mutations: [
+        ...normalizedEdgeIds.map((edgeId) => ({ kind: "delete_edge", id: edgeId } as const)),
+        { kind: "delete_work_item", id: workItemId },
+      ],
+    });
   }
 
   private validateMutations(mutations: GraphMutation[], snapshot: GraphStateSnapshot): GraphMutationError[] {
@@ -411,6 +433,15 @@ export class GraphWriterService {
       meta: JSON.stringify(input.meta ?? {}),
       updated_at: this.now(),
     };
+  }
+
+  private parseMeta(value: string): Record<string, unknown> {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
   }
 
   private toRawWorkItemPatch(input: UpdateWorkItemDto) {

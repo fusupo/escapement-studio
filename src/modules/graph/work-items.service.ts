@@ -3,7 +3,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { parseJsonArray } from "../../lib/manifest-core.js";
 import { GraphWriterService } from "./graph-writer.service.js";
 import { SQLiteService } from "./sqlite.service.js";
-import { deriveIssueWorkItemId, type CreateWorkItemDto, type MisalignedWorkItem, type UpdateWorkItemDto, type WorkItemRecord, type WorkItemState } from "./types.js";
+import { deriveIssueWorkItemId, type CreateWorkItemDto, type EdgeRecord, type MisalignedWorkItem, type UpdateWorkItemDto, type WorkItemRecord, type WorkItemState } from "./types.js";
 
 interface RawWorkItemRecord {
   id: string;
@@ -155,6 +155,29 @@ export class WorkItemsService {
     return this.update(id, { state });
   }
 
+  getConnectedEdges(id: string): EdgeRecord[] {
+    if (!id?.trim()) {
+      return [];
+    }
+
+    const rows = this.db
+      .prepare("SELECT * FROM edges WHERE from_id = ? OR to_id = ? ORDER BY id")
+      .all(id, id) as Array<{
+        id: number;
+        from_id: string;
+        rel: EdgeRecord["rel"];
+        to_id: string;
+        confidence: EdgeRecord["confidence"];
+        meta: string;
+        created_at: string;
+      }>;
+
+    return rows.map((row) => ({
+      ...row,
+      meta: this.parseMeta(row.meta),
+    }));
+  }
+
   delete(id: string): { deleted: true; id: string } {
     const result = this.graphWriter.apply({
       mutations: [{ kind: "delete_work_item", id }],
@@ -165,6 +188,23 @@ export class WorkItemsService {
     }
 
     return { deleted: true, id };
+  }
+
+  deleteWithConnectedEdges(id: string, edgeIds: number[]): { deleted: true; id: string; removed_edge_ids: number[] } {
+    const connectedEdges = this.getConnectedEdges(id);
+    const connectedEdgeIds = new Set(connectedEdges.map((edge) => edge.id));
+    const requestedEdgeIds = [...new Set(edgeIds.filter((edgeId) => Number.isInteger(edgeId)))];
+
+    if (requestedEdgeIds.length !== connectedEdges.length || requestedEdgeIds.some((edgeId) => !connectedEdgeIds.has(edgeId))) {
+      throw new BadRequestException(`delete_work_item_requires_all_connected_edges: ${id}`);
+    }
+
+    const result = this.graphWriter.deleteWorkItemWithEdges(id, requestedEdgeIds);
+    if (result.status !== "applied") {
+      throw new BadRequestException(this.getMutationFailureMessage(result));
+    }
+
+    return { deleted: true, id, removed_edge_ids: requestedEdgeIds.sort((a, b) => a - b) };
   }
 
   private toRecord(row: RawWorkItemRecord): WorkItemRecord {

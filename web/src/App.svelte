@@ -14,6 +14,7 @@
     createEdge,
     createWorkItem,
     deleteEdge,
+    deleteWorkItem,
     getExecutionEligibility,
     getFrontier,
     getGitHubIssueDetails,
@@ -42,10 +43,12 @@
   let saving = false;
   let edgeSaving = false;
   let error = "";
+  let notice = "";
   let health = null;
   let selectedIssueDetails = null;
   let activeTab = "planning";
   let closingIssue = false;
+  let deletingWorkItem = false;
   let launchingExecution = false;
   let launchEligibilityById = {};
   let launchEligibilityLoadingIds = {};
@@ -69,6 +72,7 @@
   let planStateLoadingIds = {};
   let planStateRequestTokenById = {};
   let planReview = null; // { workItemId, scratchpadContent } | null
+  let deleteDialog = null;
 
   // Panel collapse state
   let chatCollapsed = false;
@@ -140,6 +144,10 @@
     planStateLoading: contextMenuPlanStateLoading,
     preparingPlan,
     approvingPlan,
+    deletingWorkItem,
+    connectedEdges: graphContextMenu.item
+      ? graph.edges.filter((edge) => edge.from_id === graphContextMenu.item.id || edge.to_id === graphContextMenu.item.id)
+      : [],
   });
   $: filterOptions = {
     repos: [...new Set(catalog.map((item) => item.repo).filter(Boolean))].sort(),
@@ -493,6 +501,7 @@
     if (!item?.id) return;
     closingIssue = true;
     error = "";
+    notice = "";
     try {
       // studio-87: the backend owns the full close orchestration
       // (gh issue close → merged_pr → done transition → dispose matching
@@ -504,6 +513,54 @@
       error = closeError.message;
     } finally {
       closingIssue = false;
+    }
+  }
+
+  function openDeleteDialog(item = selectedItem) {
+    if (!item?.id) return;
+    const connectedEdges = graph.edges.filter((edge) => edge.from_id === item.id || edge.to_id === item.id);
+    deleteDialog = {
+      item,
+      connectedEdges,
+      acknowledgeDelete: false,
+      acknowledgeConnectedEdges: connectedEdges.length === 0,
+      acknowledgeFallback: false,
+      warnings: [],
+      submitting: false,
+    };
+    closeGraphContextMenu();
+  }
+
+  function closeDeleteDialog() {
+    if (deleteDialog?.submitting) return;
+    deleteDialog = null;
+  }
+
+  async function confirmDeleteWorkItem() {
+    if (!deleteDialog?.item?.id || deleteDialog.submitting) return;
+
+    deleteDialog = { ...deleteDialog, submitting: true };
+    deletingWorkItem = true;
+    error = "";
+    notice = "";
+    try {
+      const result = await deleteWorkItem({
+        work_item_id: deleteDialog.item.id,
+        confirm_delete: true,
+        acknowledge_connected_edges: deleteDialog.acknowledgeConnectedEdges,
+        allow_graph_delete_without_github: deleteDialog.acknowledgeFallback,
+      });
+      await loadGraph();
+      selectedId = selectedId === deleteDialog.item.id ? null : selectedId;
+      notice = result.warnings?.length > 0
+        ? result.warnings.join(" ")
+        : `Deleted ${deleteDialog.item.id}.`;
+      deleteDialog = null;
+    } catch (deleteError) {
+      error = deleteError.message;
+      deleteDialog = { ...deleteDialog, submitting: false };
+    } finally {
+      deletingWorkItem = false;
     }
   }
 
@@ -794,6 +851,9 @@
               {#if error}
                 <div class="banner error">{error}</div>
               {/if}
+              {#if notice}
+                <div class="banner info">{notice}</div>
+              {/if}
               {#if loading}
                 <div class="empty-state">Loading graph…</div>
               {:else}
@@ -846,7 +906,9 @@
                   onCreateEdge={handleCreateEdge}
                   onDeleteEdge={handleDeleteEdge}
                   onCloseIssue={handleCloseIssue}
+                  onDeleteWorkItem={openDeleteDialog}
                   {closingIssue}
+                  {deletingWorkItem}
                 />
               </div>
             </div>
@@ -904,6 +966,8 @@
           } else if (event.detail.id === "review-plan") {
             handleReviewPlan(item, planStateById[item.id] ?? null);
             closeGraphContextMenu();
+          } else if (event.detail.id === "delete-work-item") {
+            openDeleteDialog(item);
           }
         }}
         on:requestclose={closeGraphContextMenu}
@@ -934,6 +998,79 @@
             <button class="small" on:click={closePlanReview} aria-label="Close plan review">×</button>
           </header>
           <pre class="plan-review-body">{planReview.scratchpadContent}</pre>
+        </div>
+      </div>
+    {/if}
+
+    {#if deleteDialog}
+      <div class="plan-review-overlay" role="presentation" on:click={closeDeleteDialog}>
+        <div
+          class="plan-review-card delete-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-work-item-title"
+          on:click|stopPropagation
+        >
+          <header class="plan-review-header">
+            <h3 id="delete-work-item-title">Delete {deleteDialog.item.id}</h3>
+            <button class="small" on:click={closeDeleteDialog} disabled={deleteDialog.submitting} aria-label="Close delete dialog">×</button>
+          </header>
+
+          <div class="delete-dialog-body">
+            <p><strong>This permanently removes the Studio graph node.</strong> Delete is different from cancel and should only be used for junk, accidental, duplicate, or malformed work items.</p>
+            <p>The backend will try to delete GitHub issue #{deleteDialog.item.issue_number} in {deleteDialog.item.repo} first, then remove the Studio node and any acknowledged connected edges.</p>
+
+            {#if deleteDialog.connectedEdges.length > 0}
+              <div class="banner warn">
+                This work item has {deleteDialog.connectedEdges.length} connected edge{deleteDialog.connectedEdges.length === 1 ? "" : "s"}. Deleting it will also remove those graph relationships.
+              </div>
+              <ul class="delete-edge-list">
+                {#each deleteDialog.connectedEdges as edge}
+                  <li><code>{edge.from_id}</code> {edge.rel} <code>{edge.to_id}</code></li>
+                {/each}
+              </ul>
+            {/if}
+
+            <label class="checkbox-row">
+              <input
+                type="checkbox"
+                checked={deleteDialog.acknowledgeDelete}
+                on:change={(event) => deleteDialog = { ...deleteDialog, acknowledgeDelete: event.currentTarget.checked }}
+              />
+              <span>I understand this is destructive and is not the normal replacement for cancel.</span>
+            </label>
+
+            {#if deleteDialog.connectedEdges.length > 0}
+              <label class="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={deleteDialog.acknowledgeConnectedEdges}
+                  on:change={(event) => deleteDialog = { ...deleteDialog, acknowledgeConnectedEdges: event.currentTarget.checked }}
+                />
+                <span>I approve removing all connected edges shown above.</span>
+              </label>
+            {/if}
+
+            <label class="checkbox-row">
+              <input
+                type="checkbox"
+                checked={deleteDialog.acknowledgeFallback}
+                on:change={(event) => deleteDialog = { ...deleteDialog, acknowledgeFallback: event.currentTarget.checked }}
+              />
+              <span>If GitHub issue deletion is unavailable, still delete the Studio node and show me the fallback warning.</span>
+            </label>
+          </div>
+
+          <footer class="delete-dialog-actions">
+            <button class="small" on:click={closeDeleteDialog} disabled={deleteDialog.submitting}>Keep work item</button>
+            <button
+              class="danger"
+              on:click={confirmDeleteWorkItem}
+              disabled={!deleteDialog.acknowledgeDelete || !deleteDialog.acknowledgeConnectedEdges || !deleteDialog.acknowledgeFallback || deleteDialog.submitting}
+            >
+              {deleteDialog.submitting ? "Deleting…" : "Delete permanently"}
+            </button>
+          </footer>
         </div>
       </div>
     {/if}
@@ -1300,6 +1437,53 @@
     flex: 1;
     color: #6b7a94;
     font-size: 12px;
+  }
+
+  .banner.info {
+    background: rgba(37, 99, 235, 0.14);
+    border: 1px solid rgba(96, 165, 250, 0.28);
+    color: #dbeafe;
+  }
+
+  .banner.warn {
+    background: rgba(217, 119, 6, 0.14);
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    color: #fde68a;
+  }
+
+  .delete-dialog {
+    max-width: 640px;
+  }
+
+  .delete-dialog-body {
+    display: grid;
+    gap: 12px;
+  }
+
+  .checkbox-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13px;
+    color: #cbd5e1;
+  }
+
+  .checkbox-row input {
+    margin-top: 2px;
+  }
+
+  .delete-edge-list {
+    margin: 0;
+    padding-left: 18px;
+    color: #cbd5e1;
+    font-size: 13px;
+  }
+
+  .delete-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 16px;
   }
 
   /* ── Responsive ── */

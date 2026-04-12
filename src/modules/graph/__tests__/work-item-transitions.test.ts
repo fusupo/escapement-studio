@@ -58,6 +58,7 @@ function makeController(options: {
       current = { ...current, ...patch };
       return current;
     }),
+    delete: vi.fn((id: string) => ({ deleted: true as const, id })),
   } as unknown as WorkItemsService;
 
   const hsmService = {
@@ -252,6 +253,18 @@ describe("WorkItemsController.transition", () => {
     await expect(
       harness.controller.transition("studio-153", {} as { event: "user.defer" }),
     ).rejects.toThrow(/event.*required/);
+  });
+});
+
+describe("WorkItemsController.delete", () => {
+  it("keeps raw DELETE separate from the cancel workflow", () => {
+    const harness = makeController();
+
+    const result = harness.controller.delete("studio-153");
+
+    expect(harness.workItemsService.delete).toHaveBeenCalledWith("studio-153");
+    expect(harness.executionService.cancelWorkItem).not.toHaveBeenCalled();
+    expect(result).toEqual({ deleted: true, id: "studio-153" });
   });
 });
 

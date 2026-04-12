@@ -192,6 +192,34 @@ function cleanup(h: Harness) {
   rmSync(h.artifactRoot, { recursive: true, force: true });
 }
 
+describe("PlansService.deletePlanArtifacts", () => {
+  let harness: Harness;
+
+  afterEach(() => {
+    if (harness) cleanup(harness);
+  });
+
+  it("removes an existing plan directory", () => {
+    harness = makeHarness(makeWorkItem());
+    ensurePlanDir(harness.artifactRoot, "studio-154");
+    writeFileSync(canonicalScratchpadPath(harness.artifactRoot, "studio-154"), "draft", "utf8");
+
+    const result = harness.service.deletePlanArtifacts("studio-154");
+
+    expect(result).toEqual({
+      removed: true,
+      path: join(harness.artifactRoot, "plans", "studio_154"),
+    });
+    expect(existsSync(join(harness.artifactRoot, "plans", "studio_154"))).toBe(false);
+  });
+
+  it("is a no-op when no plan directory exists", () => {
+    harness = makeHarness(makeWorkItem());
+
+    expect(harness.service.deletePlanArtifacts("studio-154")).toEqual({ removed: false, path: null });
+  });
+});
+
 describe("PlansService.prepare", () => {
   let harness: Harness;
 

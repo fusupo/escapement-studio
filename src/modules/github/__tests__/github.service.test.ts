@@ -272,6 +272,44 @@ describe("GitHubService reconciliation", () => {
   });
 });
 
+describe("GitHubService issue deletion", () => {
+  it("deletes an issue with gh issue delete --yes", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const runGh = vi.fn().mockReturnValue("");
+    (service as any).runGh = runGh;
+
+    await expect(service.deleteIssue("fusupo/escapement-studio", 137)).resolves.toEqual({
+      repo: "fusupo/escapement-studio",
+      number: 137,
+      deleted: true,
+    });
+    expect(runGh).toHaveBeenCalledWith([
+      "issue",
+      "delete",
+      "137",
+      "--repo",
+      "fusupo/escapement-studio",
+      "--yes",
+    ]);
+  });
+
+  it("rejects deleteIssue when repo or issue_number are invalid", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+
+    await expect(service.deleteIssue("", 137)).rejects.toThrow("repo is required");
+    await expect(service.deleteIssue("fusupo/escapement-studio", 0)).rejects.toThrow("issue_number must be a positive integer");
+  });
+
+  it("propagates gh delete failures", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    (service as any).runGh = vi.fn(() => {
+      throw new Error("gh command failed: nope");
+    });
+
+    await expect(service.deleteIssue("fusupo/escapement-studio", 137)).rejects.toThrow("gh command failed: nope");
+  });
+});
+
 describe("GitHubService batch list methods", () => {
   it("lists pull requests with normalized fields and commands", async () => {
     const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);

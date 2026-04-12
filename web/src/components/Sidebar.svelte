@@ -48,12 +48,14 @@
   export let onCreateEdge = () => {};
   export let onDeleteEdge = () => {};
   export let onCloseIssue = () => {};
+  export let onDeleteWorkItem = () => {};
   export let onLaunchExecution = () => {};
   export let onGitHubTruthRefresh = () => {};
   export let onPreparePlan = () => {};
   export let onApprovePlan = () => {};
   export let onReviewPlan = () => {};
   export let closingIssue = false;
+  export let deletingWorkItem = false;
   export let preparingPlan = false;
   export let approvingPlan = false;
 
@@ -132,6 +134,10 @@
   $: canCloseIssue = issueDetails
     && issueDetails.state?.toLowerCase() === "open"
     && linkedPrDetails?.merged_at != null;
+  $: canDeleteWorkItem = selectedItem?.kind === "issue"
+    && !!selectedItem?.repo
+    && !!selectedItem?.issue_number
+    && ["planned", "drafting", "ready"].includes(leafState(selectedItem?.state));
 
   // ADR 014 step 8 — fetch plan status when the selected item is in a state
   // where a plan should exist. Use a token pattern (mirrors linkedPrLookupToken
@@ -319,6 +325,12 @@
               <button class="danger small" on:click={() => onCloseIssue(selectedItem)} disabled={closingIssue}>
                 {closingIssue ? 'Closing…' : 'Close issue'}
               </button>
+            {/if}
+            {#if canDeleteWorkItem}
+              <button class="danger small" on:click={() => onDeleteWorkItem(selectedItem)} disabled={deletingWorkItem}>
+                {deletingWorkItem ? 'Deleting…' : 'Delete work item'}
+              </button>
+              <p class="muted">Delete is destructive and different from cancel. Use it only for junk, duplicates, or malformed issue-backed items.</p>
             {/if}
           {:else}
             <p class="muted">Loading issue details…</p>
@@ -537,6 +549,9 @@
     </div>
 
     {#if connectedEdges.length > 0}
+      {#if canDeleteWorkItem}
+        <p class="muted">Deleting this work item will also remove these connected edges after explicit acknowledgement.</p>
+      {/if}
       <ul class="edge-list">
         {#each connectedEdges as edge}
           <li>

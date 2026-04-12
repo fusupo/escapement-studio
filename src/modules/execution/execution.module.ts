@@ -1,6 +1,7 @@
 import { forwardRef, Module } from "@nestjs/common";
 import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
+import { PlansModule } from "../plans/plans.module.js";
 import { SettingsModule } from "../settings/settings.module.js";
 import { ExecutionController } from "./execution.controller.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
@@ -11,7 +12,7 @@ import { WorkItemReconcilerController } from "./work-item-reconciler.controller.
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 
 @Module({
-  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => SettingsModule)],
+  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => PlansModule), forwardRef(() => SettingsModule)],
   controllers: [ExecutionController, GitHubCacheController, WorkItemReconcilerController],
   providers: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, WorkItemReconcilerService],
   exports: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, WorkItemReconcilerService],

@@ -1,10 +1,11 @@
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import {
   canonicalScratchpadPath,
   ensurePlanDir,
+  planDir,
   readPlanMetadata,
   writePlanMetadata,
   type PlanMetadata,
@@ -205,6 +206,18 @@ export class PlansService {
       metadata,
       scratchpad_content: scratchpadContent,
     };
+  }
+
+  deletePlanArtifacts(workItemId: string): { removed: boolean; path: string | null } {
+    this.workItemsService.get(workItemId);
+
+    const target = planDir(this.artifactRoot, workItemId);
+    if (!existsSync(target)) {
+      return { removed: false, path: null };
+    }
+
+    rmSync(target, { recursive: true, force: true });
+    return { removed: true, path: target };
   }
 
   async persistDraftEnvelope(

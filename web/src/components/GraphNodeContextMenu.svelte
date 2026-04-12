@@ -98,6 +98,7 @@
                 <button
                   class="graph-context-menu-action"
                   class:primary={action.emphasis === "primary"}
+                  class:danger={action.emphasis === "danger"}
                   on:click={() => handleButtonAction(action)}
                   disabled={action.disabled}
                   role="menuitem"
@@ -218,6 +219,17 @@
   .graph-context-menu-action.primary:hover:enabled {
     background: rgba(37, 99, 235, 0.26);
     border-color: rgba(37, 99, 235, 0.4);
+  }
+
+  .graph-context-menu-action.danger {
+    background: rgba(220, 38, 38, 0.15);
+    border-color: rgba(248, 113, 113, 0.3);
+    color: #fecaca;
+  }
+
+  .graph-context-menu-action.danger:hover:enabled {
+    background: rgba(220, 38, 38, 0.24);
+    border-color: rgba(248, 113, 113, 0.45);
   }
 
   .graph-context-menu-description {
