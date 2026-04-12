@@ -81,6 +81,14 @@ describe("migrateDoneToArchived", () => {
     const db = createMigratedDb(manifestPath);
     seedWorkItem(db, "studio-196", "done");
     mkdirSync(archiveDir(artifactRoot, "studio-196"), { recursive: true });
+
+    // Close the seeded connection before creating fake sidecars. If we leave
+    // the real WAL connection open and then overwrite its -wal/-shm files with
+    // sentinel contents, a fresh connection can legitimately fail to see the
+    // schema that still lives in the live WAL. The behavior under test is that
+    // the migration logs warnings for sidecars but still processes a valid
+    // manifest, not that it can recover from a deliberately corrupted live WAL.
+    db.close();
     writeFileSync(`${manifestPath}-wal`, "wal", "utf8");
     writeFileSync(`${manifestPath}-shm`, "shm", "utf8");
 
@@ -95,7 +103,5 @@ describe("migrateDoneToArchived", () => {
     expect(result.warnings).toHaveLength(2);
     expect(logs.some((line) => line.includes("-wal"))).toBe(true);
     expect(logs.some((line) => line.includes("-shm"))).toBe(true);
-
-    db.close();
   });
 });
