@@ -58,7 +58,7 @@ export class WorkItemsController {
   }
 
   @Post(":id/transition")
-  transition(@Param("id") id: string, @Body() body: TransitionDto) {
+  async transition(@Param("id") id: string, @Body() body: TransitionDto) {
     const target = body?.to;
     if (!target) {
       throw new BadRequestException("transition target `to` is required");

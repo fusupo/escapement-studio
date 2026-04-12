@@ -36,6 +36,7 @@
     <!-- `planned`: issue exists, but drafting has not started yet. -->
     <state id="planned">
       <transition event="user.start_draft" target="drafting" />
+      <transition event="user.dispatch" target="in_progress" action="createRunRecord" />
     </state>
 
     <!-- `drafting`: the scratchpad/plan is being authored or revised. -->
@@ -55,6 +56,8 @@
       <transition event="run.completed" cond="pr_exists" target="open_pr" />
       <transition event="run.completed" cond="!pr_exists" target="merged_pr" />
       <transition event="run.error" target="run_errored" />
+      <transition event="user.investigate" target="ready" />
+      <transition event="user.start_draft" target="drafting" />
     </state>
 
     <!-- `run_errored`: the latest run failed and needs human intervention. -->

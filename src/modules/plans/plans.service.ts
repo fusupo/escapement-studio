@@ -14,6 +14,7 @@ import {
   StudioIssueTemplateService,
   type StudioIssueTemplate,
 } from "../github/studio-issue-template.service.js";
+import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { PlanDrafterService } from "./plan-drafter.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
@@ -48,6 +49,7 @@ export class PlansService {
 
   constructor(
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
+    @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(StudioIssueTemplateService) private readonly templateService: StudioIssueTemplateService,
     @Inject(PlanDrafterService) private readonly drafter: PlanDrafterService,
   ) {}
@@ -103,7 +105,7 @@ export class PlansService {
     // idempotent on the state transition itself; it just re-runs the drafter
     // and overwrites the scratchpad).
     if (workItem.state !== "drafting") {
-      this.workItemsService.update(workItemId, { state: "drafting" });
+      await this.hsmService.dispatch(workItemId, { type: "user.start_draft" });
     }
 
     // Ensure the plan dir exists and write initial metadata if we were first.
@@ -142,7 +144,7 @@ export class PlansService {
    * work item's `predicted_files` from the scratchpad's `## Affected Files`
    * section, and return the diff for review UIs.
    */
-  approve(workItemId: string, dto: ApprovePlanDto = {}): PlanResponse {
+  async approve(workItemId: string, dto: ApprovePlanDto = {}): Promise<PlanResponse> {
     const workItem = this.workItemsService.get(workItemId);
     if (workItem.state !== "drafting") {
       throw new BadRequestException(
@@ -169,7 +171,7 @@ export class PlansService {
     }
 
     // Transition drafting → ready.
-    this.workItemsService.update(workItemId, { state: "ready" });
+    await this.hsmService.dispatch(workItemId, { type: "draft.completed" });
 
     const now = new Date().toISOString();
     const approvedBy = dto.approved_by?.trim() || "local";
@@ -197,7 +199,7 @@ export class PlansService {
    * Reopen an approved plan for further editing: `ready → drafting`. Clears
    * approver fields in metadata.
    */
-  reopen(workItemId: string, _dto: ReopenPlanDto = {}): PlanResponse {
+  async reopen(workItemId: string, _dto: ReopenPlanDto = {}): Promise<PlanResponse> {
     const workItem = this.workItemsService.get(workItemId);
     if (workItem.state !== "ready") {
       throw new BadRequestException(
@@ -205,7 +207,7 @@ export class PlansService {
       );
     }
 
-    this.workItemsService.update(workItemId, { state: "drafting" });
+    await this.hsmService.dispatch(workItemId, { type: "user.start_draft" });
 
     const metadata = this.updatePlanMetadata(workItemId, (current) => ({
       ...current,

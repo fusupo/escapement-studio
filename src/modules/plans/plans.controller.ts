@@ -17,19 +17,19 @@ export class PlansController {
   }
 
   @Post(":work_item_id/approve")
-  approve(
+  async approve(
     @Param("work_item_id") workItemId: string,
     @Body() body: ApprovePlanDto = {},
-  ): PlanResponse {
-    return this.plansService.approve(workItemId, body);
+  ): Promise<PlanResponse> {
+    return await this.plansService.approve(workItemId, body);
   }
 
   @Post(":work_item_id/reopen")
-  reopen(
+  async reopen(
     @Param("work_item_id") workItemId: string,
     @Body() body: ReopenPlanDto = {},
-  ): PlanResponse {
-    return this.plansService.reopen(workItemId, body);
+  ): Promise<PlanResponse> {
+    return await this.plansService.reopen(workItemId, body);
   }
 
   @Get(":work_item_id")

@@ -419,7 +419,7 @@ export class ExecutionService implements OnModuleInit {
       return { accepted: false, run };
     }
 
-    const launchState = this.markWorkItemInProgressOnLaunch(workItem);
+    const launchState = await this.markWorkItemInProgressOnLaunch(workItem);
     const run = this.createRunRecord({
       workItem: launchState.workItem,
       branch: node.branch,
@@ -546,23 +546,29 @@ export class ExecutionService implements OnModuleInit {
     this.appendEvent(nextRun, { type: "pull_request_created", pull_request: pullRequest });
     this.writeSummary(nextRun);
 
-    // Update work item: set state to open_pr and store PR metadata
+    // Update work item: dispatch HSM event for state transition, then
+    // write non-state fields (branch, meta.pull_request) separately.
     try {
-      const existingMeta = workItem.meta ?? {};
+      const prPayload = {
+        number: pullRequest.number,
+        url: pullRequest.url,
+        title: pullRequest.title,
+        is_draft: pullRequest.is_draft,
+        head_ref: pullRequest.head_ref,
+        base_ref: pullRequest.base_ref,
+        created_at: pullRequest.created_at,
+      };
+      await this.hsmService.dispatch(run.work_item_id, {
+        type: "gh.pr_opened",
+        pull_request: prPayload,
+      });
+      // Write additional fields that the HSM doesn't manage.
+      const existingMeta = this.workItemsService.get(run.work_item_id).meta ?? {};
       this.workItemsService.update(run.work_item_id, {
-        state: "open_pr",
         branch: run.branch,
         meta: {
           ...existingMeta,
-          pull_request: {
-            number: pullRequest.number,
-            url: pullRequest.url,
-            title: pullRequest.title,
-            is_draft: pullRequest.is_draft,
-            head_ref: pullRequest.head_ref,
-            base_ref: pullRequest.base_ref,
-            created_at: pullRequest.created_at,
-          },
+          pull_request: prPayload,
         },
       });
     } catch (updateError) {
@@ -600,8 +606,19 @@ export class ExecutionService implements OnModuleInit {
     // ADR 014 step 3: post-merge sync lands on 'merged_pr', not 'done'.
     // 'merged_pr' is a stable resting state that the disposition flow
     // (ADR 014 step 7) will transition to 'done' after archival completes.
+    // HSM handles the state transition; non-state fields follow separately.
+    await this.hsmService.dispatch(workItem.id, {
+      type: "gh.pr_merged",
+      pull_request: {
+        number: pullRequest.number,
+        url: pullRequest.url,
+        title: pullRequest.title,
+        head_ref: pullRequest.head_ref,
+        base_ref: pullRequest.base_ref,
+        merged_at: pullRequest.merged_at,
+      },
+    });
     this.workItemsService.update(workItem.id, {
-      state: "merged_pr",
       actual_files: actualFilesSelection.files,
       branch: nextBranch,
       archive_path: nextArchivePath,
@@ -2289,7 +2306,7 @@ export class ExecutionService implements OnModuleInit {
     }
   }
 
-  private markWorkItemInProgressOnLaunch(workItem: WorkItemRecord): { workItem: WorkItemRecord; transitioned: boolean } {
+  private async markWorkItemInProgressOnLaunch(workItem: WorkItemRecord): Promise<{ workItem: WorkItemRecord; transitioned: boolean }> {
     // ADR 014 step 5: only launchable states transition to in_progress. The
     // eligibility safety check `launchable_state` already rejects anything
     // else before this method is reached; this guard is defensive.
@@ -2302,8 +2319,9 @@ export class ExecutionService implements OnModuleInit {
       return { workItem, transitioned: false };
     }
 
+    await this.hsmService.dispatch(workItem.id, { type: "user.dispatch" });
     return {
-      workItem: this.workItemsService.update(workItem.id, { state: "in_progress" }),
+      workItem: this.workItemsService.get(workItem.id),
       transitioned: true,
     };
   }
@@ -2321,14 +2339,15 @@ export class ExecutionService implements OnModuleInit {
    * is rich enough to distinguish "plan valid" from "plan needs rework"
    * (the latter going to `drafting`).
    */
-  transitionInProgressToReady(workItemId: string): WorkItemRecord {
+  async transitionInProgressToReady(workItemId: string): Promise<WorkItemRecord> {
     const workItem = this.workItemsService.get(workItemId);
     if (workItem.state !== "in_progress") {
       throw new BadRequestException(
         `Cannot transition ${workItemId} from ${workItem.state} to ready (requires in_progress)`,
       );
     }
-    return this.workItemsService.update(workItemId, { state: "ready" });
+    await this.hsmService.dispatch(workItemId, { type: "user.investigate" });
+    return this.workItemsService.get(workItemId);
   }
 
   /**
@@ -2339,14 +2358,15 @@ export class ExecutionService implements OnModuleInit {
    * operator-triggered in step 5 — automatic failure classification is
    * deferred to step 7 (run disposition).
    */
-  transitionInProgressToDrafting(workItemId: string): WorkItemRecord {
+  async transitionInProgressToDrafting(workItemId: string): Promise<WorkItemRecord> {
     const workItem = this.workItemsService.get(workItemId);
     if (workItem.state !== "in_progress") {
       throw new BadRequestException(
         `Cannot transition ${workItemId} from ${workItem.state} to drafting (requires in_progress)`,
       );
     }
-    return this.workItemsService.update(workItemId, { state: "drafting" });
+    await this.hsmService.dispatch(workItemId, { type: "user.start_draft" });
+    return this.workItemsService.get(workItemId);
   }
 
   /**
@@ -2666,13 +2686,16 @@ export class ExecutionService implements OnModuleInit {
    * `planned`, `drafting`, `ready`, `in_progress`, `open_pr` (the `cancelled`
    * row in `VALID_HUMAN_TRANSITIONS`).
    */
-  cancelWorkItem(workItemId: string): WorkItemRecord {
+  async cancelWorkItem(workItemId: string): Promise<WorkItemRecord> {
     this.assertNoActiveRunForWorkItem(workItemId);
     const moveResult = this.movePlanDirToArchives(workItemId);
-    return this.workItemsService.update(workItemId, {
-      state: "cancelled",
-      archive_path: moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path,
-    });
+    await this.hsmService.dispatch(workItemId, { type: "user.cancel" });
+    // Write archive_path separately — the HSM doesn't manage this field.
+    const nextArchivePath = moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path;
+    if (nextArchivePath) {
+      this.workItemsService.update(workItemId, { archive_path: nextArchivePath });
+    }
+    return this.workItemsService.get(workItemId);
   }
 
   /**

@@ -185,7 +185,12 @@ function makeService(params: {
   service.hsmService = {
     dispatch: params.hsmDispatch ?? vi.fn(async (_id: string, event: { type: string }) => {
       const prevState = currentWorkItem.state;
-      const nextState = event.type === "user.archive_and_finalize" ? "archived" : "done";
+      const eventStateMap: Record<string, string> = {
+        "user.archive_and_finalize": "archived",
+        "user.cancel": "cancelled",
+        "user.finalize": "done",
+      };
+      const nextState = eventStateMap[event.type] ?? "done";
       currentWorkItem = { ...currentWorkItem, state: nextState as WorkItemState, updated_at: "2026-04-09T00:00:01.000Z" };
       return makeDispatchResult({
         prev_state: prevState,
@@ -630,7 +635,7 @@ describe("ADR 014 step 7: disposition flow", () => {
   });
 
   describe("cancelWorkItem", () => {
-    it("moves the plan dir and transitions to cancelled", () => {
+    it("moves the plan dir and transitions to cancelled", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
@@ -639,7 +644,7 @@ describe("ADR 014 step 7: disposition flow", () => {
         // Valid source state for cancellation (per VALID_HUMAN_TRANSITIONS)
         workItem: makeWorkItem({ state: "drafting" }),
       });
-      const result = service.cancelWorkItem("studio-157");
+      const result = await service.cancelWorkItem("studio-157");
 
       expect(result.state).toBe("cancelled");
       expect(result.archive_path).toBe(archiveDir(tmpRoot, "studio-157"));
@@ -647,18 +652,18 @@ describe("ADR 014 step 7: disposition flow", () => {
       expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(true);
     });
 
-    it("handles the no-plan-dir case by still transitioning", () => {
+    it("handles the no-plan-dir case by still transitioning", async () => {
       const service = makeService({
         artifactRoot: tmpRoot,
         workItem: makeWorkItem({ state: "planned" }),
       });
-      const result = service.cancelWorkItem("studio-157");
+      const result = await service.cancelWorkItem("studio-157");
 
       expect(result.state).toBe("cancelled");
       expect(result.archive_path).toBe(null);
     });
 
-    it("active-run guard rejects before the filesystem is touched", () => {
+    it("active-run guard rejects before the filesystem is touched", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
@@ -667,7 +672,7 @@ describe("ADR 014 step 7: disposition flow", () => {
         workItem: makeWorkItem({ state: "in_progress" }),
         runs: [makeRun({ status: "running" })],
       });
-      expect(() => service.cancelWorkItem("studio-157")).toThrow(/cannot_dispose_work_item_active_run/);
+      await expect(service.cancelWorkItem("studio-157")).rejects.toThrow(/cannot_dispose_work_item_active_run/);
       expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(true);
     });
   });
