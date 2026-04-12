@@ -4,6 +4,10 @@ const DEFAULT_MENU_PADDING = 12;
 // Preparable states mirror PlansService.assertPreparable (planned | drafting).
 const PREPARABLE_STATES = new Set(["planned", "drafting"]);
 
+function leafState(state) {
+  return state?.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+}
+
 export function buildGraphNodeContextMenu({
   item,
   launchEligibility,
@@ -18,7 +22,7 @@ export function buildGraphNodeContextMenu({
     return null;
   }
 
-  const workItemState = item.state ?? null;
+  const workItemState = leafState(item.state ?? null);
   const planSubState = planState?.state ?? null;
 
   // UI gate is stricter than the backend: require work item state to be

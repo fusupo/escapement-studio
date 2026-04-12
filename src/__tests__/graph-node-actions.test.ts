@@ -177,6 +177,22 @@ describe("buildGraphNodeContextMenu", () => {
       });
     });
 
+    it("treats dotted HSM ready state as launchable", () => {
+      const menu = buildGraphNodeContextMenu({
+        item: makeItem({ state: "pre_pr.ready" }),
+        launchEligibility: makeEligibility(),
+        planState: { state: "ready" },
+      });
+      expect(menu.status).toEqual({ label: "Dispatchable", tone: "ready" });
+      const launchAction = menu?.sections[0].actions.find(
+        (a: { id: string }) => a.id === "launch-execution",
+      );
+      expect(launchAction).toMatchObject({
+        id: "launch-execution",
+        disabled: false,
+      });
+    });
+
     it("shows Preparing… label when preparingPlan is true", () => {
       const menu = buildGraphNodeContextMenu({
         item: makeItem({ state: "planned" }),
@@ -213,6 +229,15 @@ describe("buildGraphNodeContextMenu", () => {
       expect(ids).not.toContain("prepare-plan");
       expect(ids).not.toContain("approve-plan");
       expect(ids).not.toContain("review-plan");
+    });
+
+    it("shows Prepare plan for dotted HSM planned state", () => {
+      const menu = buildGraphNodeContextMenu({
+        item: makeItem({ state: "pre_pr.planned" }),
+        launchEligibility: makeEligibility({ can_launch: false }),
+        planState: null,
+      });
+      expect(actionIds(menu)).toContain("prepare-plan");
     });
   });
 });

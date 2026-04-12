@@ -5,6 +5,7 @@ import { XMLParser } from "fast-xml-parser";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GraphEventsService } from "./graph-events.service.js";
 import { GraphWriterService } from "./graph-writer.service.js";
 import type { ApplyGraphMutationsResult } from "./types.js";
 import type {
@@ -78,6 +79,7 @@ export class WorkItemHsmService implements OnModuleInit {
   constructor(
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
     @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
+    @Inject(GraphEventsService) private readonly graphEvents: GraphEventsService,
   ) {}
 
   onModuleInit(): void {
@@ -162,6 +164,14 @@ export class WorkItemHsmService implements OnModuleInit {
     });
 
     this.assertApplied(result);
+
+    this.graphEvents.emitWorkItemStateChanged({
+      work_item_id: workItemId,
+      prev_state: prevState,
+      next_state: nextState,
+      event_type: event.type,
+      timestamp: new Date().toISOString(),
+    });
 
     return {
       work_item_id: workItemId,

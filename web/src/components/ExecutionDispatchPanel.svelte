@@ -212,6 +212,7 @@
       const result = await openPullRequest({ run_id: run.run_id, auto_commit: true });
       mergeRun(result.run);
       prResults = { ...prResults, [run.run_id]: result.pull_request };
+      await loadData({ quiet: true });
     } catch (e) {
       error = e.message;
     } finally {

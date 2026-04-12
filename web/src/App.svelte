@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   import PlannerChatAdapter from "./components/PlannerChatAdapter.svelte";
   import ExecutionDispatchPanel from "./components/ExecutionDispatchPanel.svelte";
   import ReconciliationPanel from "./components/ReconciliationPanel.svelte";
@@ -29,6 +30,10 @@
   import { buildGraphNodeContextMenu } from "./lib/graph-node-actions.js";
 
   const emptyGraph = { filters: {}, items: [], edges: [] };
+  function leafState(state) {
+    return state?.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+  }
+
   let graph = emptyGraph;
   let catalog = [];
   let filters = { repo: "", state: "", track: "", phase: "" };
@@ -46,6 +51,9 @@
   let launchEligibilityLoadingIds = {};
   let launchEligibilityRequestTokenById = {};
   let graphContextMenu = { open: false, x: 0, y: 0, item: null };
+  let graphStream = null;
+  let graphRefreshTimer = null;
+  let graphRefreshInFlight = false;
 
   // Status bar data — frontier, execution runs, reconciliation reports
   let frontierIds = [];
@@ -201,7 +209,7 @@
   // non-issue kinds are skipped to avoid pointless 404 round-trips.
   $: if (selectedItem?.id
     && selectedItem?.kind === "issue"
-    && ["drafting", "ready", "in_progress", "open_pr", "merged_pr"].includes(selectedItem.state)) {
+    && ["drafting", "ready", "in_progress", "open_pr", "merged_pr"].includes(leafState(selectedItem.state))) {
     void ensurePlanState(selectedItem.id);
   }
 
@@ -351,6 +359,27 @@
     if (activeTab === "planning") void loadFrontier();
     if (activeTab === "execute") void loadExecutionStats();
     if (activeTab === "reconciliation") void loadReconciliationStats();
+  }
+
+  async function runGraphRefresh() {
+    if (graphRefreshInFlight) {
+      return;
+    }
+
+    graphRefreshInFlight = true;
+    try {
+      await refresh();
+    } finally {
+      graphRefreshInFlight = false;
+    }
+  }
+
+  function scheduleGraphRefresh() {
+    window.clearTimeout(graphRefreshTimer);
+    graphRefreshTimer = window.setTimeout(() => {
+      graphRefreshTimer = null;
+      void runGraphRefresh();
+    }, 150);
   }
 
   function mergeReconciledWorkItems(workItems = []) {
@@ -504,7 +533,7 @@
     // Also prime plan state for issue kinds so the context menu can gate
     // Prepare / Approve / Review correctly. Non-issue kinds skip the fetch.
     if (detail.item.kind === "issue"
-      && ["drafting", "ready", "in_progress", "open_pr", "merged_pr", "planned"].includes(detail.item.state)) {
+      && ["drafting", "ready", "in_progress", "open_pr", "merged_pr", "planned"].includes(leafState(detail.item.state))) {
       await ensurePlanState(detail.item.id);
     }
   }
@@ -633,7 +662,19 @@
     loadGraph();
   }
 
-  loadGraph();
+  onMount(() => {
+    void loadGraph();
+
+    graphStream = new EventSource("/api/graph/stream");
+    graphStream.addEventListener("work_item_state_changed", () => {
+      scheduleGraphRefresh();
+    });
+
+    return () => {
+      window.clearTimeout(graphRefreshTimer);
+      graphStream?.close();
+    };
+  });
 </script>
 
 <svelte:head>

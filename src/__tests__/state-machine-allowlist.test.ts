@@ -2,21 +2,18 @@ import { describe, expect, it } from "vitest";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { initManifest } from "../lib/manifest-core.js";
 import { SQLiteService } from "../modules/graph/sqlite.service.js";
-import { VALID_HUMAN_TRANSITIONS } from "../modules/graph/state-transitions.js";
 import type { WorkItemState } from "../modules/graph/types.js";
 
 /**
- * ADR 014 step 3 state-machine allowlist.
+ * Canonical work-item state persistence coverage.
  *
  * This test enforces a single source of truth: the 12 canonical
  * WorkItemState values. It asserts:
  *  1. All 12 states are accepted by the SQLite CHECK constraint
- *  2. An invalid state is rejected by the constraint
- *  3. VALID_HUMAN_TRANSITIONS has an entry for every state (no
- *     accidentally-missing rows)
+  *  2. An invalid state is rejected by the constraint
  *
  * If any future code adds a new state, this test will flag missing
- * DB coverage and/or missing transition allowlist entries at test time.
+ * DB coverage at test time.
  */
 
 const ALL_STATES: WorkItemState[] = [
@@ -70,7 +67,7 @@ function insertWorkItemWithState(db: DatabaseType, id: string, state: string): v
   ).run(id, `Item ${id}`, state);
 }
 
-describe("state-machine allowlist", () => {
+describe("work-item state persistence", () => {
   describe("SQLite CHECK constraint", () => {
     it("accepts every canonical WorkItemState value", () => {
       const db = createMigratedDb();
@@ -104,38 +101,6 @@ describe("state-machine allowlist", () => {
       const db = createMigratedDb();
       expect(() => insertWorkItemWithState(db, "item-bad-dotted", "pre_pr.blocked")).toThrow();
       db.close();
-    });
-  });
-
-  describe("VALID_HUMAN_TRANSITIONS", () => {
-    it("has an entry for every canonical state", () => {
-      for (const state of ALL_STATES) {
-        expect(VALID_HUMAN_TRANSITIONS).toHaveProperty(state);
-      }
-    });
-
-    it("every transition target is itself a canonical state", () => {
-      const stateSet = new Set<string>(ALL_STATES);
-      for (const [from, targets] of Object.entries(VALID_HUMAN_TRANSITIONS)) {
-        for (const to of targets) {
-          expect(stateSet.has(to)).toBe(true);
-          // Self-transitions are not meaningful
-          expect(to).not.toBe(from);
-        }
-      }
-    });
-
-    it("terminal and placeholder states have no human-triggered outbound transitions", () => {
-      expect(VALID_HUMAN_TRANSITIONS.run_errored).toEqual([]);
-      expect(VALID_HUMAN_TRANSITIONS.closed).toEqual([]);
-      expect(VALID_HUMAN_TRANSITIONS.done).toEqual([]);
-      expect(VALID_HUMAN_TRANSITIONS.archived).toEqual([]);
-      expect(VALID_HUMAN_TRANSITIONS.cancelled).toEqual([]);
-      // merged_pr → done is triggered by the disposition endpoints
-      // (POST /api/execution/close-merged, POST /api/execution/archive-and-close-merged)
-      // not by a human reviewer via the generic transition endpoint, so the
-      // allowlist stays empty here.
-      expect(VALID_HUMAN_TRANSITIONS.merged_pr).toEqual([]);
     });
   });
 });

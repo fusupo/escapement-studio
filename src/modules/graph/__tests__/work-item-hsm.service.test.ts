@@ -1,5 +1,6 @@
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GraphEventsService } from "../graph-events.service.js";
 import { GraphWriterService } from "../graph-writer.service.js";
 import { WorkItemHsmService } from "../work-item-hsm.service.js";
 import type { DispatchResult, WorkItemHsmEvent, WorkItemRecord, WorkItemState } from "../types.js";
@@ -45,12 +46,17 @@ function createHarness(initialState: WorkItemState, meta: Record<string, unknown
     }),
   } as unknown as GraphWriterService;
 
-  const service = new WorkItemHsmService(workItems, graphWriter);
+  const graphEvents = {
+    emitWorkItemStateChanged: vi.fn(),
+  } as unknown as GraphEventsService;
+
+  const service = new WorkItemHsmService(workItems, graphWriter, graphEvents);
   service.onModuleInit();
 
   return {
     service,
     graphWriter,
+    graphEvents,
     getCurrent: () => current,
   };
 }
@@ -74,7 +80,9 @@ describe("WorkItemHsmService", () => {
   it("fails loudly on malformed SCXML", () => {
     const service = new WorkItemHsmService({ get: vi.fn() } as unknown as WorkItemsService, {
       apply: vi.fn(),
-    } as unknown as GraphWriterService);
+    } as unknown as GraphWriterService, {
+      emitWorkItemStateChanged: vi.fn(),
+    } as unknown as GraphEventsService);
 
     Object.defineProperty(service, "chartPath", { value: __filename, writable: false });
     expect(() => service.onModuleInit()).toThrow();
@@ -101,6 +109,7 @@ describe("WorkItemHsmService", () => {
     expect(result.rejected).toBe(true);
     expect(result.mutation_applied).toBe(false);
     expect(harness.graphWriter.apply).not.toHaveBeenCalled();
+    expect(harness.graphEvents.emitWorkItemStateChanged).not.toHaveBeenCalled();
     expect(loggerDebugSpy).toHaveBeenCalledWith(expect.stringContaining("rejected by HSM"));
   });
 
@@ -154,6 +163,20 @@ describe("WorkItemHsmService", () => {
     const harness = createHarness(from);
     const result = await harness.service.dispatch("studio-200", event);
     expect(result.next_state).toBe(expected);
+  });
+
+  it("emits a graph state-change event when a transition applies", async () => {
+    const harness = createHarness("planned");
+
+    await harness.service.dispatch("studio-200", { type: "user.start_draft" });
+
+    expect(harness.graphEvents.emitWorkItemStateChanged).toHaveBeenCalledWith({
+      work_item_id: "studio-200",
+      prev_state: "pre_pr.planned",
+      next_state: "pre_pr.drafting",
+      event_type: "user.start_draft",
+      timestamp: expect.any(String),
+    });
   });
 
   it("restores pre_pr history on user.undefer", async () => {

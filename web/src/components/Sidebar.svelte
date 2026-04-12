@@ -78,7 +78,6 @@
       id: selectedItem.id,
       name: selectedItem.name ?? "",
       kind: selectedItem.kind ?? "issue",
-      state: leafState(selectedItem.state) ?? "planned",
       repo: selectedItem.repo ?? "",
       issue_number: selectedItem.issue_number ?? "",
       issue_url: selectedItem.issue_url ?? "",
@@ -240,7 +239,6 @@
     onSaveItem({
       name: editForm.name,
       kind: editForm.kind,
-      state: editForm.state,
       repo: editForm.repo || null,
       issue_number: editForm.issue_number ? Number(editForm.issue_number) : null,
       issue_url: editForm.issue_url || null,
@@ -435,20 +433,7 @@
         </label>
         <label>
           State
-          <select bind:value={editForm.state}>
-            <option value="planned">planned</option>
-            <option value="drafting">drafting</option>
-            <option value="ready">ready</option>
-            <option value="in_progress">in_progress</option>
-            <option value="run_errored">run_errored</option>
-            <option value="open_pr">open_pr</option>
-            <option value="merged_pr">merged_pr</option>
-            <option value="closed">closed</option>
-            <option value="done">done</option>
-            <option value="archived">archived</option>
-            <option value="deferred">deferred</option>
-            <option value="cancelled">cancelled</option>
-          </select>
+          <input value={leafState(selectedItem.state) ?? "planned"} disabled />
         </label>
         <label>
           Repo

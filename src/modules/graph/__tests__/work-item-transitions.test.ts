@@ -1,19 +1,11 @@
 import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import type { ExecutionService } from "../../execution/execution.service.js";
-import { isValidHumanTransition, VALID_HUMAN_TRANSITIONS } from "../state-transitions.js";
-import type { WorkItemRecord, WorkItemState } from "../types.js";
+import type { PlansService } from "../../plans/plans.service.js";
+import type { DispatchResult, WorkItemRecord, WorkItemState } from "../types.js";
+import type { WorkItemHsmService } from "../work-item-hsm.service.js";
 import { WorkItemsController } from "../work-items.controller.js";
 import type { WorkItemsService } from "../work-items.service.js";
-
-/**
- * Tests for the ADR 014 step 3 human-reviewer transition endpoint.
- *
- * Construct the controller directly with hand-stubbed services rather
- * than booting a full Nest context — the transition logic is pure
- * dispatch and doesn't exercise any framework wiring beyond the
- * decorators.
- */
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
   return {
@@ -35,8 +27,27 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
   };
 }
 
-function makeController(initialState: WorkItemState = "planned") {
-  let current = makeWorkItem({ state: initialState });
+function makeDispatchResult(
+  current: WorkItemRecord,
+  event: { type: string },
+  nextState: WorkItemState,
+): DispatchResult {
+  return {
+    work_item_id: current.id,
+    prev_state: current.state,
+    next_state: nextState,
+    event: event as DispatchResult["event"],
+    applied_actions: [],
+    mutation_applied: true,
+    rejected: false,
+  };
+}
+
+function makeController(options: {
+  initialState?: WorkItemState;
+  enabledEvents?: string[];
+} = {}) {
+  let current = makeWorkItem({ state: options.initialState ?? "planned" });
 
   const workItemsService = {
     get: vi.fn((id: string) => {
@@ -49,12 +60,28 @@ function makeController(initialState: WorkItemState = "planned") {
     }),
   } as unknown as WorkItemsService;
 
+  const hsmService = {
+    getEnabledEvents: vi.fn(() => options.enabledEvents ?? []),
+    dispatch: vi.fn(async (_id: string, event: { type: string }) => {
+      const nextStateMap: Partial<Record<string, WorkItemState>> = {
+        "user.defer": "deferred",
+        "user.undefer": "planned",
+        "user.investigate": "pre_pr.ready",
+      };
+      const nextState = nextStateMap[event.type] ?? current.state;
+      const result = makeDispatchResult(current, event, nextState);
+      current = { ...current, state: nextState };
+      return result;
+    }),
+  } as unknown as WorkItemHsmService;
+
   const executionService = {
-    transitionInProgressToReady: vi.fn(async (id: string) => {
-      if (current.state !== "in_progress") {
-        throw new BadRequestException(`Cannot transition ${id} from ${current.state} to ready`);
-      }
-      current = { ...current, state: "ready" };
+    transitionInProgressToReady: vi.fn(async (_id: string) => {
+      current = { ...current, state: "pre_pr.ready" };
+      return current;
+    }),
+    transitionInProgressToDrafting: vi.fn(async (_id: string) => {
+      current = { ...current, state: "pre_pr.drafting" };
       return current;
     }),
     cancelWorkItem: vi.fn(async (_id: string) => {
@@ -63,127 +90,194 @@ function makeController(initialState: WorkItemState = "planned") {
     }),
   } as unknown as ExecutionService;
 
-  const controller = new WorkItemsController(workItemsService, executionService);
+  const plansService = {
+    prepare: vi.fn(async (_id: string) => {
+      current = { ...current, state: "pre_pr.drafting" };
+      return {
+        work_item_id: current.id,
+        metadata: { state: "drafting" },
+        scratchpad_content: "# scratchpad",
+      };
+    }),
+    reopen: vi.fn(async (_id: string) => {
+      current = { ...current, state: "pre_pr.drafting" };
+      return {
+        work_item_id: current.id,
+        metadata: { state: "drafting" },
+        scratchpad_content: "# scratchpad",
+      };
+    }),
+  } as unknown as PlansService;
+
+  const controller = new WorkItemsController(workItemsService, hsmService, executionService, plansService);
 
   return {
     controller,
     workItemsService,
+    hsmService,
     executionService,
+    plansService,
     getCurrent: () => current,
   };
 }
 
 describe("WorkItemsController.transition", () => {
-  describe("allowed human-reviewer transitions", () => {
-    const allowed: Array<[WorkItemState, WorkItemState]> = [
-      ["planned", "drafting"],
-      ["planned", "deferred"],
-      ["planned", "cancelled"],
-      ["drafting", "ready"],
-      ["drafting", "deferred"],
-      ["drafting", "cancelled"],
-      ["ready", "drafting"],
-      ["ready", "deferred"],
-      ["ready", "cancelled"],
-      ["in_progress", "drafting"],
-      ["in_progress", "deferred"],
-      ["in_progress", "cancelled"],
-      ["open_pr", "deferred"],
-      ["open_pr", "cancelled"],
-      ["deferred", "planned"],
-    ];
-
-    for (const [from, to] of allowed) {
-      it(`permits ${from} → ${to}`, async () => {
-        const harness = makeController(from);
-        const result = await harness.controller.transition("studio-153", { to });
-        expect(result.state).toBe(to);
-      });
-    }
-  });
-
-  describe("in_progress → ready delegation", () => {
-    it("delegates in_progress → ready to ExecutionService.transitionInProgressToReady", async () => {
-      const harness = makeController("in_progress");
-
-      const result = await harness.controller.transition("studio-153", { to: "ready" });
-
-      expect(harness.executionService.transitionInProgressToReady).toHaveBeenCalledWith("studio-153");
-      expect(harness.workItemsService.update).not.toHaveBeenCalled();
-      expect(result.state).toBe("ready");
+  it("routes planned -> user.start_draft through PlansService.prepare", async () => {
+    const harness = makeController({
+      initialState: "planned",
+      enabledEvents: ["user.start_draft"],
     });
+
+    const result = await harness.controller.transition("studio-153", { event: "user.start_draft" });
+
+    expect(harness.plansService.prepare).toHaveBeenCalledWith("studio-153");
+    expect(harness.plansService.reopen).not.toHaveBeenCalled();
+    expect(harness.executionService.transitionInProgressToDrafting).not.toHaveBeenCalled();
+    expect(result.state).toBe("pre_pr.drafting");
   });
 
-  describe("cancelled delegation (ADR 014 step 7)", () => {
-    // * → cancelled now delegates to ExecutionService.cancelWorkItem so the
-    // plan dir can be archived and the active-run guard runs before the
-    // state update.
-    const sources: WorkItemState[] = ["planned", "drafting", "ready", "in_progress", "open_pr"];
-    for (const from of sources) {
-      it(`delegates ${from} → cancelled to ExecutionService.cancelWorkItem`, async () => {
-        const harness = makeController(from);
-
-        const result = await harness.controller.transition("studio-153", { to: "cancelled" });
-
-        expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith("studio-153");
-        expect(harness.workItemsService.update).not.toHaveBeenCalled();
-        expect(result.state).toBe("cancelled");
-      });
-    }
-  });
-
-  describe("rejection of disallowed transitions", () => {
-    const disallowed: Array<[WorkItemState, WorkItemState]> = [
-      ["planned", "in_progress"], // must launch, not manually set
-      ["planned", "done"],
-      ["run_errored", "ready"],
-      ["closed", "done"],
-      ["done", "planned"],
-      ["merged_pr", "done"], // disposition flow (step 7) uses dedicated endpoints, not this allowlist
-      ["archived", "planned"],
-      ["cancelled", "planned"],
-      ["ready", "in_progress"], // must launch, not manually set
-    ];
-
-    for (const [from, to] of disallowed) {
-      it(`rejects ${from} → ${to}`, async () => {
-        const harness = makeController(from);
-        await expect(harness.controller.transition("studio-153", { to })).rejects.toThrow(
-          BadRequestException,
-        );
-      });
-    }
-  });
-
-  describe("input validation", () => {
-    it("rejects a missing `to` field", async () => {
-      const harness = makeController("planned");
-      await expect(harness.controller.transition("studio-153", {} as { to: WorkItemState })).rejects.toThrow(
-        /to.*required/,
-      );
+  it("routes ready -> user.start_draft through PlansService.reopen", async () => {
+    const harness = makeController({
+      initialState: "ready",
+      enabledEvents: ["user.start_draft"],
     });
+
+    const result = await harness.controller.transition("studio-153", { event: "user.start_draft" });
+
+    expect(harness.plansService.reopen).toHaveBeenCalledWith("studio-153");
+    expect(harness.plansService.prepare).not.toHaveBeenCalled();
+    expect(result.state).toBe("pre_pr.drafting");
+  });
+
+  it("routes in_progress -> user.start_draft through ExecutionService.transitionInProgressToDrafting", async () => {
+    const harness = makeController({
+      initialState: "in_progress",
+      enabledEvents: ["user.start_draft"],
+    });
+
+    const result = await harness.controller.transition("studio-153", { event: "user.start_draft" });
+
+    expect(harness.executionService.transitionInProgressToDrafting).toHaveBeenCalledWith("studio-153");
+    expect(harness.plansService.prepare).not.toHaveBeenCalled();
+    expect(result.state).toBe("pre_pr.drafting");
+  });
+
+  it("routes in_progress -> user.investigate through ExecutionService.transitionInProgressToReady", async () => {
+    const harness = makeController({
+      initialState: "in_progress",
+      enabledEvents: ["user.investigate"],
+    });
+
+    const result = await harness.controller.transition("studio-153", { event: "user.investigate" });
+
+    expect(harness.executionService.transitionInProgressToReady).toHaveBeenCalledWith("studio-153");
+    expect(harness.hsmService.dispatch).not.toHaveBeenCalled();
+    expect(result.state).toBe("pre_pr.ready");
+  });
+
+  it("routes run_errored -> user.investigate through the HSM", async () => {
+    const harness = makeController({
+      initialState: "pre_pr.run_errored",
+      enabledEvents: ["user.investigate"],
+    });
+
+    const result = await harness.controller.transition("studio-153", { event: "user.investigate" });
+
+    expect(harness.hsmService.dispatch).toHaveBeenCalledWith("studio-153", { type: "user.investigate" });
+    expect(harness.executionService.transitionInProgressToReady).not.toHaveBeenCalled();
+    expect(result.state).toBe("pre_pr.ready");
+  });
+
+  it("dispatches user.defer directly through the HSM", async () => {
+    const harness = makeController({
+      initialState: "ready",
+      enabledEvents: ["user.defer"],
+    });
+
+    const result = await harness.controller.transition("studio-153", { event: "user.defer" });
+
+    expect(harness.hsmService.dispatch).toHaveBeenCalledWith("studio-153", { type: "user.defer" });
+    expect(result.state).toBe("deferred");
+  });
+
+  it("dispatches user.undefer directly through the HSM", async () => {
+    const harness = makeController({
+      initialState: "deferred",
+      enabledEvents: ["user.undefer"],
+    });
+
+    const result = await harness.controller.transition("studio-153", { event: "user.undefer" });
+
+    expect(harness.hsmService.dispatch).toHaveBeenCalledWith("studio-153", { type: "user.undefer" });
+    expect(result.state).toBe("planned");
+  });
+
+  it("routes user.cancel through ExecutionService.cancelWorkItem", async () => {
+    const harness = makeController({
+      initialState: "ready",
+      enabledEvents: ["user.cancel"],
+    });
+
+    const result = await harness.controller.transition("studio-153", { event: "user.cancel" });
+
+    expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith("studio-153");
+    expect(harness.hsmService.dispatch).not.toHaveBeenCalled();
+    expect(result.state).toBe("cancelled");
+  });
+
+  it("rejects unsupported transition events", async () => {
+    const harness = makeController({
+      initialState: "merged_pr",
+      enabledEvents: ["user.finalize"],
+    });
+
+    await expect(
+      harness.controller.transition("studio-153", { event: "user.finalize" as never }),
+    ).rejects.toThrow(/Unsupported work-item transition event/);
+  });
+
+  it("rejects events that are not enabled by the HSM from the current state", async () => {
+    const harness = makeController({
+      initialState: "open_pr",
+      enabledEvents: [],
+    });
+
+    await expect(
+      harness.controller.transition("studio-153", { event: "user.cancel" }),
+    ).rejects.toThrow(/is not enabled from state open_pr/);
+  });
+
+  it("rejects a missing `event` field", async () => {
+    const harness = makeController();
+    await expect(
+      harness.controller.transition("studio-153", {} as { event: "user.defer" }),
+    ).rejects.toThrow(/event.*required/);
   });
 });
 
-describe("state-transitions helpers", () => {
-  it("isValidHumanTransition returns true for allowed pairs", () => {
-    expect(isValidHumanTransition("planned", "drafting")).toBe(true);
-    expect(isValidHumanTransition("drafting", "ready")).toBe(true);
-    expect(isValidHumanTransition("in_progress", "ready")).toBe(true);
+describe("WorkItemsController.update", () => {
+  it("rejects direct state patches", () => {
+    const harness = makeController();
+
+    expect(() => harness.controller.update("studio-153", {
+      name: "Renamed",
+      state: "done",
+    })).toThrow(BadRequestException);
   });
 
-  it("isValidHumanTransition returns false for disallowed pairs", () => {
-    expect(isValidHumanTransition("planned", "in_progress")).toBe(false);
-    expect(isValidHumanTransition("done", "planned")).toBe(false);
-    expect(isValidHumanTransition("merged_pr", "done")).toBe(false);
-  });
+  it("still allows non-state work item edits", () => {
+    const harness = makeController();
 
-  it("VALID_HUMAN_TRANSITIONS has no entries for terminal and placeholder states", () => {
-    expect(VALID_HUMAN_TRANSITIONS.run_errored).toHaveLength(0);
-    expect(VALID_HUMAN_TRANSITIONS.closed).toHaveLength(0);
-    expect(VALID_HUMAN_TRANSITIONS.done).toHaveLength(0);
-    expect(VALID_HUMAN_TRANSITIONS.archived).toHaveLength(0);
-    expect(VALID_HUMAN_TRANSITIONS.cancelled).toHaveLength(0);
-    expect(VALID_HUMAN_TRANSITIONS.merged_pr).toHaveLength(0);
+    const result = harness.controller.update("studio-153", {
+      name: "Renamed",
+      scope_hint: "new scope",
+    });
+
+    expect(harness.workItemsService.update).toHaveBeenCalledWith("studio-153", {
+      name: "Renamed",
+      scope_hint: "new scope",
+    });
+    expect(result.name).toBe("Renamed");
+    expect(result.scope_hint).toBe("new scope");
   });
 });

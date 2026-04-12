@@ -12,20 +12,40 @@ import {
   Query,
 } from "@nestjs/common";
 import { ExecutionService } from "../execution/execution.service.js";
-import { isValidHumanTransition } from "./state-transitions.js";
+import { PlansService } from "../plans/plans.service.js";
+import type { WorkItemHsmEvent, WorkItemRecord, UpdateWorkItemDto } from "./types.js";
+import { WorkItemHsmService } from "./work-item-hsm.service.js";
 import { WorkItemsService } from "./work-items.service.js";
-import type { CreateWorkItemDto, UpdateWorkItemDto, WorkItemState } from "./types.js";
+import type { CreateWorkItemDto } from "./types.js";
 
 interface TransitionDto {
-  to: WorkItemState;
+  event: WorkItemTransitionEvent;
 }
+
+type WorkItemTransitionEvent =
+  | "user.start_draft"
+  | "user.investigate"
+  | "user.defer"
+  | "user.undefer"
+  | "user.cancel";
+
+const SUPPORTED_TRANSITION_EVENTS = new Set<WorkItemTransitionEvent>([
+  "user.start_draft",
+  "user.investigate",
+  "user.defer",
+  "user.undefer",
+  "user.cancel",
+]);
 
 @Controller("api/work-items")
 export class WorkItemsController {
   constructor(
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
+    @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(forwardRef(() => ExecutionService))
     private readonly executionService: ExecutionService,
+    @Inject(forwardRef(() => PlansService))
+    private readonly plansService: PlansService,
   ) {}
 
   @Get()
@@ -54,45 +74,98 @@ export class WorkItemsController {
 
   @Put(":id")
   update(@Param("id") id: string, @Body() body: UpdateWorkItemDto) {
+    if (Object.hasOwn(body ?? {}, "state")) {
+      throw new BadRequestException(
+        "Work item state cannot be updated via PUT /api/work-items/:id. Dispatch an HSM-owned workflow instead.",
+      );
+    }
     return this.workItems.update(id, body);
   }
 
   @Post(":id/transition")
   async transition(@Param("id") id: string, @Body() body: TransitionDto) {
-    const target = body?.to;
-    if (!target) {
-      throw new BadRequestException("transition target `to` is required");
+    const eventType = body?.event;
+    if (!eventType) {
+      throw new BadRequestException("transition event `event` is required");
     }
 
     const workItem = this.workItems.get(id);
-    if (!isValidHumanTransition(workItem.state, target)) {
+    if (!SUPPORTED_TRANSITION_EVENTS.has(eventType)) {
       throw new BadRequestException(
-        `Human-reviewer transition ${workItem.state} → ${target} is not allowed`,
+        `Unsupported work-item transition event: ${eventType}`,
       );
     }
 
-    // in_progress → ready delegates to ExecutionService per ADR 014 actor
-    // assignment: the execution service owns the logic for reviving a
-    // failed-but-valid run plan. All other human transitions are plain
-    // state updates and go through WorkItemsService directly.
-    const leaf = workItem.state.startsWith("pre_pr.") ? workItem.state.slice("pre_pr.".length) : workItem.state;
-    if (leaf === "in_progress" && target === "ready") {
-      return this.executionService.transitionInProgressToReady(id);
+    const enabledEvents = new Set(this.hsmService.getEnabledEvents(id));
+    if (!enabledEvents.has(eventType)) {
+      throw new BadRequestException(
+        `HSM event ${eventType} is not enabled from state ${workItem.state}`,
+      );
     }
 
-    // ADR 014 step 7: `* → cancelled` delegates to ExecutionService so the
-    // plan dir can be moved into `archives/<slug>/` and the active-run guard
-    // runs before the state update. Source-state validity is already enforced
-    // by `isValidHumanTransition` above.
-    if (target === "cancelled") {
-      return this.executionService.cancelWorkItem(id);
+    switch (eventType) {
+      case "user.start_draft":
+        await this.routeStartDraft(id, workItem);
+        break;
+      case "user.investigate":
+        await this.routeInvestigate(id, workItem);
+        break;
+      case "user.defer":
+      case "user.undefer":
+        await this.hsmService.dispatch(id, { type: eventType });
+        break;
+      case "user.cancel":
+        return await this.executionService.cancelWorkItem(id);
     }
 
-    return this.workItems.update(id, { state: target });
+    return this.workItems.get(id);
   }
 
   @Delete(":id")
   delete(@Param("id") id: string) {
     return this.workItems.delete(id);
+  }
+
+  private async routeStartDraft(id: string, workItem: WorkItemRecord): Promise<void> {
+    const leafState = this.leafState(workItem.state);
+
+    if (leafState === "planned" || leafState === "drafting") {
+      await this.plansService.prepare(id);
+      return;
+    }
+
+    if (leafState === "ready") {
+      await this.plansService.reopen(id);
+      return;
+    }
+
+    if (leafState === "in_progress") {
+      await this.executionService.transitionInProgressToDrafting(id);
+      return;
+    }
+
+    throw new BadRequestException(
+      `No workflow owns ${workItem.state} -> user.start_draft for ${id}`,
+    );
+  }
+
+  private async routeInvestigate(id: string, workItem: WorkItemRecord): Promise<void> {
+    const leafState = this.leafState(workItem.state);
+
+    if (leafState === "in_progress") {
+      await this.executionService.transitionInProgressToReady(id);
+      return;
+    }
+
+    const result = await this.hsmService.dispatch(id, { type: "user.investigate" });
+    if (result.rejected) {
+      throw new BadRequestException(
+        `HSM rejected user.investigate from state ${result.prev_state}`,
+      );
+    }
+  }
+
+  private leafState(state: string): string {
+    return state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
   }
 }

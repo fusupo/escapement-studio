@@ -5,6 +5,7 @@ import { PlansModule } from "../plans/plans.module.js";
 import { EdgesController } from "./edges.controller.js";
 import { EdgesService } from "./edges.service.js";
 import { GraphController } from "./graph.controller.js";
+import { GraphEventsService } from "./graph-events.service.js";
 import { GraphService } from "./graph.service.js";
 import { GraphWriterService } from "./graph-writer.service.js";
 import { HsmActionHandlers } from "./hsm-action-handlers.js";
@@ -22,6 +23,7 @@ import { WorkItemsService } from "./work-items.service.js";
     WorkItemsService,
     EdgesService,
     GraphService,
+    GraphEventsService,
     GraphWriterService,
     HsmActionHandlers,
     HsmGuardHandlers,
@@ -32,6 +34,7 @@ import { WorkItemsService } from "./work-items.service.js";
     WorkItemsService,
     EdgesService,
     GraphService,
+    GraphEventsService,
     GraphWriterService,
     HsmActionHandlers,
     HsmGuardHandlers,

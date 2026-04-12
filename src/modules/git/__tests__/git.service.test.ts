@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,8 +21,6 @@ function makeTempDir(prefix = "studio-git-test-"): string {
 
 function initRepo(remote = "git@github.com:fusupo/escapement-studio.git"): string {
   const dir = makeTempDir();
-  execFileSync("git", ["init", dir], { encoding: "utf8" });
-  execFileSync("git", ["-C", dir, "remote", "add", "origin", remote], { encoding: "utf8" });
   return dir;
 }
 
@@ -82,6 +79,14 @@ describe("GitService.discoverRepo", () => {
     writeFileSync(join(repoDir, "AGENTS.md"), "# Project\n\n**context-path**: ../escapement-studio-ctx\n", "utf8");
 
     const service = new GitService();
+    (service as unknown as { resolveGitRoot: (path: string) => string }).resolveGitRoot = (inputPath: string) => {
+      expect(inputPath).toBe(repoDir);
+      return repoDir;
+    };
+    (service as unknown as { readOriginRemote: (path: string) => string }).readOriginRemote = (repoRoot: string) => {
+      expect(repoRoot).toBe(repoDir);
+      return "git@github.com:fusupo/escapement-studio.git";
+    };
     const result = service.discoverRepo(repoDir);
 
     expect(result).toEqual({
@@ -98,6 +103,12 @@ describe("GitService.discoverRepo", () => {
     mkdirSync(join(repoDir, "nested", "deep"), { recursive: true });
 
     const service = new GitService();
+    (service as unknown as { resolveGitRoot: (path: string) => string }).resolveGitRoot = (inputPath: string) => {
+      expect(inputPath).toBe(join(repoDir, "nested", "deep"));
+      return repoDir;
+    };
+    (service as unknown as { readOriginRemote: (path: string) => string }).readOriginRemote = () =>
+      "https://github.com/fusupo/escapement-studio.git";
     const result = service.discoverRepo(join(repoDir, "nested", "deep"));
 
     expect(result.local_path).toBe(repoDir);
@@ -107,15 +118,21 @@ describe("GitService.discoverRepo", () => {
   it("throws when the directory is not a git repo", () => {
     const service = new GitService();
     const dir = makeTempDir();
+    (service as unknown as { resolveGitRoot: (path: string) => string }).resolveGitRoot = () => {
+      throw new BadRequestException(`Not a git repository: ${dir}`);
+    };
 
     expect(() => service.discoverRepo(dir)).toThrowError(BadRequestException);
   });
 
   it("throws when origin is missing", () => {
     const dir = makeTempDir();
-    execFileSync("git", ["init", dir], { encoding: "utf8" });
 
     const service = new GitService();
+    (service as unknown as { resolveGitRoot: (path: string) => string }).resolveGitRoot = () => dir;
+    (service as unknown as { readOriginRemote: (path: string) => string }).readOriginRemote = () => {
+      throw new BadRequestException(`Git repository at ${dir} does not have an origin remote`);
+    };
     expect(() => service.discoverRepo(dir)).toThrowError(/origin remote/);
   });
 });

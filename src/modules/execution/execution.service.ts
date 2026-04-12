@@ -2095,6 +2095,13 @@ export class ExecutionService implements OnModuleInit {
     writeFileSync(join(run.artifact_dir, "status.json"), JSON.stringify(run, null, 2), "utf8");
   }
 
+  private isMissingFileError(error: unknown): boolean {
+    return typeof error === "object"
+      && error !== null
+      && "code" in error
+      && (error as { code?: unknown }).code === "ENOENT";
+  }
+
   private writeSummary(run: ExecutionRunRecord, node?: ExecutionDispatchNodePreview) {
     const lines = [
       `# Execution run ${run.run_id}`,
@@ -2560,9 +2567,11 @@ export class ExecutionService implements OnModuleInit {
       try {
         this.writeStatus(disposed);
       } catch (error) {
-        this.logger.warn(
-          `removeRunsForWorkItem: failed to stamp disposed_at for run ${run.run_id}: ${this.getErrorMessage(error)}`,
-        );
+        if (!this.isMissingFileError(error)) {
+          this.logger.warn(
+            `removeRunsForWorkItem: failed to stamp disposed_at for run ${run.run_id}: ${this.getErrorMessage(error)}`,
+          );
+        }
       }
       this.recentRuns.splice(i, 1);
       removedIds.add(run.run_id);
@@ -2598,9 +2607,11 @@ export class ExecutionService implements OnModuleInit {
           );
           removedIds.add(run.run_id);
         } catch (error) {
-          this.logger.warn(
-            `removeRunsForWorkItem: failed to stamp disposed_at for on-disk run ${run.run_id}: ${this.getErrorMessage(error)}`,
-          );
+          if (!this.isMissingFileError(error)) {
+            this.logger.warn(
+              `removeRunsForWorkItem: failed to stamp disposed_at for on-disk run ${run.run_id}: ${this.getErrorMessage(error)}`,
+            );
+          }
         }
       }
     } catch (error) {
@@ -2760,22 +2771,20 @@ export class ExecutionService implements OnModuleInit {
   /**
    * ADR 014 step 7: cancellation path with plan dir archival.
    *
-   * Handles the `* → cancelled` human transition. Moves the plan dir into
+   * Handles the HSM-owned `user.cancel` workflow. Moves the plan dir into
    * `archives/<slug>/` before updating state (same order-of-operations as
-   * archive-and-close). Called by `WorkItemsController.transition` when the
-   * target is `cancelled`, analogous to how `in_progress → ready` delegates
-   * to `transitionInProgressToReady`.
-   *
-   * The source-state validity check is already enforced by
-   * `isValidHumanTransition` upstream in the controller — this method only
-   * guards active runs and performs the move. Source states that reach here:
-   * `planned`, `drafting`, `ready`, `in_progress`, `open_pr` (the `cancelled`
-   * row in `VALID_HUMAN_TRANSITIONS`).
+   * archive-and-close). Called by `WorkItemsController.transition` after it
+   * verifies the event is enabled for the current state.
    */
   async cancelWorkItem(workItemId: string): Promise<WorkItemRecord> {
     this.assertNoActiveRunForWorkItem(workItemId);
     const moveResult = this.movePlanDirToArchives(workItemId);
-    await this.hsmService.dispatch(workItemId, { type: "user.cancel" });
+    const result = await this.hsmService.dispatch(workItemId, { type: "user.cancel" });
+    if (result.rejected) {
+      throw new BadRequestException(
+        `cannot_cancel: HSM rejected user.cancel from state ${result.prev_state}`,
+      );
+    }
     // Write archive_path separately — the HSM doesn't manage this field.
     const nextArchivePath = moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path;
     if (nextArchivePath) {

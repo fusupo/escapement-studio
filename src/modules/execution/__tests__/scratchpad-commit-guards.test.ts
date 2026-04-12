@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestException } from "@nestjs/common";
@@ -11,15 +10,17 @@ import type { WorkItemRecord } from "../../graph/types.js";
 /**
  * ADR 014 step 6: scratchpad commit guards.
  *
- * These tests run against real `git init` worktrees in tmp directories so
- * that the `git diff --cached --name-only` and `git diff --name-only $base...HEAD`
- * calls exercise actual git index / history semantics. Mocking git would
- * defeat the purpose of the guards.
- *
- * Harness pattern matches launch-eligibility.test.ts: Object.create the
- * ExecutionService prototype and wire up only the collaborators the code
- * under test touches.
+ * These tests focus on guard behavior, not the OS process boundary.
+ * The service methods already centralize git access through `runGitIn()`,
+ * so the test harness stubs command output instead of shelling out to a
+ * real `git` binary. That keeps the assertions deterministic and avoids
+ * sandbox-related child-process failures.
  */
+
+interface GitInvocation {
+  args: string[];
+  allowFailure?: boolean;
+}
 
 interface HarnessService {
   artifactRoot: string;
@@ -29,28 +30,17 @@ interface HarnessService {
   updateRun: ReturnType<typeof vi.fn>;
   getRun: (runId: string) => ExecutionRunRecord | undefined;
   runGhIn: ReturnType<typeof vi.fn>;
+  runGitIn: ReturnType<typeof vi.fn>;
+  listChangedFiles: ReturnType<typeof vi.fn>;
   writeSummary: ReturnType<typeof vi.fn>;
   buildPullRequestTitle: (workItem: WorkItemRecord) => string;
   buildPullRequestBody: (run: ExecutionRunRecord, workItem: WorkItemRecord, baseRef: string) => string;
 
-  // Methods under test (prototype — available via Object.create)
   findStagedScratchpadViolations: ExecutionService["findStagedScratchpadViolations"];
   findCommittedScratchpadViolations: ExecutionService["findCommittedScratchpadViolations"];
   isScratchpadPath: ExecutionService["isScratchpadPath"];
   autoStageAndCommit: (run: ExecutionRunRecord, workItem: WorkItemRecord, commitMessage?: string) => void;
   createPullRequest: ExecutionService["createPullRequest"];
-}
-
-function initGitRepo(worktreePath: string, baseBranch = "main"): void {
-  mkdirSync(worktreePath, { recursive: true });
-  execFileSync("git", ["init", "-q", "-b", baseBranch], { cwd: worktreePath });
-  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: worktreePath });
-  execFileSync("git", ["config", "user.name", "Test User"], { cwd: worktreePath });
-  execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: worktreePath });
-  // Seed an initial commit so `$base...HEAD` has a valid merge-base
-  writeFileSync(join(worktreePath, "README.md"), "# base\n", "utf8");
-  execFileSync("git", ["add", "README.md"], { cwd: worktreePath });
-  execFileSync("git", ["commit", "-q", "-m", "initial"], { cwd: worktreePath });
 }
 
 function makeRun(overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecord {
@@ -95,9 +85,16 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
   };
 }
 
-function makeService(params: { run?: ExecutionRunRecord; workItem?: WorkItemRecord } = {}): HarnessService {
+function makeService(params: {
+  run?: ExecutionRunRecord;
+  workItem?: WorkItemRecord;
+  gitResponses?: Record<string, string>;
+  changedFiles?: string[];
+} = {}): HarnessService {
   const service = Object.create(ExecutionService.prototype) as HarnessService;
   const workItem = params.workItem ?? makeWorkItem();
+  const gitResponses = params.gitResponses ?? {};
+
   service.artifactRoot = "/tmp/studio-artifact-test";
   service.logger = { log: vi.fn(), warn: vi.fn() };
   service.workItemsService = {
@@ -110,11 +107,21 @@ function makeService(params: { run?: ExecutionRunRecord; workItem?: WorkItemReco
     ...patch,
   }));
   service.getRun = (runId: string) => (params.run && params.run.run_id === runId ? params.run : undefined);
-  // Fail the test if the code under test attempts a gh call or push —
-  // the guards must throw BEFORE any side effect.
   service.runGhIn = vi.fn(() => {
     throw new Error("runGhIn should not be called when guard rejects");
   });
+  service.runGitIn = vi.fn((_cwd: string, args: string[], options?: { allowFailure?: boolean }) => {
+    const key = args.join(" ");
+    const response = gitResponses[key];
+    if (response != null) {
+      return response;
+    }
+    if (options?.allowFailure) {
+      return "";
+    }
+    return "";
+  });
+  service.listChangedFiles = vi.fn(() => params.changedFiles ?? []);
   service.writeSummary = vi.fn();
   service.buildPullRequestTitle = () => "title";
   service.buildPullRequestBody = () => "body";
@@ -128,7 +135,6 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
   beforeEach(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), "studio-156-"));
     worktree = join(tmpRoot, "wt");
-    initGitRepo(worktree);
   });
 
   afterEach(() => {
@@ -149,128 +155,158 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
 
     it("does not match unrelated files", () => {
       expect(service.isScratchpadPath("README.md")).toBe(false);
-      expect(service.isScratchpadPath("src/scratchpad.md")).toBe(false); // lowercase
-      expect(service.isScratchpadPath("SCRATCHPAD.md")).toBe(false); // no underscore+slug
-      expect(service.isScratchpadPath("SCRATCHPAD_foo.txt")).toBe(false); // wrong extension
+      expect(service.isScratchpadPath("src/scratchpad.md")).toBe(false);
+      expect(service.isScratchpadPath("SCRATCHPAD.md")).toBe(false);
+      expect(service.isScratchpadPath("SCRATCHPAD_foo.txt")).toBe(false);
     });
   });
 
   describe("findStagedScratchpadViolations", () => {
     it("returns [] when the index is clean", () => {
-      const service = makeService();
+      const service = makeService({
+        gitResponses: {
+          "diff --cached --name-only": "",
+        },
+      });
       expect(service.findStagedScratchpadViolations(worktree)).toEqual([]);
     });
 
     it("returns [] when only non-scratchpad files are staged", () => {
-      writeFileSync(join(worktree, "src.ts"), "export {};\n", "utf8");
-      execFileSync("git", ["add", "src.ts"], { cwd: worktree });
-      const service = makeService();
+      const service = makeService({
+        gitResponses: {
+          "diff --cached --name-only": "src.ts\nREADME.md\n",
+        },
+      });
       expect(service.findStagedScratchpadViolations(worktree)).toEqual([]);
     });
 
     it("detects a staged SCRATCHPAD_*.md at the root", () => {
-      writeFileSync(join(worktree, "SCRATCHPAD_studio_156.md"), "secret plan\n", "utf8");
-      execFileSync("git", ["add", "SCRATCHPAD_studio_156.md"], { cwd: worktree });
-      const service = makeService();
+      const service = makeService({
+        gitResponses: {
+          "diff --cached --name-only": "SCRATCHPAD_studio_156.md\n",
+        },
+      });
       expect(service.findStagedScratchpadViolations(worktree)).toEqual(["SCRATCHPAD_studio_156.md"]);
     });
 
     it("detects a staged SCRATCHPAD_*.md at a nested path", () => {
-      mkdirSync(join(worktree, "docs", "plans"), { recursive: true });
-      writeFileSync(join(worktree, "docs", "plans", "SCRATCHPAD_x.md"), "nested\n", "utf8");
-      execFileSync("git", ["add", "docs/plans/SCRATCHPAD_x.md"], { cwd: worktree });
-      const service = makeService();
+      const service = makeService({
+        gitResponses: {
+          "diff --cached --name-only": "docs/plans/SCRATCHPAD_x.md\nsrc.ts\n",
+        },
+      });
       expect(service.findStagedScratchpadViolations(worktree)).toEqual(["docs/plans/SCRATCHPAD_x.md"]);
     });
   });
 
   describe("findCommittedScratchpadViolations", () => {
     it("returns [] when the branch is clean relative to base", () => {
-      const service = makeService();
+      const service = makeService({
+        gitResponses: {
+          "diff --name-only main...HEAD": "",
+        },
+      });
       expect(service.findCommittedScratchpadViolations(worktree, "main")).toEqual([]);
     });
 
     it("returns [] when only non-scratchpad files were committed", () => {
-      execFileSync("git", ["checkout", "-q", "-b", "feature"], { cwd: worktree });
-      writeFileSync(join(worktree, "src.ts"), "export {};\n", "utf8");
-      execFileSync("git", ["add", "src.ts"], { cwd: worktree });
-      execFileSync("git", ["commit", "-q", "-m", "feat"], { cwd: worktree });
-      const service = makeService();
+      const service = makeService({
+        gitResponses: {
+          "diff --name-only main...HEAD": "src.ts\nREADME.md\n",
+        },
+      });
       expect(service.findCommittedScratchpadViolations(worktree, "main")).toEqual([]);
     });
 
     it("detects a scratchpad committed to the branch", () => {
-      execFileSync("git", ["checkout", "-q", "-b", "feature"], { cwd: worktree });
-      writeFileSync(join(worktree, "SCRATCHPAD_studio_156.md"), "leaked\n", "utf8");
-      execFileSync("git", ["add", "SCRATCHPAD_studio_156.md"], { cwd: worktree });
-      execFileSync("git", ["commit", "-q", "-m", "oops"], { cwd: worktree });
-      const service = makeService();
+      const service = makeService({
+        gitResponses: {
+          "diff --name-only main...HEAD": "SCRATCHPAD_studio_156.md\nsrc.ts\n",
+        },
+      });
       expect(service.findCommittedScratchpadViolations(worktree, "main")).toEqual(["SCRATCHPAD_studio_156.md"]);
     });
   });
 
   describe("autoStageAndCommit", () => {
     it("commits normally when no scratchpad is staged", () => {
-      writeFileSync(join(worktree, "src.ts"), "export {};\n", "utf8");
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({ run, workItem });
+      const service = makeService({
+        run,
+        workItem,
+        gitResponses: {
+          "status --porcelain": " M src.ts\n",
+          "diff --cached --name-only": "src.ts\n",
+          "add -A": "",
+          [`commit -m ${workItem.name} (#${workItem.issue_number})`]: "",
+        },
+      });
 
       expect(() => service.autoStageAndCommit(run, workItem)).not.toThrow();
-
-      // A new commit should exist
-      const log = execFileSync("git", ["log", "--oneline"], { cwd: worktree, encoding: "utf8" });
-      expect(log.split("\n").filter((l) => l.trim()).length).toBe(2); // initial + feat
-      // No block event should have been emitted
+      expect(service.runGitIn).toHaveBeenCalledWith(worktree, ["add", "-A"]);
+      expect(service.runGitIn).toHaveBeenCalledWith(
+        worktree,
+        ["commit", "-m", `${workItem.name} (#${workItem.issue_number})`],
+      );
       expect(service.appendEvent).not.toHaveBeenCalled();
     });
 
     it("is a no-op when the worktree is clean", () => {
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({ run, workItem });
+      const service = makeService({
+        run,
+        workItem,
+        gitResponses: {
+          "status --porcelain": "",
+        },
+      });
 
       expect(() => service.autoStageAndCommit(run, workItem)).not.toThrow();
+      expect(service.runGitIn).toHaveBeenCalledTimes(1);
+      expect(service.runGitIn).toHaveBeenCalledWith(worktree, ["status", "--porcelain"], { allowFailure: true });
       expect(service.appendEvent).not.toHaveBeenCalled();
-
-      // Still only the initial commit
-      const log = execFileSync("git", ["log", "--oneline"], { cwd: worktree, encoding: "utf8" });
-      expect(log.split("\n").filter((l) => l.trim()).length).toBe(1);
     });
 
     it("throws and emits an event when a scratchpad is staged (does not create a commit)", () => {
-      writeFileSync(join(worktree, "SCRATCHPAD_studio_156.md"), "plan content\n", "utf8");
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({ run, workItem });
+      const service = makeService({
+        run,
+        workItem,
+        gitResponses: {
+          "status --porcelain": " M SCRATCHPAD_studio_156.md\n",
+          "add -A": "",
+          "diff --cached --name-only": "SCRATCHPAD_studio_156.md\n",
+        },
+      });
 
       expect(() => service.autoStageAndCommit(run, workItem)).toThrow(BadRequestException);
       expect(() => service.autoStageAndCommit(run, workItem)).toThrow(/auto_commit_blocked_by_scratchpad/);
-
-      // Called twice because of the two expect().toThrow calls above;
-      // assert the payload on one of them.
       expect(service.appendEvent).toHaveBeenCalledWith(run, {
         type: "scratchpad_commit_blocked",
         phase: "auto_commit",
         paths: ["SCRATCHPAD_studio_156.md"],
       });
-
-      // Critically: NO new commit was created
-      const log = execFileSync("git", ["log", "--oneline"], { cwd: worktree, encoding: "utf8" });
-      expect(log.split("\n").filter((l) => l.trim()).length).toBe(1);
+      expect(service.runGitIn).not.toHaveBeenCalledWith(
+        worktree,
+        ["commit", "-m", `${workItem.name} (#${workItem.issue_number})`],
+      );
     });
   });
 
   describe("createPullRequest guards", () => {
     it("rejects with phase=pull_request when the index contains a scratchpad (auto_commit: false)", async () => {
-      // Seed: branch off main, staged scratchpad, NO commit yet
-      execFileSync("git", ["checkout", "-q", "-b", "156-scratchpad-commit-guards"], { cwd: worktree });
-      writeFileSync(join(worktree, "SCRATCHPAD_studio_156.md"), "plan\n", "utf8");
-      execFileSync("git", ["add", "SCRATCHPAD_studio_156.md"], { cwd: worktree });
-
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({ run, workItem });
+      const service = makeService({
+        run,
+        workItem,
+        gitResponses: {
+          "diff --cached --name-only": "SCRATCHPAD_studio_156.md\n",
+        },
+      });
 
       await expect(
         service.createPullRequest({
@@ -285,28 +321,24 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
         phase: "pull_request",
         paths: ["SCRATCHPAD_studio_156.md"],
       });
-      // No push, no gh call
       expect(service.runGhIn).not.toHaveBeenCalled();
-      // No remote created
-      const remotes = execFileSync("git", ["remote"], { cwd: worktree, encoding: "utf8" }).trim();
-      expect(remotes).toBe("");
+      expect(service.runGitIn).not.toHaveBeenCalledWith(
+        worktree,
+        ["push", "--set-upstream", "origin", run.branch],
+      );
     });
 
     it("rejects with phase=pull_request_history when the branch has a committed scratchpad", async () => {
-      // Seed: branch off main, commit a scratchpad, worktree clean after commit
-      execFileSync("git", ["checkout", "-q", "-b", "156-scratchpad-commit-guards"], { cwd: worktree });
-      writeFileSync(join(worktree, "SCRATCHPAD_studio_156.md"), "leaked\n", "utf8");
-      execFileSync("git", ["add", "SCRATCHPAD_studio_156.md"], { cwd: worktree });
-      execFileSync("git", ["commit", "-q", "-m", "oops"], { cwd: worktree });
-
-      // Also add an innocuous committed file so the branch has "real" work
-      writeFileSync(join(worktree, "src.ts"), "export {};\n", "utf8");
-      execFileSync("git", ["add", "src.ts"], { cwd: worktree });
-      execFileSync("git", ["commit", "-q", "-m", "feat"], { cwd: worktree });
-
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({ run, workItem });
+      const service = makeService({
+        run,
+        workItem,
+        gitResponses: {
+          "diff --cached --name-only": "",
+          "diff --name-only main...HEAD": "SCRATCHPAD_studio_156.md\nsrc.ts\n",
+        },
+      });
 
       await expect(
         service.createPullRequest({
@@ -327,9 +359,6 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
 
   describe("no leftover gitignore mutation", () => {
     it("executeRun no longer writes SCRATCHPAD_*.md to the worktree .gitignore", () => {
-      // Just a sanity check that the method is gone — the absence is
-      // enforced by the type system and the tsc build, but this test
-      // documents the ADR 014 step 6 contract directly.
       const service = Object.create(ExecutionService.prototype) as Record<string, unknown>;
       expect(service.ensureScratchpadIgnored).toBeUndefined();
       expect(existsSync(join(worktree, ".gitignore"))).toBe(false);

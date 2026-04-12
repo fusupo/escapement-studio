@@ -540,6 +540,29 @@ describe("ADR 014 step 7: disposition flow", () => {
       const service = makeService({ artifactRoot: tmpRoot });
       expect(service.removeRunsForWorkItem("studio-157")).toEqual([]);
     });
+
+    it("treats missing in-memory status.json as an idempotent cleanup case", () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        runs: [
+          makeRun({ run_id: "exec_a", status: "completed" }),
+        ],
+      });
+      service.writeStatus.mockImplementation(() => {
+        const error = new Error("ENOENT: no such file or directory");
+        (error as Error & { code?: string }).code = "ENOENT";
+        throw error;
+      });
+
+      const removed = service.removeRunsForWorkItem("studio-157");
+
+      expect(removed).toEqual(["exec_a"]);
+      expect(service.recentRuns).toEqual([]);
+      expect(service.emitRun).toHaveBeenCalledTimes(1);
+      expect(service.logger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("failed to stamp disposed_at for run exec_a"),
+      );
+    });
   });
 
   describe("archiveAndCloseMergedPullRequest (studio-196 HSM dispatch flow)", () => {
@@ -656,7 +679,7 @@ describe("ADR 014 step 7: disposition flow", () => {
 
       const service = makeService({
         artifactRoot: tmpRoot,
-        // Valid source state for cancellation (per VALID_HUMAN_TRANSITIONS)
+        // Valid source state for cancellation (event enabled by the HSM)
         workItem: makeWorkItem({ state: "drafting" }),
       });
       const result = await service.cancelWorkItem("studio-157");
