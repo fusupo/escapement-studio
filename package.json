@@ -11,7 +11,8 @@
     "build": "npm run check && npm run build:web",
     "build:web": "vite build --config web/vite.config.ts",
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate:work-item-state-chart": "python3 scripts/generate-work-item-state-chart.py"
   },
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.65.0",
