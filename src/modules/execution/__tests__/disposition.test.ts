@@ -10,7 +10,7 @@ import {
   ensurePlanDir,
   planDir,
 } from "../../../lib/context-layout.js";
-import type { DeleteWorkItemResult, ExecutionDispatchPreview, ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
+import type { CancelWorkItemResult, DeleteWorkItemResult, ExecutionDispatchPreview, ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
 import type { DispatchResult, WorkItemRecord, WorkItemState } from "../../graph/types.js";
 
 /**
@@ -184,7 +184,7 @@ function makeService(params: {
   service.listRecentRuns = () => [...service.recentRuns];
   service.githubService = {
     closeIssue: params.githubCloseIssue ??
-      vi.fn(async (repo: string, issueNumber: number) => ({
+      vi.fn(async (repo: string, issueNumber: number, _comment?: string | null) => ({
         repo,
         number: issueNumber,
         title: "Disposition test issue",
@@ -773,35 +773,69 @@ describe("ADR 014 step 7: disposition flow", () => {
   });
 
   describe("cancelWorkItem", () => {
-    it("moves the plan dir and transitions to cancelled", async () => {
+    function cancelInput(overrides: Partial<{ work_item_id: string; confirm_cancel: boolean; cancel_note?: string }> = {}) {
+      return {
+        work_item_id: "studio-157",
+        confirm_cancel: true,
+        cancel_note: "No longer needed.",
+        ...overrides,
+      };
+    }
+
+    it("closes GitHub with the optional note, moves the plan dir, and transitions to cancelled", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
       const service = makeService({
         artifactRoot: tmpRoot,
-        // Valid source state for cancellation (event enabled by the HSM)
         workItem: makeWorkItem({ state: "drafting" }),
       });
-      const result = await service.cancelWorkItem("studio-157");
+      const result = await service.cancelWorkItem(cancelInput());
 
-      expect(result.state).toBe("cancelled");
-      expect(result.archive_path).toBe(archiveDir(tmpRoot, "studio-157"));
+      expect(service.githubService.closeIssue).toHaveBeenCalledWith("fusupo/escapement-studio", 157, "No longer needed.");
+      expect(result).toEqual({
+        cancelled: true,
+        work_item: expect.objectContaining({
+          id: "studio-157",
+          state: "cancelled",
+          archive_path: archiveDir(tmpRoot, "studio-157"),
+        }),
+        closed_issue: {
+          repo: "fusupo/escapement-studio",
+          number: 157,
+          url: "https://github.com/fusupo/escapement-studio/issues/157",
+          title: "Disposition test issue",
+          state: "CLOSED",
+        },
+        warnings: [],
+      } satisfies CancelWorkItemResult);
       expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(false);
       expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(true);
     });
 
-    it("handles the no-plan-dir case by still transitioning", async () => {
+    it("handles the no-plan-dir case by still transitioning and preserving null archive_path", async () => {
       const service = makeService({
         artifactRoot: tmpRoot,
         workItem: makeWorkItem({ state: "planned" }),
       });
-      const result = await service.cancelWorkItem("studio-157");
+      const result = await service.cancelWorkItem(cancelInput({ cancel_note: undefined }));
 
-      expect(result.state).toBe("cancelled");
-      expect(result.archive_path).toBe(null);
+      expect(result.work_item.state).toBe("cancelled");
+      expect(result.work_item.archive_path).toBe(null);
+      expect(service.githubService.closeIssue).toHaveBeenCalledWith("fusupo/escapement-studio", 157, undefined);
     });
 
-    it("active-run guard rejects before the filesystem is touched", async () => {
+    it("requires explicit confirmation", async () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "ready" }),
+      });
+
+      await expect(service.cancelWorkItem(cancelInput({ confirm_cancel: false }))).rejects.toThrow(/confirm_cancel must be true/);
+      expect(service.githubService.closeIssue).not.toHaveBeenCalled();
+    });
+
+    it("active-run guard rejects before GitHub or filesystem side effects", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
@@ -810,8 +844,43 @@ describe("ADR 014 step 7: disposition flow", () => {
         workItem: makeWorkItem({ state: "in_progress" }),
         runs: [makeRun({ status: "running" })],
       });
-      await expect(service.cancelWorkItem("studio-157")).rejects.toThrow(/cannot_dispose_work_item_active_run/);
+      await expect(service.cancelWorkItem(cancelInput())).rejects.toThrow(/cannot_dispose_work_item_active_run/);
+      expect(service.githubService.closeIssue).not.toHaveBeenCalled();
       expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(true);
+    });
+
+    it("does not archive or transition when GitHub close fails", async () => {
+      ensurePlanDir(tmpRoot, "studio-157");
+      writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
+
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "ready" }),
+        githubCloseIssue: vi.fn(async () => {
+          throw new Error("gh close failed");
+        }),
+      });
+
+      await expect(service.cancelWorkItem(cancelInput())).rejects.toThrow(/gh close failed/);
+      expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(true);
+      expect(service.hsmService.dispatch).not.toHaveBeenCalled();
+    });
+
+    it("surfaces when GitHub closes but the HSM transition rejects", async () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "ready" }),
+        hsmDispatch: vi.fn(async () => makeDispatchResult({
+          prev_state: "ready",
+          next_state: "ready",
+          event: { type: "user.cancel" },
+          rejected: true,
+          mutation_applied: false,
+        })),
+      });
+
+      await expect(service.cancelWorkItem(cancelInput())).rejects.toThrow(/cancel_work_item_transition_failed_after_github_close/);
+      expect(service.githubService.closeIssue).toHaveBeenCalled();
     });
   });
 

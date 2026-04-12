@@ -287,6 +287,24 @@ export interface TransitionWorkItemDto {
   work_item_id: string;
 }
 
+export interface CancelWorkItemDto {
+  work_item_id: string;
+  confirm_cancel: boolean;
+  cancel_note?: string;
+}
+
+export interface CancelWorkItemResult {
+  cancelled: true;
+  work_item: {
+    id: string;
+    state: string;
+    archive_path: string | null;
+    updated_at: string;
+  };
+  closed_issue: ClosedGitHubIssueSummary;
+  warnings: string[];
+}
+
 export interface DeleteWorkItemDto {
   work_item_id: string;
   confirm_delete: boolean;

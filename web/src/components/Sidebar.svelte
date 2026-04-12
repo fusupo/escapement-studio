@@ -47,12 +47,14 @@
   export let onCreateEdge = () => {};
   export let onDeleteEdge = () => {};
   export let onCloseIssue = () => {};
+  export let onCancelWorkItem = () => {};
   export let onDeleteWorkItem = () => {};
   export let onLaunchExecution = () => {};
   export let onPreparePlan = () => {};
   export let onApprovePlan = () => {};
   export let onReviewPlan = () => {};
   export let closingIssue = false;
+  export let cancelingWorkItem = false;
   export let deletingWorkItem = false;
   export let preparingPlan = false;
   export let approvingPlan = false;
@@ -103,6 +105,10 @@
       && leafState(selectedItem?.state) === "merged_pr"
       && issueDetails?.state?.toLowerCase() !== "closed",
   );
+  $: canCancelWorkItem = selectedItem?.kind === "issue"
+    && !!selectedItem?.repo
+    && !!selectedItem?.issue_number
+    && ["planned", "drafting", "ready", "in_progress", "deferred"].includes(leafState(selectedItem?.state));
   $: canDeleteWorkItem = selectedItem?.kind === "issue"
     && !!selectedItem?.repo
     && !!selectedItem?.issue_number
@@ -189,6 +195,7 @@
   $: showReviewPlan = planSubState === "drafting" || planSubState === "ready";
   $: launchStateOk = leafState(selectedItem?.state) === "ready";
   $: launchIssueBacked = !!launchEligibility?.issue_backed;
+  $: showLaunchAction = launchIssueBacked && !["cancelled", "done", "archived", "closed"].includes(leafState(selectedItem?.state));
   $: launchAvailable = !!launchEligibility?.can_launch && launchStateOk && launchIssueBacked;
   $: launchDisabled = !launchAvailable
     || launchEligibilityLoading
@@ -298,6 +305,12 @@
                 {closingIssue ? 'Closing…' : 'Close issue'}
               </button>
             {/if}
+            {#if canCancelWorkItem}
+              <button class="small" on:click={() => onCancelWorkItem(selectedItem)} disabled={cancelingWorkItem}>
+                {cancelingWorkItem ? 'Cancelling…' : 'Cancel work item'}
+              </button>
+              <p class="muted">Cancel is non-destructive: it closes the linked GitHub issue, marks the node cancelled, and preserves planning history.</p>
+            {/if}
             {#if canDeleteWorkItem}
               <button class="danger small" on:click={() => onDeleteWorkItem(selectedItem)} disabled={deletingWorkItem}>
                 {deletingWorkItem ? 'Deleting…' : 'Delete work item'}
@@ -398,7 +411,7 @@
           {:else if launchAvailable}
             <p class="muted">Launch execution will start a run for this selected node.</p>
           {/if}
-          {#if launchIssueBacked}
+          {#if showLaunchAction}
             <button on:click={() => onLaunchExecution(selectedItem)} disabled={launchDisabled}>
               {launchingExecution ? "Launching..." : "Launch execution"}
             </button>

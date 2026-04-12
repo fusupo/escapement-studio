@@ -3,6 +3,8 @@ import type { MessageEvent } from "@nestjs/common";
 import { Observable } from "rxjs";
 import { ExecutionService } from "./execution.service.js";
 import type {
+  CancelWorkItemDto,
+  CancelWorkItemResult,
   CleanupWorktreeDto,
   CloseMergedPullRequestResult,
   CreateExecutionPullRequestDto,
@@ -102,6 +104,11 @@ export class ExecutionController {
   @Post("archive-and-close-merged")
   archiveAndCloseMergedPullRequest(@Body() body: TransitionWorkItemDto) {
     return this.executionService.archiveAndCloseMergedPullRequest(body.work_item_id);
+  }
+
+  @Post("cancel-work-item")
+  cancelWorkItem(@Body() body: CancelWorkItemDto): Promise<CancelWorkItemResult> {
+    return this.executionService.cancelWorkItem(body);
   }
 
   @Post("delete-work-item")

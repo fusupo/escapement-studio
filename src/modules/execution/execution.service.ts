@@ -37,6 +37,8 @@ import type {
   ArchivedRunBundle,
   ArchiveAndCloseMergedPullRequestResult,
   ArchiveRunArtifactsResult,
+  CancelWorkItemDto,
+  CancelWorkItemResult,
   ChecklistItem,
   ClosedGitHubIssueSummary,
   CloseMergedPullRequestResult,
@@ -2780,21 +2782,56 @@ export class ExecutionService implements OnModuleInit {
    * archive-and-close). Called by `WorkItemsController.transition` after it
    * verifies the event is enabled for the current state.
    */
-  async cancelWorkItem(workItemId: string): Promise<WorkItemRecord> {
+  async cancelWorkItem(input: CancelWorkItemDto): Promise<CancelWorkItemResult> {
+    const workItemId = input.work_item_id?.trim();
+    if (!workItemId) {
+      throw new BadRequestException("work_item_id is required");
+    }
+    if (input.confirm_cancel !== true) {
+      throw new BadRequestException("confirm_cancel must be true");
+    }
+
+    const workItem = this.workItemsService.get(workItemId);
+    this.assertCancelEligible(workItem);
     this.assertNoActiveRunForWorkItem(workItemId);
+
+    const closedIssue = await this.githubService.closeIssue(
+      workItem.repo ?? "",
+      Number(workItem.issue_number),
+      input.cancel_note,
+    );
+
     const moveResult = this.movePlanDirToArchives(workItemId);
     const result = await this.hsmService.dispatch(workItemId, { type: "user.cancel" });
     if (result.rejected) {
       throw new BadRequestException(
-        `cannot_cancel: HSM rejected user.cancel from state ${result.prev_state}`,
+        `cancel_work_item_transition_failed_after_github_close: HSM rejected user.cancel from state ${result.prev_state}`,
       );
     }
-    // Write archive_path separately — the HSM doesn't manage this field.
+
     const nextArchivePath = moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path;
     if (nextArchivePath) {
       this.workItemsService.update(workItemId, { archive_path: nextArchivePath });
     }
-    return this.workItemsService.get(workItemId);
+
+    const updatedWorkItem = this.workItemsService.get(workItemId);
+    return {
+      cancelled: true,
+      work_item: {
+        id: updatedWorkItem.id,
+        state: updatedWorkItem.state,
+        archive_path: updatedWorkItem.archive_path,
+        updated_at: updatedWorkItem.updated_at,
+      },
+      closed_issue: {
+        repo: closedIssue.repo,
+        number: closedIssue.number,
+        url: closedIssue.url,
+        title: closedIssue.title,
+        state: closedIssue.state,
+      },
+      warnings: [],
+    };
   }
 
   async deleteWorkItem(input: DeleteWorkItemDto): Promise<DeleteWorkItemResult> {
@@ -2869,6 +2906,20 @@ export class ExecutionService implements OnModuleInit {
 
   private leafState(state: string): string {
     return state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+  }
+
+  private assertCancelEligible(workItem: WorkItemRecord): void {
+    const leafState = this.leafState(workItem.state);
+    const eligibleStates = new Set(["planned", "drafting", "ready", "in_progress", "deferred"]);
+
+    if (workItem.kind !== "issue" || !workItem.repo || !workItem.issue_number) {
+      throw new BadRequestException(`cancel_work_item_not_issue_backed: ${workItem.id}`);
+    }
+    if (!eligibleStates.has(leafState)) {
+      throw new BadRequestException(
+        `cancel_work_item_ineligible_state: ${workItem.id} is ${workItem.state}; cancel is limited to pre-PR issue-backed work items`,
+      );
+    }
   }
 
   private assertDeleteEligible(workItem: WorkItemRecord): void {

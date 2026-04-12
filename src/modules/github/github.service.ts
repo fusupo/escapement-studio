@@ -173,12 +173,25 @@ export class GitHubService {
     };
   }
 
-  async closeIssue(repo: string, issueNumber: number): Promise<GitHubIssueDetails> {
+  async closeIssue(repo: string, issueNumber: number, comment?: string | null): Promise<GitHubIssueDetails> {
     if (!repo?.trim()) {
       throw new BadRequestException("repo is required");
     }
     if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
       throw new BadRequestException("issue_number must be a positive integer");
+    }
+
+    const trimmedComment = typeof comment === "string" ? comment.trim() : "";
+    if (trimmedComment) {
+      this.runGh([
+        "issue",
+        "comment",
+        String(issueNumber),
+        "--repo",
+        repo,
+        "--body",
+        trimmedComment,
+      ]);
     }
 
     this.runGh([

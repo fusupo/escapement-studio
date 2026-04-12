@@ -272,6 +272,107 @@ describe("GitHubService reconciliation", () => {
   });
 });
 
+describe("GitHubService issue closing", () => {
+  it("closes an issue without posting a comment by default", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const runGh = vi.fn().mockReturnValue("");
+    const readIssueResult = {
+      repo: "fusupo/escapement-studio",
+      number: 136,
+      title: "Cancel work item",
+      body: "",
+      url: "https://github.com/fusupo/escapement-studio/issues/136",
+      state: "CLOSED",
+      labels: [],
+      assignees: [],
+      body_hash: "hash",
+      managed_block: null,
+    };
+    const readIssue = vi.fn().mockResolvedValue(readIssueResult);
+    (service as any).runGh = runGh;
+    (service as any).readIssue = readIssue;
+
+    await expect(service.closeIssue("fusupo/escapement-studio", 136)).resolves.toEqual(readIssueResult);
+    expect(runGh).toHaveBeenCalledTimes(1);
+    expect(runGh).toHaveBeenCalledWith([
+      "issue",
+      "close",
+      "136",
+      "--repo",
+      "fusupo/escapement-studio",
+    ]);
+    expect(readIssue).toHaveBeenCalledWith("fusupo/escapement-studio", 136);
+  });
+
+  it("posts a comment before closing when one is provided", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const runGh = vi.fn().mockReturnValue("");
+    const readIssueResult = {
+      repo: "fusupo/escapement-studio",
+      number: 136,
+      title: "Cancel work item",
+      body: "",
+      url: "https://github.com/fusupo/escapement-studio/issues/136",
+      state: "CLOSED",
+      labels: [],
+      assignees: [],
+      body_hash: "hash",
+      managed_block: null,
+    };
+    (service as any).runGh = runGh;
+    (service as any).readIssue = vi.fn().mockResolvedValue(readIssueResult);
+
+    await expect(service.closeIssue("fusupo/escapement-studio", 136, "Not pursuing this work.")).resolves.toEqual(readIssueResult);
+    expect(runGh).toHaveBeenNthCalledWith(1, [
+      "issue",
+      "comment",
+      "136",
+      "--repo",
+      "fusupo/escapement-studio",
+      "--body",
+      "Not pursuing this work.",
+    ]);
+    expect(runGh).toHaveBeenNthCalledWith(2, [
+      "issue",
+      "close",
+      "136",
+      "--repo",
+      "fusupo/escapement-studio",
+    ]);
+  });
+
+  it("rejects closeIssue when repo or issue_number are invalid", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+
+    await expect(service.closeIssue("", 136)).rejects.toThrow("repo is required");
+    await expect(service.closeIssue("fusupo/escapement-studio", 0)).rejects.toThrow("issue_number must be a positive integer");
+  });
+
+  it("stops before close when posting the comment fails", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const runGh = vi.fn(() => {
+      throw new Error("gh command failed: comment nope");
+    });
+    (service as any).runGh = runGh;
+
+    await expect(service.closeIssue("fusupo/escapement-studio", 136, "Not pursuing this work.")).rejects.toThrow("gh command failed: comment nope");
+    expect(runGh).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates close failures after posting the comment", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const runGh = vi.fn()
+      .mockReturnValueOnce("")
+      .mockImplementationOnce(() => {
+        throw new Error("gh command failed: close nope");
+      });
+    (service as any).runGh = runGh;
+
+    await expect(service.closeIssue("fusupo/escapement-studio", 136, "Not pursuing this work.")).rejects.toThrow("gh command failed: close nope");
+    expect(runGh).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("GitHubService issue deletion", () => {
   it("deletes an issue with gh issue delete --yes", async () => {
     const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);

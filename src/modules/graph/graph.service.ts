@@ -24,9 +24,11 @@ import { WorkItemsService } from "./work-items.service.js";
  * transition table — `ready → in_progress` is a valid launch transition).
  *
  * This helper mirrors the upstream SQL exactly except it widens the state
- * filter to `state IN ('planned', 'ready')`. If the upstream planner is
- * updated to support multi-state frontiers, this helper should be replaced
- * with a direct upstream call.
+ * filter to `state IN ('planned', 'ready')`. That intentionally keeps
+ * terminal history states like `cancelled`, `done`, and `archived` out of
+ * the default frontier without deleting their graph nodes. If the upstream
+ * planner is updated to support multi-state frontiers, this helper should be
+ * replaced with a direct upstream call.
  */
 function queryStudioFrontier(db: DatabaseType): FrontierItem[] {
   const sql = `

@@ -58,6 +58,14 @@ describe("buildGraphNodeContextMenu", () => {
         emphasis: "primary",
       },
       {
+        id: "cancel-work-item",
+        kind: "button",
+        label: "Cancel work item",
+        description: "Non-destructive cancel. Closes the linked GitHub issue, marks the Studio node cancelled, and preserves planning history.",
+        disabled: false,
+        emphasis: "warn",
+      },
+      {
         id: "delete-work-item",
         kind: "button",
         label: "Delete work item",
@@ -246,6 +254,33 @@ describe("buildGraphNodeContextMenu", () => {
         planState: null,
       });
       expect(actionIds(menu)).toContain("prepare-plan");
+    });
+
+    it("shows cancel for issue-backed pre-PR states but keeps delete separate", () => {
+      const menu = buildGraphNodeContextMenu({
+        item: makeItem({ state: "in_progress" }),
+        launchEligibility: makeEligibility({ can_launch: false }),
+      });
+      const ids = actionIds(menu);
+      expect(ids).toContain("cancel-work-item");
+      expect(ids).not.toContain("delete-work-item");
+    });
+
+    it("hides cancel for cancelled items", () => {
+      const menu = buildGraphNodeContextMenu({
+        item: makeItem({ state: "cancelled" }),
+        launchEligibility: makeEligibility({ can_launch: false }),
+      });
+      expect(actionIds(menu)).not.toContain("cancel-work-item");
+      expect(actionIds(menu)).not.toContain("launch-execution");
+    });
+
+    it("hides cancel for non-issue work items", () => {
+      const menu = buildGraphNodeContextMenu({
+        item: makeItem({ kind: "capability", issue_number: null, issue_url: null, repo: null, state: "ready" }),
+        launchEligibility: makeEligibility({ can_launch: false }),
+      });
+      expect(actionIds(menu)).not.toContain("cancel-work-item");
     });
   });
 });

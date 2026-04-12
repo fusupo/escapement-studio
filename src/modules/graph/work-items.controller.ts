@@ -20,6 +20,8 @@ import type { CreateWorkItemDto } from "./types.js";
 
 interface TransitionDto {
   event: WorkItemTransitionEvent;
+  confirm_cancel?: boolean;
+  cancel_note?: string;
 }
 
 type WorkItemTransitionEvent =
@@ -83,7 +85,7 @@ export class WorkItemsController {
   }
 
   @Post(":id/transition")
-  async transition(@Param("id") id: string, @Body() body: TransitionDto) {
+  async transition(@Param("id") id: string, @Body() body: TransitionDto): Promise<any> {
     const eventType = body?.event;
     if (!eventType) {
       throw new BadRequestException("transition event `event` is required");
@@ -115,7 +117,11 @@ export class WorkItemsController {
         await this.hsmService.dispatch(id, { type: eventType });
         break;
       case "user.cancel":
-        return await this.executionService.cancelWorkItem(id);
+        return await this.executionService.cancelWorkItem({
+          work_item_id: id,
+          confirm_cancel: body.confirm_cancel === true,
+          cancel_note: body.cancel_note,
+        });
     }
 
     return this.workItems.get(id);
