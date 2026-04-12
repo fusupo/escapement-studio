@@ -92,6 +92,68 @@ describe("loadRunRecordsFromDisk", () => {
     expect(records).toEqual([]);
     expect(warn).toHaveBeenCalled();
   });
+
+  it("skips records with unknown statuses", () => {
+    const runDir = join(runsDir, "weird_status");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "status.json"), JSON.stringify({
+      ...makeRun("weird_status"),
+      status: "mystery_state",
+    }), "utf8");
+
+    const warn = vi.fn();
+    const records = loadRunRecordsFromDisk(runsDir, { onWarn: warn });
+    expect(records).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/did not match ExecutionRunRecord shape/));
+  });
+
+  it("filters disposed runs by default but can include them explicitly", () => {
+    writeRunStatus(runsDir, makeRun("run_live", { updated_at: "2026-04-10T01:00:00.000Z" }));
+    writeRunStatus(runsDir, makeRun("run_disposed", {
+      updated_at: "2026-04-10T02:00:00.000Z",
+      disposed_at: "2026-04-10T03:00:00.000Z",
+    }));
+
+    expect(loadRunRecordsFromDisk(runsDir).map((record) => record.run_id)).toEqual(["run_live"]);
+    expect(loadRunRecordsFromDisk(runsDir, { includeDisposed: true }).map((record) => record.run_id)).toEqual([
+      "run_disposed",
+      "run_live",
+    ]);
+  });
+
+  it("sanitizes optional persisted fields while preserving completed-run metadata", () => {
+    writeRunStatus(runsDir, makeRun("run_completed", {
+      result_summary: "Finished successfully.",
+      changed_files: ["src/a.ts", 123 as unknown as string, "src/b.ts"],
+      activity_log: [
+        { timestamp: "2026-04-10T00:00:00.000Z", kind: "agent_message", message: "hello" },
+        { nope: true } as unknown as ExecutionRunRecord["activity_log"][number],
+      ],
+      pull_request: {
+        number: 130,
+        url: "https://github.com/fusupo/escapement-studio/pull/130",
+        title: "feat: persist runs",
+        body: "Body",
+        base_ref: "develop",
+        head_ref: "studio-130-branch",
+        is_draft: false,
+        created_at: "2026-04-10T00:00:00.000Z",
+      },
+      errors: [
+        { code: "kept", message: "kept" },
+        { code: 42, message: null } as unknown as NonNullable<ExecutionRunRecord["errors"]>[number],
+      ],
+    }));
+
+    const [record] = loadRunRecordsFromDisk(runsDir);
+    expect(record.result_summary).toBe("Finished successfully.");
+    expect(record.changed_files).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(record.activity_log).toEqual([
+      { timestamp: "2026-04-10T00:00:00.000Z", kind: "agent_message", message: "hello", detail: undefined },
+    ]);
+    expect(record.pull_request?.number).toBe(130);
+    expect(record.errors).toEqual([{ code: "kept", message: "kept" }]);
+  });
 });
 
 describe("detectAndMarkOrphans", () => {

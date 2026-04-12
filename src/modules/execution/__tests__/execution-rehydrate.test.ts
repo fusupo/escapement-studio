@@ -105,6 +105,47 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
     expect(runs.at(-1)?.run_id).toBe("run_04");
   });
 
+  it("rehydrates completed and errored runs, while filtering disposed and malformed ones", () => {
+    const runsDir = join(artifactRoot, "runs");
+    writeRun(runsDir, makeRun("run_completed", {
+      updated_at: "2026-04-03T00:00:00.000Z",
+      result_summary: "done",
+      changed_files: ["src/a.ts"],
+      pull_request: {
+        number: 130,
+        url: "https://github.com/fusupo/escapement-studio/pull/130",
+        title: "feat: persist execution runs",
+        body: "Body",
+        base_ref: "develop",
+        head_ref: "studio-130-branch",
+        is_draft: false,
+        created_at: "2026-04-03T00:00:00.000Z",
+      },
+    }));
+    writeRun(runsDir, makeRun("run_error", {
+      status: "error",
+      updated_at: "2026-04-02T00:00:00.000Z",
+      errors: [{ code: "boom", message: "boom" }],
+    }));
+    writeRun(runsDir, makeRun("run_disposed", {
+      updated_at: "2026-04-04T00:00:00.000Z",
+      disposed_at: "2026-04-04T00:10:00.000Z",
+    }));
+    const malformedDir = join(runsDir, "run_malformed");
+    mkdirSync(malformedDir, { recursive: true });
+    writeFileSync(join(malformedDir, "status.json"), JSON.stringify({ run_id: "run_malformed" }), "utf8");
+
+    const service = makeServiceWithEmptyBuffer();
+    service.hydrateRecentRunsFromDisk();
+
+    const runs = (service as any).recentRuns as ExecutionRunRecord[];
+    expect(runs.map((run) => run.run_id)).toEqual(["run_completed", "run_error"]);
+    expect(runs[0].result_summary).toBe("done");
+    expect(runs[0].changed_files).toEqual(["src/a.ts"]);
+    expect(runs[0].pull_request?.number).toBe(130);
+    expect(runs[1].errors).toEqual([{ code: "boom", message: "boom" }]);
+  });
+
   it("is a no-op when the runs dir does not exist", () => {
     rmSync(join(artifactRoot, "runs"), { recursive: true, force: true });
     const service = makeServiceWithEmptyBuffer();
@@ -125,17 +166,40 @@ describe("ExecutionService.onModuleInit", () => {
     rmSync(artifactRoot, { recursive: true, force: true });
   });
 
-  it("runs the startup reconcile then rehydrates recentRuns", async () => {
+  it("runs the startup reconcile then rehydrates recentRuns from the rewritten disk state", async () => {
     const runsDir = join(artifactRoot, "runs");
     writeRun(runsDir, makeRun("run_completed", { status: "completed" }));
     writeRun(runsDir, makeRun("run_running", { status: "running" as ExecutionRunStatus }));
 
     const reconcilerStub = {
-      runStartupReconcile: vi.fn(async () => ({
-        reconciled: [],
-        orphans: [],
-        summary: { total: 0, orphans_rewritten: 1, next_actions: {} as any, generated_at: "" },
-      })),
+      runStartupReconcile: vi.fn(async () => {
+        const rewritten = {
+          ...makeRun("run_running", {
+            status: "running" as ExecutionRunStatus,
+            updated_at: "2026-04-10T00:00:00.000Z",
+          }),
+          status: "error",
+          updated_at: "2026-04-10T05:00:00.000Z",
+          completed_at: "2026-04-10T05:00:00.000Z",
+          progress_message: 'Orphaned by server restart at 2026-04-10T05:00:00.000Z (was "running").',
+          result_summary: "Orphaned by server restart at 2026-04-10T05:00:00.000Z.",
+          activity_log: [{
+            timestamp: "2026-04-10T05:00:00.000Z",
+            kind: "status_change",
+            message: "orphaned by server restart at 2026-04-10T05:00:00.000Z",
+          }],
+          errors: [{
+            code: "orphaned_by_restart",
+            message: 'Run was in status "running" when the Studio server restarted and could not be resumed.',
+          }],
+        } satisfies ExecutionRunRecord;
+        writeRun(runsDir, rewritten);
+        return {
+          reconciled: [],
+          orphans: [{ run_id: "run_running", previous_status: "running", rewritten_at: "2026-04-10T05:00:00.000Z" }],
+          summary: { total: 0, orphans_rewritten: 1, next_actions: {} as any, generated_at: "" },
+        };
+      }),
     };
 
     const service = Object.create(ExecutionService.prototype) as ExecutionService;
@@ -150,11 +214,14 @@ describe("ExecutionService.onModuleInit", () => {
 
     expect(reconcilerStub.runStartupReconcile).toHaveBeenCalledTimes(1);
     const runs = (service as any).recentRuns as ExecutionRunRecord[];
-    // Both runs ended up in recentRuns — the disk-rewrite of the running
-    // run is owned by runStartupReconcile (stubbed), so the raw file is
-    // untouched here. What matters for onModuleInit is that the buffer
-    // reflects whatever is on disk after that pass.
-    expect(runs.map((r) => r.run_id).sort()).toEqual(["run_completed", "run_running"]);
+    expect(runs.map((r) => r.run_id)).toEqual(["run_running", "run_completed"]);
+    expect(runs[0]).toMatchObject({
+      run_id: "run_running",
+      status: "error",
+      progress_message: expect.stringMatching(/Orphaned by server restart/),
+      result_summary: expect.stringMatching(/Orphaned by server restart/),
+      errors: [expect.objectContaining({ code: "orphaned_by_restart" })],
+    });
   });
 
   it("swallows reconcile errors and still rehydrates", async () => {

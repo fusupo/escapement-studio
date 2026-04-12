@@ -1,7 +1,13 @@
 import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runsRoot } from "../../lib/context-layout.js";
-import type { ActivityLogEntry, ExecutionRunRecord, ExecutionRunStatus } from "./types.js";
+import type {
+  ActivityLogEntry,
+  ExecutionPullRequestRecord,
+  ExecutionRunRecord,
+  ExecutionRunStatus,
+  ExecutionSafetyCheck,
+} from "./types.js";
 
 /**
  * Issue #176: pure filesystem helpers for reading and rewriting execution
@@ -17,6 +23,16 @@ import type { ActivityLogEntry, ExecutionRunRecord, ExecutionRunStatus } from ".
  * via `runsRoot(artifactRoot)` (from `src/lib/context-layout.ts`) and
  * pass them in directly. This keeps unit tests free of Nest bootstrapping.
  */
+
+const VALID_RUN_STATUSES: ReadonlySet<ExecutionRunStatus> = new Set<ExecutionRunStatus>([
+  "queued",
+  "blocked",
+  "preparing",
+  "disambiguating",
+  "running",
+  "completed",
+  "error",
+]);
 
 const NON_TERMINAL_STATUSES: ReadonlySet<ExecutionRunStatus> = new Set<ExecutionRunStatus>([
   "queued",
@@ -270,28 +286,117 @@ export function coerceRecord(raw: unknown): ExecutionRunRecord | null {
 
   if (typeof record.run_id !== "string" || !record.run_id) return null;
   if (typeof record.work_item_id !== "string" || !record.work_item_id) return null;
-  if (typeof record.status !== "string") return null;
-  if (typeof record.updated_at !== "string") return null;
+  if (typeof record.status !== "string" || !VALID_RUN_STATUSES.has(record.status as ExecutionRunStatus)) return null;
+  if (typeof record.updated_at !== "string" || !record.updated_at) return null;
   if (typeof record.branch !== "string") return null;
   if (typeof record.artifact_dir !== "string") return null;
 
-  const activityLog = Array.isArray(record.activity_log) ? (record.activity_log as ActivityLogEntry[]) : [];
-  const safetyChecks = Array.isArray(record.safety_checks) ? record.safety_checks : [];
+  const activityLog = Array.isArray(record.activity_log)
+    ? record.activity_log.map(coerceActivityLogEntry).filter((entry): entry is ActivityLogEntry => entry != null)
+    : [];
+  const safetyChecks = Array.isArray(record.safety_checks)
+    ? record.safety_checks.map(coerceSafetyCheck).filter((check): check is ExecutionSafetyCheck => check != null)
+    : [];
+  const changedFiles = Array.isArray(record.changed_files)
+    ? record.changed_files.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : undefined;
+  const errors = Array.isArray(record.errors)
+    ? record.errors.map(coerceRunError).filter((entry): entry is NonNullable<ExecutionRunRecord["errors"]>[number] => entry != null)
+    : undefined;
+  const pullRequest = coercePullRequestRecord(record.pull_request);
 
-  // Pass through the raw parsed object with required fields verified and
-  // defaults filled for list/object fields. The cast is narrowing — we've
-  // verified the string fields above and the two array fields here.
   return {
-    run_type: (record.run_type as ExecutionRunRecord["run_type"]) ?? "execution",
+    ...record,
+    run_type: "execution",
     work_item_name: (record.work_item_name as string) ?? record.work_item_id as string,
+    status: record.status as ExecutionRunStatus,
     created_at: (record.created_at as string) ?? (record.updated_at as string),
     base_ref: (record.base_ref as string) ?? "",
     worktree_path: (record.worktree_path as string) ?? "",
     prompt: (record.prompt as string) ?? "",
-    ...record,
+    repo: typeof record.repo === "string" ? record.repo : null,
+    issue_url: typeof record.issue_url === "string" ? record.issue_url : null,
+    started_at: typeof record.started_at === "string" ? record.started_at : undefined,
+    completed_at: typeof record.completed_at === "string" ? record.completed_at : undefined,
+    disposed_at: typeof record.disposed_at === "string" ? record.disposed_at : record.disposed_at === null ? null : undefined,
+    session_id: typeof record.session_id === "string" ? record.session_id : undefined,
+    progress_message: typeof record.progress_message === "string" ? record.progress_message : undefined,
+    result_summary: typeof record.result_summary === "string" ? record.result_summary : undefined,
     activity_log: activityLog,
-    safety_checks: safetyChecks as ExecutionRunRecord["safety_checks"],
+    safety_checks: safetyChecks,
+    changed_files: changedFiles,
+    pull_request: pullRequest,
+    errors,
   } as ExecutionRunRecord;
+}
+
+function coerceActivityLogEntry(raw: unknown): ActivityLogEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const entry = raw as Record<string, unknown>;
+  if (typeof entry.timestamp !== "string" || typeof entry.kind !== "string" || typeof entry.message !== "string") {
+    return null;
+  }
+  return {
+    timestamp: entry.timestamp,
+    kind: entry.kind as ActivityLogEntry["kind"],
+    message: entry.message,
+    detail: typeof entry.detail === "string" ? entry.detail : undefined,
+  };
+}
+
+function coerceSafetyCheck(raw: unknown): ExecutionSafetyCheck | null {
+  if (!raw || typeof raw !== "object") return null;
+  const check = raw as Record<string, unknown>;
+  if (typeof check.code !== "string" || typeof check.status !== "string" || typeof check.message !== "string") {
+    return null;
+  }
+  if (check.status !== "pass" && check.status !== "warn" && check.status !== "fail") {
+    return null;
+  }
+  return {
+    code: check.code,
+    status: check.status,
+    message: check.message,
+  };
+}
+
+function coerceRunError(raw: unknown): NonNullable<ExecutionRunRecord["errors"]>[number] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const error = raw as Record<string, unknown>;
+  if (typeof error.code !== "string" || typeof error.message !== "string") {
+    return null;
+  }
+  return { code: error.code, message: error.message };
+}
+
+function coercePullRequestRecord(raw: unknown): ExecutionPullRequestRecord | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const record = raw as Record<string, unknown>;
+  if (
+    typeof record.number !== "number" ||
+    typeof record.url !== "string" ||
+    typeof record.title !== "string" ||
+    typeof record.body !== "string" ||
+    typeof record.base_ref !== "string" ||
+    typeof record.head_ref !== "string" ||
+    typeof record.is_draft !== "boolean" ||
+    typeof record.created_at !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    number: record.number,
+    url: record.url,
+    title: record.title,
+    body: record.body,
+    base_ref: record.base_ref,
+    head_ref: record.head_ref,
+    is_draft: record.is_draft,
+    created_at: record.created_at,
+    state: typeof record.state === "string" ? record.state : undefined,
+    merged_at: typeof record.merged_at === "string" || record.merged_at === null ? record.merged_at : undefined,
+    merge_commit_sha: typeof record.merge_commit_sha === "string" || record.merge_commit_sha === null ? record.merge_commit_sha : undefined,
+  };
 }
 
 function formatError(error: unknown): string {

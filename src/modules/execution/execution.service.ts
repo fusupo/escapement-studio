@@ -203,8 +203,7 @@ export class ExecutionService implements OnModuleInit {
    * exercise the rehydration path independently of `onModuleInit`.
    */
   hydrateRecentRunsFromDisk(): void {
-    const runsDir = join(this.artifactRoot, "runs");
-    const loaded = loadRunRecordsFromDisk(runsDir);
+    const loaded = loadRunRecordsForArtifactRoot(this.artifactRoot);
     const existingIds = new Set(this.recentRuns.map((run) => run.run_id));
     for (const run of loaded) {
       if (existingIds.has(run.run_id)) continue;

@@ -88,6 +88,13 @@ export interface LaunchExecutionRunDto {
   disambiguate?: boolean;
 }
 
+/**
+ * Durable execution-run snapshot persisted to `runs/<run_id>/status.json`.
+ *
+ * This record is the restart-recovery source of truth for the Execute tab:
+ * `ExecutionService` rehydrates recent runs from these snapshots on boot,
+ * and orphan detection rewrites previously non-terminal snapshots in place.
+ */
 export interface ExecutionRunRecord {
   run_id: string;
   run_type: "execution";
