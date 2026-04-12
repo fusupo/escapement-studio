@@ -11,6 +11,7 @@
     listExecutionRuns,
     listReconciledWorkItems,
     openPullRequest,
+    refreshGitHubCache,
     resolveDisambiguation,
     sendFollowUpMessage,
   } from "../lib/api.js";
@@ -485,7 +486,7 @@
         {/if}
       {/if}
     </div>
-    <button class="secondary small" on:click={() => loadData({ quiet: true })} disabled={refreshing || loading}>{refreshing ? "Refreshing..." : "Refresh"}</button>
+    <button class="secondary small" on:click={async () => { refreshing = true; try { await refreshGitHubCache(); } catch (e) { /* best-effort */ } await loadData({ quiet: true }); }} disabled={refreshing || loading}>{refreshing ? "Refreshing..." : "Refresh"}</button>
   </div>
 
   {#if copiedMessage}

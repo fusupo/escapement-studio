@@ -40,6 +40,13 @@ interface HarnessService {
   githubService: {
     closeIssue: ReturnType<typeof vi.fn>;
   };
+  // studio-197 write-through
+  githubBatchCache: {
+    upsertPullRequest: ReturnType<typeof vi.fn>;
+    upsertIssue: ReturnType<typeof vi.fn>;
+    invalidate: ReturnType<typeof vi.fn>;
+    invalidateAll: ReturnType<typeof vi.fn>;
+  };
   recentRuns: ExecutionRunRecord[];
   writeStatus: ReturnType<typeof vi.fn>;
   emitRun: ReturnType<typeof vi.fn>;
@@ -206,6 +213,14 @@ function makeService(params: {
           : undefined,
       });
     }),
+  };
+
+  // studio-197: batch cache mock for write-through hooks.
+  service.githubBatchCache = {
+    upsertPullRequest: vi.fn(),
+    upsertIssue: vi.fn(),
+    invalidate: vi.fn(),
+    invalidateAll: vi.fn(),
   };
 
   return service;
