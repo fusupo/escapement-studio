@@ -85,9 +85,28 @@ function makeController(options: {
       current = { ...current, state: "pre_pr.drafting" };
       return current;
     }),
-    cancelWorkItem: vi.fn(async (_id: string) => {
+    cancelWorkItem: vi.fn(async (input: { work_item_id: string; confirm_cancel: boolean; cancel_note?: string }) => {
+      if (input.confirm_cancel !== true) {
+        throw new BadRequestException("confirm_cancel must be true");
+      }
       current = { ...current, state: "cancelled" };
-      return current;
+      return {
+        cancelled: true as const,
+        work_item: {
+          id: current.id,
+          state: current.state,
+          archive_path: current.archive_path,
+          updated_at: current.updated_at,
+        },
+        closed_issue: {
+          repo: current.repo ?? "",
+          number: current.issue_number ?? 0,
+          url: current.issue_url ?? "",
+          title: current.name,
+          state: "CLOSED",
+        },
+        warnings: [],
+      };
     }),
   } as unknown as ExecutionService;
 
@@ -219,11 +238,36 @@ describe("WorkItemsController.transition", () => {
       enabledEvents: ["user.cancel"],
     });
 
-    const result = await harness.controller.transition("studio-153", { event: "user.cancel" });
-
-    expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith("studio-153");
+    await expect(
+      harness.controller.transition("studio-153", { event: "user.cancel" }),
+    ).rejects.toThrow(/confirm_cancel must be true/);
+    expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith({
+      work_item_id: "studio-153",
+      confirm_cancel: false,
+      cancel_note: undefined,
+    });
     expect(harness.hsmService.dispatch).not.toHaveBeenCalled();
-    expect(result.state).toBe("cancelled");
+  });
+
+  it("passes cancel confirmation payload through to ExecutionService.cancelWorkItem", async () => {
+    const harness = makeController({
+      initialState: "ready",
+      enabledEvents: ["user.cancel"],
+    });
+
+    const result = await harness.controller.transition("studio-153", {
+      event: "user.cancel",
+      confirm_cancel: true,
+      cancel_note: "No longer needed.",
+    });
+
+    expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith({
+      work_item_id: "studio-153",
+      confirm_cancel: true,
+      cancel_note: "No longer needed.",
+    });
+    expect(harness.hsmService.dispatch).not.toHaveBeenCalled();
+    expect(result.work_item.state).toBe("cancelled");
   });
 
   it("rejects unsupported transition events", async () => {
