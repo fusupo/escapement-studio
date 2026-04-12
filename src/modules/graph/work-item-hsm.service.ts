@@ -327,6 +327,17 @@ export class WorkItemHsmService implements OnModuleInit {
 
     const key = action.slice("stampMeta:".length);
     runtime.meta[key] = this.buildMetaPayload(key, runtime.event);
+
+    // Set top-level work item fields that should track the meta stamp.
+    // The branch field must be set when entering open_pr so the scheduler
+    // can match PRs by head_ref on subsequent sweeps.
+    if (key === "studio_open_pr_sync") {
+      const pr = runtime.event.type === "gh.pr_opened" ? runtime.event.pull_request : null;
+      const headRef = pr && typeof pr === "object" ? (pr as Record<string, unknown>).head_ref : null;
+      if (typeof headRef === "string" && headRef) {
+        runtime.patch_overrides.branch = headRef;
+      }
+    }
   }
 
   private buildMetaPayload(key: string, event: WorkItemHsmEvent): Record<string, unknown> {

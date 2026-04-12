@@ -576,10 +576,10 @@ export class ExecutionService implements OnModuleInit {
           is_draft: pullRequest.is_draft ?? false,
         });
       }
-      // Write additional fields that the HSM doesn't manage.
+      // Write additional meta fields that the HSM doesn't manage.
+      // Branch is now set by the HSM's stampMeta:studio_open_pr_sync action.
       const existingMeta = this.workItemsService.get(run.work_item_id).meta ?? {};
       this.workItemsService.update(run.work_item_id, {
-        branch: run.branch,
         meta: {
           ...existingMeta,
           pull_request: prPayload,
