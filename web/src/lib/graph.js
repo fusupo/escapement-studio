@@ -6,12 +6,20 @@ const STATE_COLORS = {
   drafting: "#79c0ff",
   ready: "#56d364",
   in_progress: "#d29922",
+  run_errored: "#f85149",
   open_pr: "#a371f7",
   merged_pr: "#39c2a6",
+  closed: "#39c2a6",
   done: "#238636",
+  archived: "#238636",
   deferred: "#8b949e",
   cancelled: "#f85149",
 };
+
+/** Normalize dotted HSM state (e.g. pre_pr.drafting) to its leaf. */
+function leafState(state) {
+  return state?.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+}
 
 const EDGE_COLORS = {
   depends_on: "#58a6ff",
@@ -136,7 +144,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
     node._pr = extractPullRequest(node);
     node._prStatus = classifyPrStatus(node._pr);
     node._isFrontier = frontierIds.has(node.id);
-    node._isBlockedPlanned = node.state === "planned" && !frontierIds.has(node.id);
+    node._isBlockedPlanned = leafState(node.state) === "planned" && !frontierIds.has(node.id);
     return node;
   });
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -156,12 +164,12 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
   }).setDefaultEdgeLabel(() => ({}));
 
   for (const node of nodes) {
-    const color = STATE_COLORS[node.state] ?? "#484f58";
+    const color = STATE_COLORS[leafState(node.state)] ?? "#484f58";
     const isSelected = node.id === selectedId;
     const classes = ["graph-node"];
     if (node._isBlockedPlanned) classes.push("graph-node--blocked-planned");
-    if (node.state === "in_progress") classes.push("graph-node--in-progress");
-    if (node.state === "merged_pr") classes.push("graph-node--merged-pr");
+    if (leafState(node.state) === "in_progress") classes.push("graph-node--in-progress");
+    if (leafState(node.state) === "merged_pr") classes.push("graph-node--merged-pr");
 
     g.setNode(node.id, {
       label: node.id,
@@ -287,8 +295,8 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
 
     nodeGroup
       .classed("selected", data.id === selectedId)
-      .classed("graph-node--in-progress", data.state === "in_progress")
-      .classed("graph-node--merged-pr", data.state === "merged_pr")
+      .classed("graph-node--in-progress", leafState(data.state) === "in_progress")
+      .classed("graph-node--merged-pr", leafState(data.state) === "merged_pr")
       .classed("graph-node--blocked-planned", data._isBlockedPlanned)
       .attr("data-frontier", data._isFrontier ? "true" : "false")
       .attr("data-blocked-planned", data._isBlockedPlanned ? "true" : "false")
@@ -317,7 +325,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
           .attr("ry", Math.max(0, ry - blockedInset / 2));
       }
 
-      if (data.state === "in_progress") {
+      if (leafState(data.state) === "in_progress") {
         const progressInset = Math.min(3, width / 5, height / 5);
         nodeGroup.insert("rect", "g.label")
           .attr("class", "in-progress-overlay")
@@ -329,7 +337,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
           .attr("ry", Math.max(0, ry - progressInset / 2));
       }
 
-      if (data.state === "merged_pr") {
+      if (leafState(data.state) === "merged_pr") {
         // Double-outline 'stamp' treatment: outer bold inset stroke + inner
         // thinner inset stroke so the node reads as distinct from open_pr
         // at normal zoom even without color (stroke pattern is shape-based).
@@ -357,7 +365,7 @@ export function renderGraph(svgElement, graph, selectedId, onSelect, options = {
       }
     }
 
-    if (data._prStatus !== "merged" || (data.state !== "done" && data.state !== "merged_pr") || !rectNode) return;
+    if (data._prStatus !== "merged" || (leafState(data.state) !== "done" && leafState(data.state) !== "merged_pr") || !rectNode) return;
     const bbox = rectNode.getBBox();
     nodeGroup.append("text")
       .text("✓PR")
