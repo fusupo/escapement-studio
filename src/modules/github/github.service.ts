@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
@@ -27,6 +27,14 @@ interface RawIssueResponse {
   assignees?: Array<{ login?: string; name?: string }>;
 }
 
+interface RawIssueListResponse {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  closedAt?: string | null;
+}
+
 interface RawPullRequestResponse {
   number: number;
   url: string;
@@ -38,6 +46,25 @@ interface RawPullRequestResponse {
   headRefName?: string;
   mergedAt?: string | null;
   mergeCommit?: { oid?: string | null } | null;
+}
+
+export interface GitHubListedPullRequest {
+  number: number;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  merged_at: string | null;
+  head_ref: string;
+  base_ref: string;
+  url: string;
+  title: string;
+  is_draft: boolean;
+}
+
+export interface GitHubListedIssue {
+  number: number;
+  state: "open" | "closed";
+  closed_at: string | null;
+  url: string;
+  title: string;
 }
 
 export interface GitHubCreateIssueInput {
@@ -79,6 +106,7 @@ interface PullRequestTruthRefreshResult {
 
 @Injectable()
 export class GitHubService {
+  private readonly logger = new Logger(GitHubService.name);
   private pullRequestTruthRefresher?: (pullRequest: GitHubPullRequestDetails, options?: { work_item_ids?: string[] }) => PullRequestTruthRefreshResult;
 
   constructor(
@@ -226,6 +254,81 @@ export class GitHubService {
     ]);
 
     return this.withPullRequestReconciliation(this.toPullRequestDetails(repo, raw));
+  }
+
+  normalizeRepo(repo: string): string {
+    const trimmed = repo.trim().replace(/^https?:\/\/github\.com\//i, "").replace(/^github\.com\//i, "");
+    return trimmed.replace(/^\/+|\/+$/g, "").toLowerCase();
+  }
+
+  async listPullRequests(repo: string): Promise<GitHubListedPullRequest[]> {
+    if (!repo?.trim()) {
+      throw new BadRequestException("repo is required");
+    }
+
+    const normalizedRepo = this.normalizeRepo(repo);
+    const pulls = await this.runGhJson<RawPullRequestResponse[]>([
+      "pr",
+      "list",
+      "--repo",
+      normalizedRepo,
+      "--state",
+      "all",
+      "--limit",
+      "300",
+      "--json",
+      "number,url,title,state,isDraft,baseRefName,headRefName,mergedAt",
+    ]);
+
+    if (pulls.length === 300) {
+      this.logger.warn(`gh pr list hit --limit 300 for ${normalizedRepo}; results may be truncated`);
+    }
+
+    return pulls.map((pull) => {
+      const details = this.toPullRequestDetails(normalizedRepo, pull);
+      return {
+        number: details.number,
+        state: this.normalizePullRequestState(details.state, details.merged_at),
+        merged_at: details.merged_at,
+        head_ref: details.head_ref,
+        base_ref: details.base_ref,
+        url: details.url,
+        title: details.title,
+        is_draft: details.is_draft,
+      };
+    });
+  }
+
+  async listIssues(repo: string): Promise<GitHubListedIssue[]> {
+    if (!repo?.trim()) {
+      throw new BadRequestException("repo is required");
+    }
+
+    const normalizedRepo = this.normalizeRepo(repo);
+    const issues = await this.runGhJson<RawIssueListResponse[]>([
+      "issue",
+      "list",
+      "--repo",
+      normalizedRepo,
+      "--state",
+      "all",
+      "--limit",
+      "500",
+      "--json",
+      "number,title,url,state,closedAt",
+    ]);
+
+    if (issues.length === 500) {
+      this.logger.warn(`gh issue list hit --limit 500 for ${normalizedRepo}; results may be truncated`);
+    }
+
+    return issues.map((issue) => ({
+      number: issue.number,
+      state: `${issue.state}`.toLowerCase() === "closed" ? "closed" : "open",
+      closed_at: issue.closedAt ?? null,
+      url: issue.url,
+      title: issue.title,
+    }));
   }
 
   async findPullRequestForBranch(repo: string, branch: string): Promise<GitHubPullRequestDetails | null> {
@@ -679,13 +782,22 @@ export class GitHubService {
       url: raw.url,
       title: raw.title,
       body: raw.body ?? "",
-      state: raw.state,
+      state: this.normalizePullRequestState(raw.state, raw.mergedAt ?? null),
       is_draft: Boolean(raw.isDraft),
       base_ref: raw.baseRefName?.trim() || "",
       head_ref: raw.headRefName?.trim() || "",
       merged_at: raw.mergedAt ?? null,
       merge_commit_sha: raw.mergeCommit?.oid ?? null,
     };
+  }
+
+  private normalizePullRequestState(state: string, mergedAt: string | null): "OPEN" | "CLOSED" | "MERGED" {
+    if (mergedAt) return "MERGED";
+    const normalized = state.trim().toUpperCase();
+    if (normalized === "OPEN" || normalized === "CLOSED" || normalized === "MERGED") {
+      return normalized;
+    }
+    return "OPEN";
   }
 
   private async runGhJson<T>(args: string[]): Promise<T> {

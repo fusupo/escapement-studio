@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { runsRoot, worktreesRoot } from "../../lib/context-layout.js";
-import { GitHubService } from "../github/github.service.js";
+import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import {
@@ -111,7 +111,7 @@ export class WorkItemReconcilerService {
 
   constructor(
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
-    @Inject(GitHubService) private readonly githubService: GitHubService,
+    @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
   ) {}
 
   /**
@@ -203,13 +203,13 @@ export class WorkItemReconcilerService {
       return null;
     }
     try {
-      const issue = await this.githubService.readIssue(workItem.repo, workItem.issue_number);
-      const raw = (issue?.state ?? "").toString().toLowerCase();
+      const issues = await this.githubBatchCache.listIssues(workItem.repo);
+      const raw = (issues.get(workItem.issue_number)?.state ?? "").toString().toLowerCase();
       if (raw === "open" || raw === "closed") return raw;
       return null;
     } catch (error) {
       this.logger.warn(
-        `readIssue failed for ${workItem.repo}#${workItem.issue_number}: ${error instanceof Error ? error.message : String(error)}`,
+        `listIssues failed for ${workItem.repo}#${workItem.issue_number}: ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
     }
@@ -314,7 +314,7 @@ export class WorkItemReconcilerService {
     if (!repo || !branch) return null;
 
     try {
-      const found = await this.githubService.findPullRequestForBranch(repo, branch);
+      const found = await this.githubBatchCache.findPullRequestForBranch(repo, branch);
       if (!found) return null;
       return {
         number: found.number,

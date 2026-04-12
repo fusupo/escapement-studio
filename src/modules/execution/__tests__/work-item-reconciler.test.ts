@@ -198,9 +198,9 @@ describe("WorkItemReconcilerService.reconcile", () => {
         return match;
       }),
     };
-    const githubService = {
+    const githubBatchCache = {
       findPullRequestForBranch: vi.fn(async () => stubs.pr ?? null),
-      readIssue: vi.fn(async () => ({ state: stubs.issueState ?? "open" })),
+      listIssues: vi.fn(async () => new Map([[176, { state: (stubs.issueState ?? "open").toLowerCase() }]])),
     };
 
     (service as any).logger = { log: vi.fn(), warn: vi.fn() };
@@ -208,12 +208,12 @@ describe("WorkItemReconcilerService.reconcile", () => {
     (service as any).runsDir = "/tmp/artifact-root/runs";
     (service as any).worktreeRoot = "/tmp/artifact-root/worktrees";
     (service as any).workItemsService = workItemsService;
-    (service as any).githubService = githubService;
+    (service as any).githubBatchCache = githubBatchCache;
     service.diskStore = diskStore;
     service.gitRunner = gitRunner;
     service.pathExists = () => stubs.worktreeExists ?? false;
 
-    return { service, diskStore, gitRunner, workItemsService, githubService };
+    return { service, diskStore, gitRunner, workItemsService, githubBatchCache };
   }
 
   it("returns an empty array when no work items are in a reconcilable state", async () => {
@@ -348,20 +348,20 @@ describe("WorkItemReconcilerService.reconcile", () => {
         merge_commit_sha: "deadbeef",
       },
     });
-    const { service, githubService } = makeService({ workItems: [makeWorkItem()], runs: [run], worktreeExists: true });
+    const { service, githubBatchCache } = makeService({ workItems: [makeWorkItem()], runs: [run], worktreeExists: true });
 
     const reconciled = await service.reconcile();
     expect(reconciled).toHaveLength(1);
     expect(reconciled[0].github_pr).toMatchObject({ number: 200, state: "MERGED" });
     expect(reconciled[0].next_action).toBe("close_out");
-    expect(githubService.findPullRequestForBranch).not.toHaveBeenCalled();
-    // Issue #85: merged PR triggers the readIssue probe and populates
+    expect(githubBatchCache.findPullRequestForBranch).not.toHaveBeenCalled();
+    // Issue #85: merged PR triggers the issue-state probe and populates
     // github_issue_state.
-    expect(githubService.readIssue).toHaveBeenCalledWith("fusupo/escapement-studio", 176);
+    expect(githubBatchCache.listIssues).toHaveBeenCalledWith("fusupo/escapement-studio");
     expect(reconciled[0].github_issue_state).toBe("open");
   });
 
-  it("populates github_issue_state from readIssue when PR is merged", async () => {
+  it("populates github_issue_state from the batch cache when PR is merged", async () => {
     const run = makeRun({
       pull_request: {
         number: 200,
@@ -387,8 +387,8 @@ describe("WorkItemReconcilerService.reconcile", () => {
     expect(reconciled[0].github_issue_state).toBe("closed");
   });
 
-  it("does not call readIssue when PR is open (skip optimization)", async () => {
-    const { service, githubService } = makeService({
+  it("does not call listIssues when PR is open (skip optimization)", async () => {
+    const { service, githubBatchCache } = makeService({
       workItems: [makeWorkItem()],
       runs: [makeRun()],
       pr: { number: 201, state: "OPEN", merged_at: null, url: "https://github.com/x/y/pull/201" },
@@ -396,23 +396,23 @@ describe("WorkItemReconcilerService.reconcile", () => {
       worktreeExists: true,
     });
     const reconciled = await service.reconcile();
-    expect(githubService.readIssue).not.toHaveBeenCalled();
+    expect(githubBatchCache.listIssues).not.toHaveBeenCalled();
     expect(reconciled[0].github_issue_state).toBeNull();
   });
 
-  it("does not call readIssue when PR is absent", async () => {
-    const { service, githubService } = makeService({
+  it("does not call listIssues when PR is absent", async () => {
+    const { service, githubBatchCache } = makeService({
       workItems: [makeWorkItem()],
       runs: [makeRun()],
       git: { count: "2\n" },
       worktreeExists: true,
     });
     const reconciled = await service.reconcile();
-    expect(githubService.readIssue).not.toHaveBeenCalled();
+    expect(githubBatchCache.listIssues).not.toHaveBeenCalled();
     expect(reconciled[0].github_issue_state).toBeNull();
   });
 
-  it("degrades gracefully when readIssue throws", async () => {
+  it("degrades gracefully when listIssues throws", async () => {
     const run = makeRun({
       pull_request: {
         number: 200,
@@ -428,20 +428,20 @@ describe("WorkItemReconcilerService.reconcile", () => {
         merge_commit_sha: "deadbeef",
       },
     });
-    const { service, githubService } = makeService({
+    const { service, githubBatchCache } = makeService({
       workItems: [makeWorkItem()],
       runs: [run],
       worktreeExists: true,
     });
-    (githubService.readIssue as any).mockRejectedValueOnce(new Error("gh rate limited"));
+    (githubBatchCache.listIssues as any).mockRejectedValueOnce(new Error("gh rate limited"));
 
     const reconciled = await service.reconcile();
     expect(reconciled[0].github_issue_state).toBeNull();
     expect(((service as any).logger.warn as any).mock.calls.length).toBeGreaterThan(0);
   });
 
-  it("calls GitHubService.findPullRequestForBranch when no stored PR", async () => {
-    const { service, githubService } = makeService({
+  it("calls GitHubBatchCache.findPullRequestForBranch when no stored PR", async () => {
+    const { service, githubBatchCache } = makeService({
       workItems: [makeWorkItem()],
       runs: [makeRun()],
       pr: { number: 201, state: "OPEN", merged_at: null, url: "https://github.com/x/y/pull/201" },
@@ -452,20 +452,20 @@ describe("WorkItemReconcilerService.reconcile", () => {
     const reconciled = await service.reconcile();
     expect(reconciled[0].github_pr).toMatchObject({ number: 201, state: "OPEN" });
     expect(reconciled[0].next_action).toBe("awaiting_review");
-    expect(githubService.findPullRequestForBranch).toHaveBeenCalledWith(
+    expect(githubBatchCache.findPullRequestForBranch).toHaveBeenCalledWith(
       "fusupo/escapement-studio",
       "studio-176-branch",
     );
   });
 
   it("degrades gracefully when findPullRequestForBranch throws", async () => {
-    const { service, githubService } = makeService({
+    const { service, githubBatchCache } = makeService({
       workItems: [makeWorkItem()],
       runs: [makeRun()],
       git: { count: "3\n" },
       worktreeExists: true,
     });
-    (githubService.findPullRequestForBranch as any).mockRejectedValueOnce(new Error("gh rate limited"));
+    (githubBatchCache.findPullRequestForBranch as any).mockRejectedValueOnce(new Error("gh rate limited"));
 
     const reconciled = await service.reconcile();
     expect(reconciled[0].github_pr).toBeNull();
@@ -510,7 +510,7 @@ describe("WorkItemReconcilerService.runStartupReconcile", () => {
     (service as any).logger = logger;
     (service as any).runsDir = "/tmp/runs";
     (service as any).workItemsService = { list: vi.fn(() => []), get: vi.fn() };
-    (service as any).githubService = { findPullRequestForBranch: vi.fn(), readIssue: vi.fn() };
+    (service as any).githubBatchCache = { findPullRequestForBranch: vi.fn(), listIssues: vi.fn() };
     service.diskStore = diskStore;
     service.gitRunner = { run: vi.fn(() => "") };
     service.pathExists = () => false;
