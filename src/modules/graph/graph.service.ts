@@ -34,7 +34,7 @@ function queryStudioFrontier(db: DatabaseType): FrontierItem[] {
            w.issue_url, w.predicted_files
     FROM work_items w
     WHERE w.kind IN ('issue', 'capability')
-      AND w.state IN ('planned', 'ready')
+      AND w.state IN ('planned', 'ready', 'pre_pr.planned', 'pre_pr.ready')
       AND COALESCE(json_extract(w.meta, '$.needs_human'), 0) = 0
       AND NOT EXISTS (
         SELECT 1
