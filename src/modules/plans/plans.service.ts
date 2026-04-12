@@ -91,7 +91,7 @@ export class PlansService {
     const draft = await this.drafter.draft(workItem, issueBody);
 
     return this.persistDraftEnvelope(workItemId, draft, issueBody, {
-      transitionToDrafting: workItem.state !== "drafting",
+      transitionToDrafting: this.leafState(workItem.state) !== "drafting",
     });
   }
 
@@ -102,7 +102,7 @@ export class PlansService {
    */
   async approve(workItemId: string, dto: ApprovePlanDto = {}): Promise<PlanResponse> {
     const workItem = this.workItemsService.get(workItemId);
-    if (workItem.state !== "drafting") {
+    if (this.leafState(workItem.state) !== "drafting") {
       throw new BadRequestException(
         `Cannot approve plan for ${workItemId}: expected state 'drafting', got '${workItem.state}'`,
       );
@@ -251,9 +251,14 @@ export class PlansService {
 
   /* ── Private helpers ───────────────────────────────────────────────────── */
 
+  /** Normalize dotted HSM state (e.g. `pre_pr.drafting`) to its leaf. */
+  private leafState(state: WorkItemState): string {
+    return state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+  }
+
   private assertPreparable(workItem: WorkItemRecord): void {
-    const preparable: WorkItemState[] = ["planned", "drafting"];
-    if (!preparable.includes(workItem.state)) {
+    const preparable = ["planned", "drafting"];
+    if (!preparable.includes(this.leafState(workItem.state))) {
       throw new BadRequestException(
         `Cannot prepare plan for ${workItem.id}: expected state in [${preparable.join(", ")}], got '${workItem.state}'`,
       );

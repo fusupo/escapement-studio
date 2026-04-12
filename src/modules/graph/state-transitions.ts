@@ -32,5 +32,7 @@ export const VALID_HUMAN_TRANSITIONS: Partial<Record<WorkItemState, WorkItemStat
  * from `from` to `to`.
  */
 export function isValidHumanTransition(from: WorkItemState, to: WorkItemState): boolean {
-  return VALID_HUMAN_TRANSITIONS[from]?.includes(to) ?? false;
+  // Normalize dotted HSM states (pre_pr.drafting → drafting) for the lookup.
+  const leaf = (from.startsWith("pre_pr.") ? from.slice("pre_pr.".length) : from) as WorkItemState;
+  return VALID_HUMAN_TRANSITIONS[leaf]?.includes(to) ?? false;
 }

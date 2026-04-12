@@ -75,7 +75,8 @@ export class WorkItemsController {
     // assignment: the execution service owns the logic for reviving a
     // failed-but-valid run plan. All other human transitions are plain
     // state updates and go through WorkItemsService directly.
-    if (workItem.state === "in_progress" && target === "ready") {
+    const leaf = workItem.state.startsWith("pre_pr.") ? workItem.state.slice("pre_pr.".length) : workItem.state;
+    if (leaf === "in_progress" && target === "ready") {
       return this.executionService.transitionInProgressToReady(id);
     }
 
