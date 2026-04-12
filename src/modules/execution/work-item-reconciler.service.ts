@@ -5,8 +5,9 @@ import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { runsRoot, worktreesRoot } from "../../lib/context-layout.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
+import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
-import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
+import type { WorkItemHsmEvent, WorkItemRecord, WorkItemState } from "../graph/types.js";
 import {
   detectAndMarkOrphans,
   loadRunRecordsFromDisk,
@@ -112,6 +113,7 @@ export class WorkItemReconcilerService {
   constructor(
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
+    @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
   ) {}
 
   /**
@@ -165,6 +167,16 @@ export class WorkItemReconcilerService {
         : null;
       const { nextAction, rationale } = decideNextAction({ workItem, latestRun, worktree, githubPr });
 
+      // studio-203: enabled user events from the HSM chart for this state.
+      let enabledEvents: WorkItemHsmEvent["type"][] = [];
+      try {
+        enabledEvents = this.hsmService.getEnabledEvents(workItem.id);
+      } catch (error) {
+        this.logger.warn(
+          `getEnabledEvents failed for ${workItem.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+
       out.push({
         work_item_id: workItem.id,
         graph_state: workItem.state,
@@ -174,6 +186,7 @@ export class WorkItemReconcilerService {
         github_issue_state: githubIssueState,
         next_action: nextAction,
         rationale,
+        enabled_events: enabledEvents,
       });
     }
 

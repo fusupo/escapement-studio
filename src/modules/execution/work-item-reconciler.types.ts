@@ -1,5 +1,5 @@
 import type { ExecutionRunRecord } from "./types.js";
-import type { WorkItemState } from "../graph/types.js";
+import type { WorkItemHsmEvent, WorkItemState } from "../graph/types.js";
 
 /**
  * Issue #176: pure derived view that joins graph state, run artifacts on
@@ -68,6 +68,9 @@ export interface ReconciledWorkItem {
   github_issue_state: "open" | "closed" | null;
   next_action: NextAction;
   rationale: string;
+  /** studio-203: user.* events the HSM will accept from the current state.
+   * Drives frontend button rendering — replaces hard-coded next_action checks. */
+  enabled_events: WorkItemHsmEvent["type"][];
 }
 
 /** Summary emitted by the startup reconcile pass. Used both by the Nest

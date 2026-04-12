@@ -13,6 +13,7 @@ function makeReconciled(id: string): ReconciledWorkItem {
     github_issue_state: null,
     next_action: "relaunch",
     rationale: "stub",
+    enabled_events: [],
   };
 }
 
