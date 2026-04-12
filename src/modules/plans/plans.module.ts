@@ -14,7 +14,7 @@ import { PlansService } from "./plans.service.js";
  * PlansModule, so no forwardRef cycles.
  */
 @Module({
-  imports: [forwardRef(() => GraphModule), GitHubModule, SettingsModule],
+  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => SettingsModule)],
   controllers: [PlansController],
   providers: [PlansService, PlanDrafterService],
   exports: [PlansService, PlanDrafterService],

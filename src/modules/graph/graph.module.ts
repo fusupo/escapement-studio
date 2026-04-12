@@ -1,5 +1,6 @@
 import { forwardRef, Module } from "@nestjs/common";
 import { ExecutionModule } from "../execution/execution.module.js";
+import { GitHubModule } from "../github/github.module.js";
 import { PlansModule } from "../plans/plans.module.js";
 import { EdgesController } from "./edges.controller.js";
 import { EdgesService } from "./edges.service.js";
@@ -14,7 +15,7 @@ import { WorkItemsController } from "./work-items.controller.js";
 import { WorkItemsService } from "./work-items.service.js";
 
 @Module({
-  imports: [forwardRef(() => ExecutionModule), forwardRef(() => PlansModule)],
+  imports: [forwardRef(() => ExecutionModule), forwardRef(() => GitHubModule), forwardRef(() => PlansModule)],
   controllers: [WorkItemsController, EdgesController, GraphController],
   providers: [
     SQLiteService,
