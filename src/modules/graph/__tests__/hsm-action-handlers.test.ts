@@ -33,7 +33,13 @@ describe("HsmActionHandlers", () => {
     };
     const githubService = { readIssue: vi.fn(), closeIssue: vi.fn() };
     const cache = { upsertIssue: vi.fn() };
-    const handlers = new HsmActionHandlers(executionService as never, githubService as never, cache as never);
+    const handlers = new HsmActionHandlers(
+      executionService as never,
+      githubService as never,
+      cache as never,
+      {} as never,
+      {} as never,
+    );
 
     const result = await handlers.createRunRecord({
       workItem: makeWorkItem(),
@@ -47,7 +53,7 @@ describe("HsmActionHandlers", () => {
   });
 
   it("stampMeta copies the event payload into the named block", async () => {
-    const handlers = new HsmActionHandlers({} as never, {} as never, {} as never);
+    const handlers = new HsmActionHandlers({} as never, {} as never, {} as never, {} as never, {} as never);
     const action = handlers.stampMeta("studio_post_merge_sync");
 
     const result = await action({
@@ -71,7 +77,13 @@ describe("HsmActionHandlers", () => {
       closeIssue: vi.fn(),
     };
     const cache = { upsertIssue: vi.fn() };
-    const handlers = new HsmActionHandlers(executionService as never, githubService as never, cache as never);
+    const handlers = new HsmActionHandlers(
+      executionService as never,
+      githubService as never,
+      cache as never,
+      {} as never,
+      {} as never,
+    );
 
     const result = await handlers.closeGhIssue({
       workItem: makeWorkItem({ state: "merged_pr" }),
@@ -89,7 +101,7 @@ describe("HsmActionHandlers", () => {
       createHsmRunRecord: vi.fn(),
       archiveRunArtifacts: vi.fn(() => ({ archive_path: "/tmp/archive/studio-202", archived_run_ids: ["exec_1"] })),
     };
-    const handlers = new HsmActionHandlers(executionService as never, {} as never, {} as never);
+    const handlers = new HsmActionHandlers(executionService as never, {} as never, {} as never, {} as never, {} as never);
 
     const result = await handlers.runArchiver({
       workItem: makeWorkItem({ state: "closed" }),

@@ -1,7 +1,10 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, forwardRef } from "@nestjs/common";
+import { fetchIssueBody } from "../../lib/github-cli.js";
 import { ExecutionService } from "../execution/execution.service.js";
 import { GitHubBatchCache } from "../execution/github-batch-cache.service.js";
 import { GitHubService } from "../github/github.service.js";
+import { PlanDrafterService } from "../plans/plan-drafter.service.js";
+import { PlansService } from "../plans/plans.service.js";
 import type { UpdateWorkItemDto, WorkItemRecord, WorkItemState } from "./types.js";
 
 export interface WorkItemHsmEvent {
@@ -47,6 +50,8 @@ export class HsmActionHandlers {
     @Inject(ExecutionService) private readonly executionService: ExecutionService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
+    @Inject(PlanDrafterService) private readonly drafter: PlanDrafterService,
+    @Inject(forwardRef(() => PlansService)) private readonly plansService: PlansService,
   ) {}
 
   async createRunRecord(ctx: HsmActionContext): Promise<HsmActionResult> {
@@ -130,11 +135,26 @@ export class HsmActionHandlers {
     };
   }
 
-  kickOffPlanDrafter(_ctx: HsmActionContext): PlanDraftInvokeHandle {
+  kickOffPlanDrafter(ctx: HsmActionContext): PlanDraftInvokeHandle {
+    const issueBody = fetchIssueBody(ctx.workItem.repo, ctx.workItem.issue_number);
+    const handle = this.drafter.startDraft(ctx.workItem, issueBody);
+    let cancelled = false;
     return {
-      sessionId: null,
-      completion: Promise.resolve(),
-      cancel: () => {},
+      get sessionId() {
+        return handle.sessionId;
+      },
+      completion: handle.completion.then((draft) => {
+        if (cancelled) {
+          return;
+        }
+        this.plansService.persistDraftEnvelope(ctx.workItem.id, draft, issueBody, {
+          transitionToDrafting: false,
+        });
+      }),
+      cancel: () => {
+        cancelled = true;
+        handle.cancel();
+      },
     };
   }
 

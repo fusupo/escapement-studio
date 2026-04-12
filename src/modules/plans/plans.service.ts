@@ -90,53 +90,9 @@ export class PlansService {
     // changes are visible and the caller can retry.
     const draft = await this.drafter.draft(workItem, issueBody);
 
-    // Drafter succeeded. From here on, all mutations land.
-
-    // Refresh the work item's predicted_files from the drafter's
-    // affected_files. Skip if the drafter returned an empty list (preserve
-    // the current value rather than nuking it).
-    if (draft.affected_files.length > 0) {
-      this.workItemsService.update(workItemId, {
-        predicted_files: draft.affected_files,
-      });
-    }
-
-    // Transition work item state if not already drafting (prepare is
-    // idempotent on the state transition itself; it just re-runs the drafter
-    // and overwrites the scratchpad).
-    if (workItem.state !== "drafting") {
-      await this.hsmService.dispatch(workItemId, { type: "user.start_draft" });
-    }
-
-    // Ensure the plan dir exists and write initial metadata if we were first.
-    ensurePlanDir(this.artifactRoot, workItemId);
-
-    // Render and overwrite the canonical scratchpad with the drafted content.
-    // We re-fetch the (possibly updated) work item so the renderer sees the
-    // refreshed predicted_files.
-    const refreshed = this.workItemsService.get(workItemId);
-    const templates = this.templateService.listTemplates();
-    const scratchpadContent = this.renderPlanScratchpad(
-      refreshed,
-      issueBody,
-      templates,
-      draft,
-    );
-    const canonicalPath = canonicalScratchpadPath(this.artifactRoot, workItemId);
-    writeFileSync(canonicalPath, scratchpadContent, "utf8");
-
-    // Update plan metadata to reflect drafting state.
-    const metadata = this.updatePlanMetadata(workItemId, (current) => ({
-      ...current,
-      state: "drafting",
-      scratchpad_path: canonicalPath,
-    }));
-
-    return {
-      work_item_id: workItemId,
-      metadata,
-      scratchpad_content: scratchpadContent,
-    };
+    return this.persistDraftEnvelope(workItemId, draft, issueBody, {
+      transitionToDrafting: workItem.state !== "drafting",
+    });
   }
 
   /**
@@ -243,6 +199,48 @@ export class PlansService {
 
     const canonicalPath = canonicalScratchpadPath(this.artifactRoot, workItemId);
     const scratchpadContent = existsSync(canonicalPath) ? readFileSync(canonicalPath, "utf8") : "";
+
+    return {
+      work_item_id: workItemId,
+      metadata,
+      scratchpad_content: scratchpadContent,
+    };
+  }
+
+  async persistDraftEnvelope(
+    workItemId: string,
+    draft: PlanDraftEnvelope,
+    issueBody: string | null,
+    options: { transitionToDrafting?: boolean } = {},
+  ): Promise<PlanResponse> {
+    if (draft.affected_files.length > 0) {
+      this.workItemsService.update(workItemId, {
+        predicted_files: draft.affected_files,
+      });
+    }
+
+    if (options.transitionToDrafting) {
+      await this.hsmService.dispatch(workItemId, { type: "user.start_draft" });
+    }
+
+    ensurePlanDir(this.artifactRoot, workItemId);
+
+    const refreshed = this.workItemsService.get(workItemId);
+    const templates = this.templateService.listTemplates();
+    const scratchpadContent = this.renderPlanScratchpad(
+      refreshed,
+      issueBody,
+      templates,
+      draft,
+    );
+    const canonicalPath = canonicalScratchpadPath(this.artifactRoot, workItemId);
+    writeFileSync(canonicalPath, scratchpadContent, "utf8");
+
+    const metadata = this.updatePlanMetadata(workItemId, (current) => ({
+      ...current,
+      state: "drafting",
+      scratchpad_path: canonicalPath,
+    }));
 
     return {
       work_item_id: workItemId,
