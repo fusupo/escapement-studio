@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger, type OnModuleInit } from "@nestjs/common";
-import { Statechart } from "@scion-scxml/core";
+import ScionCore from "@scion-scxml/core";
+const { Statechart } = ScionCore;
 import { XMLParser } from "fast-xml-parser";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
