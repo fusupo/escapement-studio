@@ -1,5 +1,5 @@
 <script>
-  import { getPlan, getPullRequestDetails } from "../lib/api.js";
+  import { getPlan } from "../lib/api.js";
 
   // ADR 014 step 8 — work item states where a plan should already exist on
   // disk. For planned items the plan may not exist yet (GET 404). Terminal
@@ -36,7 +36,6 @@
   };
 
   export let selectedItem = null;
-  export let issueDetails = null;
   export let launchEligibility = null;
   export let launchEligibilityLoading = false;
   export let launchingExecution = false;
@@ -50,7 +49,6 @@
   export let onCloseIssue = () => {};
   export let onDeleteWorkItem = () => {};
   export let onLaunchExecution = () => {};
-  export let onGitHubTruthRefresh = () => {};
   export let onPreparePlan = () => {};
   export let onApprovePlan = () => {};
   export let onReviewPlan = () => {};
@@ -58,11 +56,6 @@
   export let deletingWorkItem = false;
   export let preparingPlan = false;
   export let approvingPlan = false;
-
-  let linkedPrDetails = null;
-  let loadingPr = false;
-  let linkedPrLookupToken = 0;
-  let lastLinkedPrLookupKey = null;
 
   // ADR 014 step 8 — plan state tracking for the Execution card.
   let planStatus = null; // { work_item_id, metadata, scratchpad_content } | null
@@ -91,49 +84,25 @@
     }
   }
 
-  // Extract linked PR number from the work item (check multiple meta locations)
-  $: linkedPrNumber = selectedItem?.pull_request?.number
-    ?? selectedItem?.meta?.pull_request?.number
-    ?? selectedItem?.meta?.studio_post_merge_sync?.pull_request?.number
-    ?? null;
-
-  // Fetch live PR details when the selected item has a linked PR
-  $: linkedPrLookupKey = selectedItem?.repo && linkedPrNumber
-    ? `${selectedItem.repo}#${linkedPrNumber}`
-    : null;
-  $: if (linkedPrLookupKey !== lastLinkedPrLookupKey) {
-    lastLinkedPrLookupKey = linkedPrLookupKey;
-    void loadLinkedPrDetails(selectedItem?.repo, linkedPrNumber);
+  function readObject(value) {
+    return value && typeof value === "object" ? value : null;
   }
 
-  async function loadLinkedPrDetails(repo, prNumber) {
-    const token = ++linkedPrLookupToken;
-    if (!repo || !prNumber) {
-      linkedPrDetails = null;
-      return;
-    }
-    loadingPr = true;
-    try {
-      const details = await getPullRequestDetails({ repo, pull_request_number: prNumber });
-      if (token === linkedPrLookupToken) {
-        linkedPrDetails = details;
-        onGitHubTruthRefresh(details);
-      }
-    } catch {
-      if (token === linkedPrLookupToken) {
-        linkedPrDetails = null;
-      }
-    } finally {
-      if (token === linkedPrLookupToken) {
-        loadingPr = false;
-      }
-    }
-  }
-
-  // Close issue is allowed only when the GitHub issue is open and the linked PR is merged
-  $: canCloseIssue = issueDetails
-    && issueDetails.state?.toLowerCase() === "open"
-    && linkedPrDetails?.merged_at != null;
+  // Planning view now renders GitHub issue / PR details from the locally
+  // reconciled work-item snapshot rather than triggering live `gh` reads
+  // every time the user selects a node.
+  $: issueDetails = readObject(selectedItem?.meta?.github_issue);
+  $: linkedPrDetails = readObject(
+    selectedItem?.pull_request
+      ?? selectedItem?.meta?.pull_request
+      ?? selectedItem?.meta?.studio_post_merge_sync?.pull_request,
+  );
+  $: canCloseIssue = Boolean(
+    selectedItem?.repo
+      && selectedItem?.issue_number
+      && leafState(selectedItem?.state) === "merged_pr"
+      && issueDetails?.state?.toLowerCase() !== "closed",
+  );
   $: canDeleteWorkItem = selectedItem?.kind === "issue"
     && !!selectedItem?.repo
     && !!selectedItem?.issue_number
@@ -284,11 +253,14 @@
             {/if}
           </div>
 
-          {#if issueDetails?.error}
-            <p class="muted">Failed to load issue details: {issueDetails.error}</p>
-          {:else if issueDetails}
-            <strong>#{issueDetails.number} {issueDetails.title}</strong>
-            <p class="muted">{issueDetails.state}</p>
+          {#if issueDetails}
+            <strong>#{issueDetails.number ?? selectedItem.issue_number} {issueDetails.title ?? selectedItem.name}</strong>
+            <p class="muted">
+              {issueDetails.state ?? "state unknown"}
+              {#if issueDetails.synced_at}
+                · cached {new Date(issueDetails.synced_at).toLocaleString()}
+              {/if}
+            </p>
             {#if issueDetails.labels?.length}
               <div class="tag-list">
                 {#each issueDetails.labels as label}
@@ -333,7 +305,18 @@
               <p class="muted">Delete is destructive and different from cancel. Use it only for junk, duplicates, or malformed issue-backed items.</p>
             {/if}
           {:else}
-            <p class="muted">Loading issue details…</p>
+            <strong>#{selectedItem.issue_number} {selectedItem.name}</strong>
+            <p class="muted">Cached issue details not available yet.</p>
+            {#if linkedPrDetails?.url}
+              <a href={linkedPrDetails.url} target="_blank" rel="noreferrer">
+                PR #{linkedPrDetails.number}{linkedPrDetails.is_draft ? ' (draft)' : ''}
+              </a>
+            {/if}
+            {#if canCloseIssue}
+              <button class="danger small" on:click={() => onCloseIssue(selectedItem)} disabled={closingIssue}>
+                {closingIssue ? 'Closing…' : 'Close issue'}
+              </button>
+            {/if}
           {/if}
         </div>
       {/if}

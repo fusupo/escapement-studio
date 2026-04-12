@@ -584,11 +584,14 @@ export class GitHubService {
       const existingMeta = this.readObject(workItem.meta);
       const nextIssueMeta = {
         ...this.readObject(existingMeta.github_issue),
+        number: issue.number,
         title: issue.title,
         url: issue.url,
         state: issue.state,
         labels: this.normalizeIssueLabels(issue.labels),
         assignees: this.normalizeIssueAssignees(issue.assignees),
+        body_hash: issue.body_hash,
+        managed_block: issue.managed_block ?? null,
         synced_at: this.now(),
       };
 
@@ -737,6 +740,7 @@ export class GitHubService {
     return this.normalizeNullableString(snapshot.title) === issue.title
       && this.normalizeNullableString(snapshot.url) === issue.url
       && this.normalizeNullableString(snapshot.state) === issue.state
+      && this.normalizeNullableString(snapshot.body_hash) === issue.body_hash
       && JSON.stringify(this.normalizeIssueLabels(this.readIssueLabels(snapshot.labels))) === JSON.stringify(this.normalizeIssueLabels(issue.labels))
       && JSON.stringify(this.normalizeIssueAssignees(this.readIssueAssignees(snapshot.assignees))) === JSON.stringify(this.normalizeIssueAssignees(issue.assignees));
   }

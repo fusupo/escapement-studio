@@ -17,7 +17,6 @@
     deleteWorkItem,
     getExecutionEligibility,
     getFrontier,
-    getGitHubIssueDetails,
     getGraph,
     getHealth,
     getPlan,
@@ -45,7 +44,6 @@
   let error = "";
   let notice = "";
   let health = null;
-  let selectedIssueDetails = null;
   let activeTab = "planning";
   let closingIssue = false;
   let deletingWorkItem = false;
@@ -384,63 +382,6 @@
       graphRefreshTimer = null;
       void runGraphRefresh();
     }, 150);
-  }
-
-  function mergeReconciledWorkItems(workItems = []) {
-    if (!Array.isArray(workItems) || workItems.length === 0) {
-      return;
-    }
-
-    const nextById = new Map(workItems.filter((item) => item?.id).map((item) => [item.id, item]));
-    if (nextById.size === 0) {
-      return;
-    }
-
-    graph = {
-      ...graph,
-      items: graph.items.map((item) => nextById.get(item.id) ?? item),
-    };
-    catalog = catalog.map((item) => nextById.get(item.id) ?? item);
-
-    if (graphContextMenu.item?.id && nextById.has(graphContextMenu.item.id)) {
-      graphContextMenu = {
-        ...graphContextMenu,
-        item: nextById.get(graphContextMenu.item.id),
-      };
-    }
-  }
-
-  function handleGitHubTruthRefresh(payload) {
-    mergeReconciledWorkItems(payload?.reconciliation?.work_items ?? []);
-  }
-
-  let issueLookupToken = 0;
-  let lastIssueLookupKey = null;
-  $: issueLookupKey = selectedItem?.repo && selectedItem?.issue_number
-    ? `${selectedItem.repo}#${selectedItem.issue_number}`
-    : null;
-  $: if (issueLookupKey !== lastIssueLookupKey) {
-    lastIssueLookupKey = issueLookupKey;
-    void loadSelectedIssueDetails(selectedItem);
-  }
-
-  async function loadSelectedIssueDetails(item) {
-    const token = ++issueLookupToken;
-    if (!item?.repo || !item?.issue_number) {
-      selectedIssueDetails = null;
-      return;
-    }
-    try {
-      const details = await getGitHubIssueDetails({ repo: item.repo, issue_number: item.issue_number });
-      if (token === issueLookupToken) {
-        selectedIssueDetails = details;
-        handleGitHubTruthRefresh(details);
-      }
-    } catch (lookupError) {
-      if (token === issueLookupToken) {
-        selectedIssueDetails = { error: lookupError.message, repo: item.repo, number: item.issue_number, url: item.issue_url };
-      }
-    }
   }
 
   async function handleSaveItem(payload) {
@@ -887,12 +828,10 @@
               <div class="pane-body">
                 <Sidebar
                   {selectedItem}
-                  issueDetails={selectedIssueDetails}
                   launchEligibility={selectedLaunchEligibility}
                   launchEligibilityLoading={selectedLaunchEligibilityLoading}
                   launchingExecution={launchingExecution}
                   onLaunchExecution={handleLaunchExecution}
-                  onGitHubTruthRefresh={handleGitHubTruthRefresh}
                   onPreparePlan={handlePreparePlan}
                   onApprovePlan={handleApprovePlan}
                   onReviewPlan={handleReviewPlan}
