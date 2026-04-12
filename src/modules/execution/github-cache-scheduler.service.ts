@@ -71,12 +71,11 @@ export class GitHubCacheScheduler {
   }
 
   private async sweepRepo(repo: string): Promise<SweepResult> {
-    // Invalidate + refetch
+    // Invalidate + refetch. Use sequential calls to avoid overwhelming
+    // the gh CLI with concurrent invocations.
     this.cache.invalidate(repo);
-    const [prs, issues] = await Promise.all([
-      this.cache.listPullRequests(repo),
-      this.cache.listIssues(repo),
-    ]);
+    const prs = await this.cache.listPullRequests(repo);
+    const issues = await this.cache.listIssues(repo);
 
     // Dispatch HSM events for any state advances
     const workItems = this.workItemsService.list({}).filter(

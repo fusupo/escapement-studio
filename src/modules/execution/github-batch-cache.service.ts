@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
 import {
   GitHubService,
   type GitHubListedIssue,
@@ -41,7 +41,7 @@ export class GitHubBatchCache {
   private readonly prCache = new Map<string, CacheEntry<CachedPullRequest>>();
   private readonly issueCache = new Map<string, CacheEntry<CachedIssue>>();
 
-  constructor(private readonly githubService: GitHubService) {}
+  constructor(@Inject(GitHubService) private readonly githubService: GitHubService) {}
 
   async listPullRequests(repo: string): Promise<Map<number, CachedPullRequest>> {
     const key = this.normalizeRepo(repo);

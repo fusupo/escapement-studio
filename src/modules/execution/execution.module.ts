@@ -11,7 +11,7 @@ import { WorkItemReconcilerController } from "./work-item-reconciler.controller.
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 
 @Module({
-  imports: [forwardRef(() => GraphModule), GitHubModule, SettingsModule],
+  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => SettingsModule)],
   controllers: [ExecutionController, GitHubCacheController, WorkItemReconcilerController],
   providers: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, WorkItemReconcilerService],
   exports: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, WorkItemReconcilerService],
