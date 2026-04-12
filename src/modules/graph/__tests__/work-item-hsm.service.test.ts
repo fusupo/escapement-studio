@@ -1,0 +1,171 @@
+import { Logger } from "@nestjs/common";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GraphWriterService } from "../graph-writer.service.js";
+import { WorkItemHsmService } from "../work-item-hsm.service.js";
+import type { DispatchResult, WorkItemHsmEvent, WorkItemRecord, WorkItemState } from "../types.js";
+import { WorkItemsService } from "../work-items.service.js";
+
+function makeWorkItem(state: WorkItemState, meta: Record<string, unknown> = {}): WorkItemRecord {
+  return {
+    id: "studio-200",
+    name: "HSM test",
+    kind: "issue",
+    state,
+    repo: "fusupo/escapement-studio",
+    issue_number: 200,
+    issue_url: "https://github.com/fusupo/escapement-studio/issues/200",
+    scope_hint: null,
+    branch: "studio-200-branch",
+    archive_path: null,
+    predicted_files: [],
+    actual_files: [],
+    meta,
+    updated_at: "2026-04-12T00:00:00Z",
+  };
+}
+
+function createHarness(initialState: WorkItemState, meta: Record<string, unknown> = {}) {
+  let current = makeWorkItem(initialState, meta);
+
+  const workItems = {
+    get: vi.fn(() => current),
+  } as unknown as WorkItemsService;
+
+  const graphWriter = {
+    apply: vi.fn(({ mutations }: { mutations: Array<{ id: string; patch: Partial<WorkItemRecord> }> }) => {
+      const patch = mutations[0]?.patch ?? {};
+      current = { ...current, ...patch };
+      return {
+        status: "applied",
+        proposal_id: null,
+        applied_mutation_ids: ["u1"],
+        previous_graph_version: "0",
+        new_graph_version: "1",
+      };
+    }),
+  } as unknown as GraphWriterService;
+
+  const service = new WorkItemHsmService(workItems, graphWriter);
+  service.onModuleInit();
+
+  return {
+    service,
+    graphWriter,
+    getCurrent: () => current,
+  };
+}
+
+describe("WorkItemHsmService", () => {
+  const loggerDebugSpy = vi.spyOn(Logger.prototype, "debug").mockImplementation(() => undefined);
+
+  beforeEach(() => {
+    loggerDebugSpy.mockClear();
+  });
+
+  afterEach(() => {
+    loggerDebugSpy.mockClear();
+  });
+
+  it("parses the canonical SCXML chart on module init", () => {
+    const harness = createHarness("planned");
+    expect(harness.service.getEnabledEvents("studio-200")).toContain("user.start_draft");
+  });
+
+  it("fails loudly on malformed SCXML", () => {
+    const service = new WorkItemHsmService({ get: vi.fn() } as unknown as WorkItemsService, {
+      apply: vi.fn(),
+    } as unknown as GraphWriterService);
+
+    Object.defineProperty(service, "chartPath", { value: __filename, writable: false });
+    expect(() => service.onModuleInit()).toThrow();
+  });
+
+  it("dispatches user.start_draft from planned to pre_pr.drafting with one update mutation", () => {
+    const harness = createHarness("planned");
+
+    const result = harness.service.dispatch("studio-200", { type: "user.start_draft" });
+
+    expect(result.next_state).toBe("pre_pr.drafting");
+    expect(result.mutation_applied).toBe(true);
+    expect((harness.graphWriter.apply as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect((harness.graphWriter.apply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatchObject({
+      mutations: [{ kind: "update_work_item", id: "studio-200", patch: { state: "pre_pr.drafting" } }],
+    });
+  });
+
+  it("rejects illegal events without mutation and logs a debug rejection", () => {
+    const harness = createHarness("planned");
+
+    const result = harness.service.dispatch("studio-200", { type: "user.finalize" });
+
+    expect(result.rejected).toBe(true);
+    expect(result.mutation_applied).toBe(false);
+    expect(harness.graphWriter.apply).not.toHaveBeenCalled();
+    expect(loggerDebugSpy).toHaveBeenCalledWith(expect.stringContaining("rejected by HSM"));
+  });
+
+  it("rehydrates from pre_pr.in_progress and opens a PR state with stamped meta", () => {
+    const harness = createHarness("pre_pr.in_progress");
+
+    const result = harness.service.dispatch("studio-200", {
+      type: "run.completed",
+      run_id: "run-1",
+      pr_exists: true,
+    });
+
+    expect(result.next_state).toBe("open_pr");
+    expect(result.applied_actions).toContain("stampMeta:studio_open_pr_sync");
+    expect(harness.getCurrent().meta).toMatchObject({
+      studio_open_pr_sync: {
+        source_event: "run.completed",
+      },
+    });
+  });
+
+  it("returns the enabled user events for merged_pr", () => {
+    const harness = createHarness("merged_pr");
+    expect(harness.service.getEnabledEvents("studio-200")).toEqual([
+      "user.finalize",
+      "user.archive_and_finalize",
+    ]);
+  });
+
+  const transitionCases: Array<[WorkItemState, WorkItemHsmEvent, WorkItemState]> = [
+    ["planned", { type: "user.start_draft" }, "pre_pr.drafting"],
+    ["pre_pr.drafting", { type: "draft.completed" }, "pre_pr.ready"],
+    ["pre_pr.drafting", { type: "draft.failed", reason: "boom" }, "pre_pr.run_errored"],
+    ["pre_pr.ready", { type: "user.dispatch" }, "pre_pr.in_progress"],
+    ["pre_pr.in_progress", { type: "run.error", run_id: "r1", reason: "boom" }, "pre_pr.run_errored"],
+    ["pre_pr.run_errored", { type: "user.retry" }, "pre_pr.in_progress"],
+    ["pre_pr.run_errored", { type: "user.investigate" }, "pre_pr.ready"],
+    ["pre_pr.run_errored", { type: "user.resolve_disambiguation" }, "pre_pr.ready"],
+    ["pre_pr.in_progress", { type: "run.completed", run_id: "r2", pr_exists: false }, "merged_pr"],
+    ["pre_pr.ready", { type: "user.defer" }, "deferred"],
+    ["pre_pr.ready", { type: "user.cancel" }, "cancelled"],
+    ["open_pr", { type: "gh.pr_merged", pull_request: { number: 7 } }, "merged_pr"],
+    ["open_pr", { type: "gh.issue_closed", issue: { number: 200 } }, "closed"],
+    ["merged_pr", { type: "user.finalize" }, "done"],
+    ["merged_pr", { type: "user.archive_and_finalize" }, "archived"],
+    ["closed", { type: "user.finalize" }, "done"],
+    ["closed", { type: "user.archive_and_finalize" }, "archived"],
+  ];
+
+  it.each(transitionCases)("transitions %s via %o to %s", (from, event, expected) => {
+    const harness = createHarness(from);
+    const result = harness.service.dispatch("studio-200", event);
+    expect(result.next_state).toBe(expected);
+  });
+
+  it("restores pre_pr history on user.undefer", () => {
+    const harness = createHarness("deferred", {
+      studio_hsm: {
+        deferred_from_state: "pre_pr.ready",
+      },
+    });
+
+    const result = harness.service.dispatch("studio-200", { type: "user.undefer" });
+
+    expect(result.next_state).toBe("pre_pr.ready");
+    expect(harness.getCurrent().meta).toMatchObject({ studio_hsm: {} });
+  });
+});

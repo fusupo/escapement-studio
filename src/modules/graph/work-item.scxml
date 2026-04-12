@@ -1,0 +1,60 @@
+<scxml initial="pre_pr">
+  <state id="pre_pr" initial="planned">
+    <history id="pre_pr_history" type="shallow">
+      <transition target="planned" />
+    </history>
+
+    <transition event="gh.pr_opened" target="open_pr" />
+    <transition event="user.cancel" target="cancelled" />
+    <transition event="user.defer" target="deferred" action="rememberHistory" />
+
+    <state id="planned">
+      <transition event="user.start_draft" target="drafting" />
+    </state>
+
+    <state id="drafting">
+      <transition event="draft.completed" target="ready" />
+      <transition event="draft.failed" target="run_errored" />
+    </state>
+
+    <state id="ready">
+      <transition event="user.start_draft" target="drafting" />
+      <transition event="user.dispatch" target="in_progress" action="createRunRecord" />
+    </state>
+
+    <state id="in_progress">
+      <transition event="run.completed" cond="pr_exists" target="open_pr" />
+      <transition event="run.completed" cond="!pr_exists" target="merged_pr" />
+      <transition event="run.error" target="run_errored" />
+    </state>
+
+    <state id="run_errored">
+      <transition event="user.retry" target="in_progress" action="createRunRecord" />
+      <transition event="user.investigate" target="ready" />
+      <transition event="user.resolve_disambiguation" target="ready" />
+    </state>
+  </state>
+
+  <state id="deferred">
+    <transition event="user.undefer" target="pre_pr_history" />
+  </state>
+
+  <state id="open_pr" onentry="stampMeta:studio_open_pr_sync">
+    <transition event="gh.pr_merged" target="merged_pr" />
+    <transition event="gh.issue_closed" target="closed" />
+  </state>
+
+  <state id="merged_pr" onentry="stampMeta:studio_post_merge_sync">
+    <transition event="user.finalize" target="done" action="closeGhIssue" />
+    <transition event="user.archive_and_finalize" target="archived" action="runArchiver" />
+  </state>
+
+  <state id="closed" onentry="stampMeta:studio_issue_close_sync">
+    <transition event="user.finalize" target="done" />
+    <transition event="user.archive_and_finalize" target="archived" action="runArchiver" />
+  </state>
+
+  <state id="done" final="true" />
+  <state id="archived" final="true" />
+  <state id="cancelled" final="true" />
+</scxml>

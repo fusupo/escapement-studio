@@ -63,12 +63,10 @@ export class SQLiteService {
   }
 
   private migrateWorkItemStates() {
-    // Guard sentinel is merged_pr (ADR 014 step 3). If already present, the
-    // expanded state set is in place and the migration is a no-op. Instances
-    // that have the step-1/2 schema with open_pr but not merged_pr will fall
-    // through and run the recreate.
+    // Guard sentinel is the dotted HSM state introduced by ADR 015. If it is
+    // already present, the widened state constraint is in place.
     const tableInfo = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_items'").get() as { sql: string } | undefined;
-    if (!tableInfo?.sql || tableInfo.sql.includes("merged_pr")) {
+    if (!tableInfo?.sql || tableInfo.sql.includes("pre_pr.in_progress")) {
       return; // already migrated or no table
     }
 
@@ -82,17 +80,29 @@ export class SQLiteService {
         kind        TEXT NOT NULL DEFAULT 'issue'
                     CHECK (kind IN ('issue','capability','phase','track')),
         state       TEXT NOT NULL DEFAULT 'planned'
-                    CHECK (state IN (
-                      'planned',
-                      'drafting',
-                      'ready',
-                      'in_progress',
-                      'open_pr',
-                      'merged_pr',
-                      'done',
-                      'deferred',
-                      'cancelled'
-                    )),
+                    CHECK (
+                      state IN (
+                        'planned',
+                        'drafting',
+                        'ready',
+                        'in_progress',
+                        'run_errored',
+                        'open_pr',
+                        'merged_pr',
+                        'closed',
+                        'done',
+                        'archived',
+                        'deferred',
+                        'cancelled'
+                      )
+                      OR state IN (
+                        'pre_pr.planned',
+                        'pre_pr.drafting',
+                        'pre_pr.ready',
+                        'pre_pr.in_progress',
+                        'pre_pr.run_errored'
+                      )
+                    ),
         repo            TEXT,
         issue_number    INTEGER,
         issue_url       TEXT,

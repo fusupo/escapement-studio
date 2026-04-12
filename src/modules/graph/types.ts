@@ -28,7 +28,7 @@ export interface MisalignedWorkItem {
   issue_number: number;
   expected_id: string;
 }
-export type WorkItemState =
+export type LegacyWorkItemState =
   | "planned"
   | "drafting"
   | "ready"
@@ -38,6 +38,13 @@ export type WorkItemState =
   | "done"
   | "deferred"
   | "cancelled";
+
+export type HsmPrePrLeafState = "planned" | "drafting" | "ready" | "in_progress" | "run_errored";
+export type PersistedPrePrState = `pre_pr.${HsmPrePrLeafState}`;
+export type PersistedDeferredState = "deferred";
+export type HsmTerminalState = "open_pr" | "merged_pr" | "closed" | "done" | "archived" | "cancelled";
+export type HsmLeafState = HsmPrePrLeafState | PersistedDeferredState | HsmTerminalState;
+export type WorkItemState = LegacyWorkItemState | PersistedPrePrState | "run_errored" | "closed" | "archived";
 export type EdgeRel = "depends_on" | "is_part_of" | "implemented_by";
 export type EdgeConfidence = "certain" | "inferred" | "ambiguous";
 
@@ -188,6 +195,35 @@ export interface GraphMutationsStaleResult {
   previous_graph_version: string;
   current_graph_version: string;
   message: string;
+}
+
+export type WorkItemHsmEvent =
+  | { type: "user.start_draft" }
+  | { type: "user.dispatch" }
+  | { type: "user.retry" }
+  | { type: "user.investigate" }
+  | { type: "user.finalize" }
+  | { type: "user.archive_and_finalize" }
+  | { type: "user.cancel" }
+  | { type: "user.defer" }
+  | { type: "user.undefer" }
+  | { type: "user.resolve_disambiguation" }
+  | { type: "run.completed"; run_id: string; pr_exists: boolean }
+  | { type: "run.error"; run_id: string; reason: string }
+  | { type: "gh.pr_opened"; pull_request: Record<string, unknown> }
+  | { type: "gh.pr_merged"; pull_request: Record<string, unknown> }
+  | { type: "gh.issue_closed"; issue: Record<string, unknown> }
+  | { type: "draft.completed" }
+  | { type: "draft.failed"; reason: string };
+
+export interface DispatchResult {
+  work_item_id: string;
+  prev_state: WorkItemState;
+  next_state: WorkItemState;
+  event: WorkItemHsmEvent;
+  applied_actions: string[];
+  mutation_applied: boolean;
+  rejected: boolean;
 }
 
 export type ApplyGraphMutationsResult =

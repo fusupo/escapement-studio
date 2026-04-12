@@ -18,9 +18,11 @@
     "@nestjs/common": "^11.1.6",
     "@nestjs/core": "^11.1.6",
     "@nestjs/platform-express": "^11.1.6",
+    "@scion-scxml/core": "^2.6.24",
     "better-sqlite3": "^11.10.0",
     "dagre-d3-es": "^7.0.14",
     "escapement": "github:fusupo/escapement-pi",
+    "fast-xml-parser": "^4.5.6",
     "marked": "^18.0.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
