@@ -93,14 +93,22 @@
   ) || [];
 
   /**
-   * studio-84: returns true iff the reconciled feed marks this run's work
-   * item as ready for merged-PR disposition (next_action === 'close_out').
-   * This is the single source of truth for showing the Close /
-   * Archive-and-close buttons and the 'ready to close' pill badge.
+   * studio-203: returns the list of HSM-enabled user events for a run's
+   * work item. Drives disposition button rendering — replaces the old
+   * hard-coded next_action === 'close_out' check.
+   */
+  function enabledEventsFor(run) {
+    if (!run) return [];
+    return reconciledByWorkItem[run.work_item_id]?.enabled_events ?? [];
+  }
+
+  /**
+   * Convenience: true when the disposition card should be shown.
+   * Checks if finalize or archive_and_finalize is in the enabled events.
    */
   function canDisposeRun(run) {
-    if (!run) return false;
-    return reconciledByWorkItem[run.work_item_id]?.next_action === "close_out";
+    const events = enabledEventsFor(run);
+    return events.includes("user.finalize") || events.includes("user.archive_and_finalize");
   }
 
   $: selectedRun = selectedRunId ? runs.find((r) => r.run_id === selectedRunId) ?? null : null;

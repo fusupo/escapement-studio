@@ -11,11 +11,16 @@
   export let validationPolicy = null;
   export let scratchpadContent = undefined;
   export let scratchpadLoading = false;
-  // studio-84: merged-PR disposition props. The parent computes
-  // `canDispose` from the reconciled feed (next_action === 'close_out')
-  // and sets `disposing` while a Close or Archive-and-close request is
-  // in flight so both buttons can be disabled together.
+  // studio-203: disposition props. The parent computes `canDispose` from
+  // the HSM's enabled_events (user.finalize / user.archive_and_finalize)
+  // and sets `disposing` while a request is in flight.
   export let canDispose = false;
+
+  // studio-203: event-to-label map for disposition buttons.
+  const EVENT_LABELS = {
+    "user.finalize": "Close",
+    "user.archive_and_finalize": "Archive and close",
+  };
   export let disposing = false;
   export let dispositionError = "";
 

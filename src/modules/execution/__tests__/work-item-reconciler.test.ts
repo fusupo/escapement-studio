@@ -172,6 +172,7 @@ describe("WorkItemReconcilerService.reconcile", () => {
     git?: Partial<Record<"count" | "status", string>>;
     worktreeExists?: boolean;
     issueState?: string | null;
+    enabledEvents?: string[];
   }) {
     const service = Object.create(WorkItemReconcilerService.prototype) as WorkItemReconcilerService;
     const diskStore: ReconcilerDiskStore = {
@@ -207,13 +208,18 @@ describe("WorkItemReconcilerService.reconcile", () => {
     (service as any).artifactRoot = "/tmp/artifact-root";
     (service as any).runsDir = "/tmp/artifact-root/runs";
     (service as any).worktreeRoot = "/tmp/artifact-root/worktrees";
+    const hsmService = {
+      getEnabledEvents: vi.fn(() => stubs.enabledEvents ?? []),
+    };
+
     (service as any).workItemsService = workItemsService;
     (service as any).githubBatchCache = githubBatchCache;
+    (service as any).hsmService = hsmService;
     service.diskStore = diskStore;
     service.gitRunner = gitRunner;
     service.pathExists = () => stubs.worktreeExists ?? false;
 
-    return { service, diskStore, gitRunner, workItemsService, githubBatchCache };
+    return { service, diskStore, gitRunner, workItemsService, githubBatchCache, hsmService };
   }
 
   it("returns an empty array when no work items are in a reconcilable state", async () => {
@@ -330,6 +336,28 @@ describe("WorkItemReconcilerService.reconcile", () => {
       runs: [makeRun()],
     });
     expect(await service.reconcile()).toEqual([]);
+  });
+
+  it("populates enabled_events from hsmService.getEnabledEvents", async () => {
+    const { service } = makeService({
+      workItems: [makeWorkItem()],
+      runs: [makeRun()],
+      enabledEvents: ["user.finalize", "user.archive_and_finalize"],
+    });
+    const reconciled = await service.reconcile();
+    expect(reconciled[0].enabled_events).toEqual(["user.finalize", "user.archive_and_finalize"]);
+  });
+
+  it("falls back to empty enabled_events when getEnabledEvents throws", async () => {
+    const { service, hsmService } = makeService({
+      workItems: [makeWorkItem()],
+      runs: [makeRun()],
+    });
+    (hsmService.getEnabledEvents as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new Error("HSM not initialized");
+    });
+    const reconciled = await service.reconcile();
+    expect(reconciled[0].enabled_events).toEqual([]);
   });
 
   it("uses the stored PR on the latest run without calling gh", async () => {
