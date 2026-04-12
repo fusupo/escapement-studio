@@ -17,10 +17,13 @@ export const VALID_HUMAN_TRANSITIONS: Partial<Record<WorkItemState, WorkItemStat
   drafting: ["ready", "deferred", "cancelled"],
   ready: ["drafting", "deferred", "cancelled"],
   in_progress: ["ready", "drafting", "deferred", "cancelled"],
+  run_errored: [],
   open_pr: ["deferred", "cancelled"],
   merged_pr: [],
-  done: [],
+  closed: [],
   deferred: ["planned"],
+  done: [],
+  archived: [],
   cancelled: [],
 };
 

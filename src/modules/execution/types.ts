@@ -293,6 +293,28 @@ export interface ClosedGitHubIssueSummary {
   state: string;
 }
 
+export interface StudioOpenPrSync {
+  at: string;
+  pull_request: ExecutionPullRequestRecord;
+}
+
+export interface StudioIssueCloseSync {
+  at: string;
+  issue: {
+    number: number;
+    state: "closed";
+    closed_at: string | null;
+    url: string;
+  };
+}
+
+export interface StudioPostMergeSync {
+  synced_at: string;
+  run_id: string | null;
+  actual_files_source: "input" | "work_item" | "run";
+  pull_request: ExecutionPullRequestRecord;
+}
+
 /**
  * studio-87: result envelope for `POST /api/execution/close-merged`.
  *

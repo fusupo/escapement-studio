@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -97,6 +97,12 @@ export function worktreeDir(artifactRoot: string, branch: string): string {
 /** Path to an archive directory for a work item. */
 export function archiveDir(artifactRoot: string, workItemId: string): string {
   return join(archivesRoot(artifactRoot), workItemSlug(workItemId));
+}
+
+/** Return true when the canonical `archives/<slug>/` bundle exists on disk. */
+export function archiveBundleExists(artifactRoot: string, workItemId: string): boolean {
+  const path = archiveDir(artifactRoot, workItemId);
+  return existsSync(path) && statSync(path).isDirectory();
 }
 
 /**

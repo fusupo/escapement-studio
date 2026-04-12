@@ -33,10 +33,13 @@ export type LegacyWorkItemState =
   | "drafting"
   | "ready"
   | "in_progress"
+  | "run_errored"
   | "open_pr"
   | "merged_pr"
-  | "done"
+  | "closed"
   | "deferred"
+  | "done"
+  | "archived"
   | "cancelled";
 
 export type HsmPrePrLeafState = "planned" | "drafting" | "ready" | "in_progress" | "run_errored";

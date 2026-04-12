@@ -58,15 +58,16 @@ export class SQLiteService {
       .prepare("INSERT OR IGNORE INTO studio_metadata (key, value) VALUES ('graph_version', '0')")
       .run();
 
-    // Extend upstream CHECK constraint to include expanded ADR 014 state set
+    // Extend upstream CHECK constraint to include the HSM-aligned state set.
     this.migrateWorkItemStates();
   }
 
   private migrateWorkItemStates() {
-    // Guard sentinel is the dotted HSM state introduced by ADR 015. If it is
-    // already present, the widened state constraint is in place.
+    // Treat the migration as complete only once the schema allows both the
+    // dotted HSM states introduced by ADR 015 and the newer terminal
+    // disposition state `archived`.
     const tableInfo = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_items'").get() as { sql: string } | undefined;
-    if (!tableInfo?.sql || tableInfo.sql.includes("pre_pr.in_progress")) {
+    if (!tableInfo?.sql || (tableInfo.sql.includes("pre_pr.in_progress") && tableInfo.sql.includes("'archived'"))) {
       return; // already migrated or no table
     }
 
@@ -90,9 +91,9 @@ export class SQLiteService {
                         'open_pr',
                         'merged_pr',
                         'closed',
+                        'deferred',
                         'done',
                         'archived',
-                        'deferred',
                         'cancelled'
                       )
                       OR (

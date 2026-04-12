@@ -42,7 +42,7 @@ function queryStudioFrontier(db: DatabaseType): FrontierItem[] {
         JOIN work_items dep ON dep.id = e.to_id
         WHERE e.rel = 'depends_on'
           AND e.from_id = w.id
-          AND dep.state != 'done'
+          AND dep.state NOT IN ('done', 'archived')
       )
     ORDER BY w.id
   `;

@@ -8,9 +8,9 @@ import type { WorkItemState } from "../modules/graph/types.js";
 /**
  * ADR 014 step 3 state-machine allowlist.
  *
- * This test enforces a single source of truth: the 9 canonical
+ * This test enforces a single source of truth: the 12 canonical
  * WorkItemState values. It asserts:
- *  1. All 9 states are accepted by the SQLite CHECK constraint
+ *  1. All 12 states are accepted by the SQLite CHECK constraint
  *  2. An invalid state is rejected by the constraint
  *  3. VALID_HUMAN_TRANSITIONS has an entry for every state (no
  *     accidentally-missing rows)
@@ -24,10 +24,13 @@ const ALL_STATES: WorkItemState[] = [
   "drafting",
   "ready",
   "in_progress",
+  "run_errored",
   "open_pr",
   "merged_pr",
-  "done",
+  "closed",
   "deferred",
+  "done",
+  "archived",
   "cancelled",
 ];
 
@@ -77,6 +80,13 @@ describe("state-machine allowlist", () => {
       db.close();
     });
 
+    it("accepts dotted compatibility forms that end in a canonical leaf state", () => {
+      const db = createMigratedDb();
+      expect(() => insertWorkItemWithState(db, "item-dotted", "pre_pr.in_progress")).not.toThrow();
+      expect(() => insertWorkItemWithState(db, "item-dotted-archived", "post_pr.archived")).not.toThrow();
+      db.close();
+    });
+
     it("rejects a state that is not in the canonical set", () => {
       const db = createMigratedDb();
       expect(() => insertWorkItemWithState(db, "item-bad", "totally_made_up")).toThrow();
@@ -87,6 +97,12 @@ describe("state-machine allowlist", () => {
       const db = createMigratedDb();
       // "blocked" was never a canonical state — it is a derived view per ADR 014
       expect(() => insertWorkItemWithState(db, "item-blocked", "blocked")).toThrow();
+      db.close();
+    });
+
+    it("rejects dotted compatibility forms whose leaf state is unknown", () => {
+      const db = createMigratedDb();
+      expect(() => insertWorkItemWithState(db, "item-bad-dotted", "pre_pr.blocked")).toThrow();
       db.close();
     });
   });
@@ -109,8 +125,11 @@ describe("state-machine allowlist", () => {
       }
     });
 
-    it("terminal states (done, cancelled, merged_pr) have no human-triggered outbound transitions", () => {
+    it("terminal and placeholder states have no human-triggered outbound transitions", () => {
+      expect(VALID_HUMAN_TRANSITIONS.run_errored).toEqual([]);
+      expect(VALID_HUMAN_TRANSITIONS.closed).toEqual([]);
       expect(VALID_HUMAN_TRANSITIONS.done).toEqual([]);
+      expect(VALID_HUMAN_TRANSITIONS.archived).toEqual([]);
       expect(VALID_HUMAN_TRANSITIONS.cancelled).toEqual([]);
       // merged_pr → done is triggered by the disposition endpoints
       // (POST /api/execution/close-merged, POST /api/execution/archive-and-close-merged)

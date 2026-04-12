@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { runsRoot, worktreesRoot } from "../../lib/context-layout.js";
-import { GitHubService } from "../github/github.service.js";
+import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import {
@@ -64,16 +64,18 @@ export interface ReconcilerOptions {
 /**
  * Work item states that the reconciler surfaces rows for. Originally only
  * `in_progress`, but ADR 014 split that into `in_progress → open_pr →
- * merged_pr → done`, and the disposition UI needs `merged_pr` rows to be
- * reconciled so `next_action === "close_out"` can fire. `open_pr` is
- * included so rows waiting on review still appear in the feed with
- * `next_action === "awaiting_review"`. `done` is excluded — those work
- * items are finalized and have no further action.
+ * merged_pr → closed/done/archived` and the expanded HSM vocabulary also
+ * introduces `run_errored`. The reconciler should surface everything that
+ * may still need operator attention while excluding finalized/deferred
+ * rows. `open_pr` is included so rows waiting on review still appear in
+ * the feed with `next_action === "awaiting_review"`.
  */
 const RECONCILABLE_STATES: ReadonlySet<WorkItemState> = new Set([
   "in_progress",
+  "run_errored",
   "open_pr",
   "merged_pr",
+  "closed",
 ]);
 
 const EMPTY_NEXT_ACTION_COUNTS: Record<NextAction, number> = {
@@ -109,7 +111,7 @@ export class WorkItemReconcilerService {
 
   constructor(
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
-    @Inject(GitHubService) private readonly githubService: GitHubService,
+    @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
   ) {}
 
   /**
@@ -128,7 +130,8 @@ export class WorkItemReconcilerService {
   /**
    * Join graph + disk + GitHub + worktree and produce a
    * `ReconciledWorkItem` per work item in a reconcilable state
-   * (`in_progress`, `open_pr`, `merged_pr`), or just the one matching
+   * (`in_progress`, `run_errored`, `open_pr`, `merged_pr`, `closed`), or
+   * just the one matching
    * `options.work_item_id`.
    *
    * The decision table row order is preserved: earlier rows win when
@@ -200,13 +203,13 @@ export class WorkItemReconcilerService {
       return null;
     }
     try {
-      const issue = await this.githubService.readIssue(workItem.repo, workItem.issue_number);
-      const raw = (issue?.state ?? "").toString().toLowerCase();
+      const issues = await this.githubBatchCache.listIssues(workItem.repo);
+      const raw = (issues.get(workItem.issue_number)?.state ?? "").toString().toLowerCase();
       if (raw === "open" || raw === "closed") return raw;
       return null;
     } catch (error) {
       this.logger.warn(
-        `readIssue failed for ${workItem.repo}#${workItem.issue_number}: ${error instanceof Error ? error.message : String(error)}`,
+        `listIssues failed for ${workItem.repo}#${workItem.issue_number}: ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
     }
@@ -311,7 +314,7 @@ export class WorkItemReconcilerService {
     if (!repo || !branch) return null;
 
     try {
-      const found = await this.githubService.findPullRequestForBranch(repo, branch);
+      const found = await this.githubBatchCache.findPullRequestForBranch(repo, branch);
       if (!found) return null;
       return {
         number: found.number,
