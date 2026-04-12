@@ -34,6 +34,15 @@ function writeRun(runsDir: string, run: ExecutionRunRecord): void {
   writeFileSync(join(dir, "status.json"), JSON.stringify(run, null, 2), "utf8");
 }
 
+function makeServiceWithEmptyBuffer(artifactRoot: string): ExecutionService {
+  const service = Object.create(ExecutionService.prototype) as ExecutionService;
+  (service as any).logger = { log: vi.fn(), warn: vi.fn() };
+  (service as any).artifactRoot = artifactRoot;
+  (service as any).recentRuns = [];
+  (service as any).recentRunLimit = 16;
+  return service;
+}
+
 describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
   let artifactRoot: string;
 
@@ -46,22 +55,13 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
     rmSync(artifactRoot, { recursive: true, force: true });
   });
 
-  function makeServiceWithEmptyBuffer(): ExecutionService {
-    const service = Object.create(ExecutionService.prototype) as ExecutionService;
-    (service as any).logger = { log: vi.fn(), warn: vi.fn() };
-    (service as any).artifactRoot = artifactRoot;
-    (service as any).recentRuns = [];
-    (service as any).recentRunLimit = 16;
-    return service;
-  }
-
   it("loads completed runs from disk into recentRuns sorted newest-first", () => {
     const runsDir = join(artifactRoot, "runs");
     writeRun(runsDir, makeRun("run_a", { updated_at: "2026-04-01T00:00:00.000Z" }));
     writeRun(runsDir, makeRun("run_b", { updated_at: "2026-04-03T00:00:00.000Z" }));
     writeRun(runsDir, makeRun("run_c", { updated_at: "2026-04-02T00:00:00.000Z" }));
 
-    const service = makeServiceWithEmptyBuffer();
+    const service = makeServiceWithEmptyBuffer(artifactRoot);
     service.hydrateRecentRunsFromDisk();
 
     expect((service as any).recentRuns.map((r: ExecutionRunRecord) => r.run_id)).toEqual([
@@ -75,7 +75,7 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
     const runsDir = join(artifactRoot, "runs");
     writeRun(runsDir, makeRun("run_a"));
 
-    const service = makeServiceWithEmptyBuffer();
+    const service = makeServiceWithEmptyBuffer(artifactRoot);
     (service as any).recentRuns.push(makeRun("run_a", { progress_message: "already-tracked" }));
     service.hydrateRecentRunsFromDisk();
 
@@ -96,7 +96,7 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
       );
     }
 
-    const service = makeServiceWithEmptyBuffer();
+    const service = makeServiceWithEmptyBuffer(artifactRoot);
     service.hydrateRecentRunsFromDisk();
 
     const runs = (service as any).recentRuns as ExecutionRunRecord[];
@@ -135,7 +135,7 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
     mkdirSync(malformedDir, { recursive: true });
     writeFileSync(join(malformedDir, "status.json"), JSON.stringify({ run_id: "run_malformed" }), "utf8");
 
-    const service = makeServiceWithEmptyBuffer();
+    const service = makeServiceWithEmptyBuffer(artifactRoot);
     service.hydrateRecentRunsFromDisk();
 
     const runs = (service as any).recentRuns as ExecutionRunRecord[];
@@ -148,9 +148,121 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
 
   it("is a no-op when the runs dir does not exist", () => {
     rmSync(join(artifactRoot, "runs"), { recursive: true, force: true });
-    const service = makeServiceWithEmptyBuffer();
+    const service = makeServiceWithEmptyBuffer(artifactRoot);
     service.hydrateRecentRunsFromDisk();
     expect((service as any).recentRuns).toEqual([]);
+  });
+});
+
+describe("ExecutionService activity persistence", () => {
+  let artifactRoot: string;
+
+  beforeEach(() => {
+    artifactRoot = mkdtempSync(join(tmpdir(), "exec-activity-"));
+    mkdirSync(join(artifactRoot, "runs"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(artifactRoot, { recursive: true, force: true });
+  });
+
+  function makeService(run: ExecutionRunRecord): ExecutionService {
+    const service = Object.create(ExecutionService.prototype) as ExecutionService;
+    (service as any).logger = { log: vi.fn(), warn: vi.fn() };
+    (service as any).artifactRoot = artifactRoot;
+    (service as any).recentRuns = [run];
+    (service as any).recentRunLimit = 16;
+    (service as any).activeSessions = new Map();
+    (service as any).eventSubject = { next: vi.fn() };
+    (service as any).eventCounter = 0;
+    (service as any).streamId = "execution-runs";
+    (service as any).now = () => "2026-04-10T06:00:00.000Z";
+    (service as any).appendEvent = vi.fn();
+    (service as any).emitRun = vi.fn();
+    (service as any).extractTextFromMessage = (message: any) => message?.text ?? null;
+    return service;
+  }
+
+  it("flushes pushActivity updates to status.json so chat survives a restart", () => {
+    const runsDir = join(artifactRoot, "runs");
+    const run = makeRun("run_chat", {
+      status: "running",
+      artifact_dir: join(runsDir, "run_chat"),
+    });
+    writeRun(runsDir, run);
+
+    const service = makeService(run);
+    (service as any).pushActivity("run_chat", "user_message", "Please keep the summary short.");
+
+    const persisted = JSON.parse(readFileSync(join(runsDir, "run_chat", "status.json"), "utf8")) as ExecutionRunRecord;
+    expect(persisted.updated_at).toBe("2026-04-10T06:00:00.000Z");
+    expect(persisted.activity_log.at(-1)).toMatchObject({
+      kind: "user_message",
+      message: "Please keep the summary short.",
+    });
+
+    const restarted = makeServiceWithEmptyBuffer(artifactRoot);
+    restarted.hydrateRecentRunsFromDisk();
+    expect(restarted.getRunChatHistory("run_chat").messages).toEqual([
+      {
+        timestamp: "2026-04-10T06:00:00.000Z",
+        role: "user",
+        text: "Please keep the summary short.",
+      },
+    ]);
+  });
+
+  it("persists assistant message_end events into the durable activity log", () => {
+    const runsDir = join(artifactRoot, "runs");
+    const run = makeRun("run_agent", {
+      status: "running",
+      artifact_dir: join(runsDir, "run_agent"),
+    });
+    writeRun(runsDir, run);
+
+    const service = makeService(run);
+    (service as any).handleSessionEvent("run_agent", {
+      type: "message_end",
+      message: { text: "Implemented the restart recovery flow." } as any,
+    } as any);
+
+    const persisted = JSON.parse(readFileSync(join(runsDir, "run_agent", "status.json"), "utf8")) as ExecutionRunRecord;
+    expect(persisted.activity_log.at(-1)).toMatchObject({
+      kind: "agent_message",
+      message: "Implemented the restart recovery flow.",
+    });
+
+    const restarted = makeServiceWithEmptyBuffer(artifactRoot);
+    restarted.hydrateRecentRunsFromDisk();
+    expect(restarted.getRunChatHistory("run_agent").messages).toEqual([
+      {
+        timestamp: "2026-04-10T06:00:00.000Z",
+        role: "assistant",
+        text: "Implemented the restart recovery flow.",
+      },
+    ]);
+  });
+
+  it("persists follow-up user messages even when the run cannot accept them", async () => {
+    const runsDir = join(artifactRoot, "runs");
+    const run = makeRun("run_follow_up", {
+      status: "error",
+      artifact_dir: join(runsDir, "run_follow_up"),
+    });
+    writeRun(runsDir, run);
+
+    const service = makeService(run);
+    const result = await service.sendFollowUp({
+      run_id: "run_follow_up",
+      message: "Can you explain what failed?",
+    });
+
+    expect(result.accepted).toBe(false);
+    const persisted = JSON.parse(readFileSync(join(runsDir, "run_follow_up", "status.json"), "utf8")) as ExecutionRunRecord;
+    expect(persisted.activity_log.at(-1)).toMatchObject({
+      kind: "user_message",
+      message: "Can you explain what failed?",
+    });
   });
 });
 
