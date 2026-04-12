@@ -103,16 +103,19 @@ This runs the server TypeScript check plus the production frontend build.
 23. Confirm the launched run creates an isolated worktree under the configured repo artifact root (for example `/home/marc/escapement-studio-ctx/worktrees/`) and artifacts under the matching repo artifact root `runs/` directory.
 24. Trigger a blocked launch condition (for example, reuse an existing branch/worktree) and confirm the browser shows a blocked execution run with clear safety errors.
 25. Confirm the completed execution run auto-populates the related work item `actual_files` from the recorded `changed_files`.
-26. Open the reconciliation panel and confirm `GET /api/reconciliation/reports` shows matches, missed predicted files, unpredicted actual files, and drift summaries for reconciled work items.
-27. Ask the planner to delegate a `reconciliation-analyst` or call `reconciliation_query`, then stage a planning-memory update based on the reported drift and approve it through the existing memory approval flow.
-28. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
-29. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results, recent specialist runs, recent execution runs, and reconciliation reports are restored.
-30. Verify the graph view still loads data from `/api/graph`.
-31. Select a node to edit it in the sidebar.
-32. Create a new work item in the sidebar and confirm it appears in the graph.
-33. Create an edge between two nodes and confirm it appears in the graph and edge list.
-34. Delete an edge from the sidebar.
-35. Change repo/state/track/phase filters and confirm the rendered graph updates.
+26. Restart the Studio server after a completed execution run and confirm the Execute tab still shows the recent run, including `result_summary`, changed files, PR metadata, chat history, and canonical scratchpad content.
+27. Restart the Studio server while an execution run is still active and confirm the run is rehydrated as `error` with an explicit orphan/restart note instead of disappearing.
+28. If the worktree still exists, open the run checklist after restart and confirm it is reconstructed from the worktree scratchpad.
+29. Open the reconciliation panel and confirm `GET /api/reconciliation/reports` shows matches, missed predicted files, unpredicted actual files, and drift summaries for reconciled work items.
+30. Ask the planner to delegate a `reconciliation-analyst` or call `reconciliation_query`, then stage a planning-memory update based on the reported drift and approve it through the existing memory approval flow.
+31. Ask the planner to revise or reject the current graph, memory, or GitHub sync proposal from the browser and confirm the follow-up stays in the same planner conversation.
+32. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results, recent specialist runs, recent execution runs, and reconciliation reports are restored.
+33. Verify the graph view still loads data from `/api/graph`.
+34. Select a node to edit it in the sidebar.
+35. Create a new work item in the sidebar and confirm it appears in the graph.
+36. Create an edge between two nodes and confirm it appears in the graph and edge list.
+37. Delete an edge from the sidebar.
+38. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
 
@@ -311,6 +314,8 @@ Execution artifacts are persisted under:
   outputs/
 ```
 
+`status.json` is the restart-recovery source of truth for execution runs. On boot, Studio reloads recent runs from these snapshots, rewrites previously non-terminal runs (`queued`, `preparing`, `disambiguating`, `running`) to `error` with an orphan note, and keeps completed-run fields such as `result_summary`, `changed_files`, `pull_request`, and durable `activity_log` chat history available to the Execute tab.
+
 Studio's repo discovery model treats a local checkout as the primary repo identity. GitHub `owner/repo` should be derived from `git remote get-url origin`, and a suggested artifact root can be read from `**context-path**` in `AGENTS.md` or `CLAUDE.md`.
 
 Blocked launches return `accepted: false` plus a run record with `status: "blocked"` and explicit safety check failures.
@@ -360,6 +365,8 @@ Each completed run should also persist artifacts under:
   summary.md
   outputs/
 ```
+
+For the full execution/artifact contract, including restart recovery and archive edge cases, see [`docs/contracts/run-artifacts.md`](docs/contracts/run-artifacts.md).
 
 ### Stage and approve a GitHub sync
 
