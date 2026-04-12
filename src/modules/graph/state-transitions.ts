@@ -12,7 +12,7 @@ import type { WorkItemState } from "./types.js";
  * See `docs/adr/014-plans-runs-state-model.md` for the canonical
  * transition table and actor assignments.
  */
-export const VALID_HUMAN_TRANSITIONS: Record<WorkItemState, WorkItemState[]> = {
+export const VALID_HUMAN_TRANSITIONS: Partial<Record<WorkItemState, WorkItemState[]>> = {
   planned: ["drafting", "deferred", "cancelled"],
   drafting: ["ready", "deferred", "cancelled"],
   ready: ["drafting", "deferred", "cancelled"],

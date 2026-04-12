@@ -29,6 +29,7 @@ function createTestSqliteService(): SQLiteService {
   const service = Object.create(SQLiteService.prototype) as SQLiteService;
   // Inject the in-memory db via the private field
   Object.defineProperty(service, "db", { value: db, writable: false });
+  (service as unknown as { initializeStudioMetadata: () => void }).initializeStudioMetadata();
   return service;
 }
 
@@ -114,6 +115,20 @@ describe("GraphWriterService", () => {
       const row = sqlite.getDb().prepare("SELECT name, state FROM work_items WHERE id = ?").get("item-x") as { name: string; state: string };
       expect(row.name).toBe("New Name");
       expect(row.state).toBe("in_progress");
+    });
+
+    it("accepts dotted HSM state updates", () => {
+      seedWorkItem(sqlite, "item-hsm", "HSM Item");
+
+      const result = writer.apply({
+        mutations: [
+          { mutation_id: "u1", kind: "update_work_item", id: "item-hsm", patch: { state: "pre_pr.in_progress" } },
+        ],
+      });
+
+      expect(result.status).toBe("applied");
+      const row = sqlite.getDb().prepare("SELECT state FROM work_items WHERE id = ?").get("item-hsm") as { state: string };
+      expect(row.state).toBe("pre_pr.in_progress");
     });
 
     it("applies delete_work_item on unconnected item", () => {
