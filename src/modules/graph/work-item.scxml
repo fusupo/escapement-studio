@@ -79,7 +79,7 @@
   <!-- `merged_pr`: merged successfully; finalize or archive next. -->
   <state id="merged_pr" onentry="stampMeta:studio_post_merge_sync">
     <transition event="user.finalize" target="done" action="closeGhIssue" />
-    <transition event="user.archive_and_finalize" target="archived" action="runArchiver" />
+    <transition event="user.archive_and_finalize" target="archived" action="closeGhIssue,runArchiver" />
   </state>
 
   <!-- `closed`: issue/PR closed without the normal merged disposition. -->

@@ -25,6 +25,7 @@ import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
+import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { SettingsService } from "../settings/settings.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
@@ -85,6 +86,7 @@ export class ExecutionService implements OnModuleInit {
   constructor(
     @Inject(GraphService) private readonly graphService: GraphService,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
+    @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
@@ -119,6 +121,73 @@ export class ExecutionService implements OnModuleInit {
         `Failed to hydrate recentRuns from disk: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+
+    // studio-196: register HSM action handlers for disposition flows.
+    this.hsmService.registerActionHandler("closeGhIssue", async (workItem, _event, ctx) => {
+      if (workItem.kind !== "issue" || !workItem.repo || !workItem.issue_number) {
+        return; // Not issue-backed; skip.
+      }
+      try {
+        const details = await this.githubService.closeIssue(workItem.repo, workItem.issue_number);
+        ctx.handler_data.closed_issue = {
+          repo: details.repo,
+          number: details.number,
+          url: details.url,
+          title: details.title,
+          state: details.state,
+        };
+      } catch (error) {
+        throw new BadRequestException(
+          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
+        );
+      }
+    });
+
+    this.hsmService.registerActionHandler("runArchiver", async (workItem, _event, ctx) => {
+      // Pre-capture run snapshot before any mutation.
+      const runSnapshot = this.captureRunSnapshotForWorkItem(workItem.id);
+
+      // Move plan dir to archives.
+      const moveResult = this.movePlanDirToArchives(workItem.id);
+
+      // Archive run artifacts + README.
+      let archiveResult: ArchiveRunArtifactsResult;
+      try {
+        archiveResult = archiveRunArtifactsForWorkItem(this.artifactRoot, workItem, {
+          runs: runSnapshot,
+          onWarn: (message) => this.logger.warn(message),
+        });
+      } catch (error) {
+        const message = this.getErrorMessage(error);
+        if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
+          throw new BadRequestException(message);
+        }
+        throw error;
+      }
+
+      // Stamp archive meta into the runtime context meta so the HSM
+      // persists it in the same mutation batch as the state transition.
+      const archivePath =
+        archiveResult.archive_path ?? moveResult.archive_path ?? workItem.archive_path;
+      const studioArchive: StudioArchiveMeta = {
+        archived_at: this.now(),
+        readme_path: archiveResult.readme_path,
+        archived_run_ids: archiveResult.archived_run_ids,
+        skipped_run_ids: archiveResult.skipped_run_ids,
+      };
+      ctx.meta.studio_archive = studioArchive;
+
+      // Set archive_path on the work item via patch_overrides.
+      ctx.patch_overrides.archive_path = archivePath;
+
+      // Surface archive results for the response envelope.
+      ctx.handler_data.archive_result = {
+        archive_path: archivePath,
+        readme_path: archiveResult.readme_path,
+        archived_run_ids: archiveResult.archived_run_ids,
+        skipped_run_ids: archiveResult.skipped_run_ids,
+      };
+    });
   }
 
   /**
@@ -2323,51 +2392,23 @@ export class ExecutionService implements OnModuleInit {
    * `syncMergedPullRequest` including a post-close `dispatch_preview`.
    */
   async closeMergedPullRequest(workItemId: string): Promise<CloseMergedPullRequestResult> {
-    const initialWorkItem = this.workItemsService.get(workItemId);
+    // Pre-dispatch guard: refuse while a run is live (HSM doesn't know about runs).
+    this.assertNoActiveRunForWorkItem(workItemId);
 
-    // Idempotent short-circuit: if the work item is already `done`, the
-    // previous attempt got past the state transition but may have failed
-    // during the finalizer. Skip the guards + state update, still run the
-    // finalizer so any leftover run records get disposed.
-    const alreadyDone = initialWorkItem.state === "done";
-    if (!alreadyDone) {
-      this.assertWorkItemInMergedPr(workItemId);
-      this.assertNoActiveRunForWorkItem(workItemId);
+    const result = await this.hsmService.dispatch(workItemId, { type: "user.finalize" });
+
+    if (result.rejected) {
+      throw new BadRequestException(
+        `cannot_dispose: HSM rejected user.finalize from state ${result.prev_state}`,
+      );
     }
 
-    // Step 3: close the linked GitHub issue (issue-backed work items only).
-    // gh issue close is idempotent — closing an already-closed issue is a
-    // no-op per the gh CLI contract, so retries after a partial failure
-    // are safe. A failure here bubbles as BadRequestException and leaves
-    // the work item in `merged_pr` for another attempt.
-    let closedIssue: ClosedGitHubIssueSummary | null = null;
-    if (initialWorkItem.kind === "issue" && initialWorkItem.repo && initialWorkItem.issue_number) {
-      try {
-        const details = await this.githubService.closeIssue(
-          initialWorkItem.repo,
-          initialWorkItem.issue_number,
-        );
-        closedIssue = {
-          repo: details.repo,
-          number: details.number,
-          url: details.url,
-          title: details.title,
-          state: details.state,
-        };
-      } catch (error) {
-        throw new BadRequestException(
-          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
-        );
-      }
-    }
-
-    // Step 4: state transition (skipped on the already-done retry path).
-    const updatedWorkItem = alreadyDone
-      ? initialWorkItem
-      : this.workItemsService.update(workItemId, { state: "done" });
-
-    // Step 5: finalizer — splice runs and stamp disposed_at on disk.
+    // Post-dispatch finalizer: dispose matching runs.
     const removedRunIds = this.removeRunsForWorkItem(workItemId);
+
+    // Build the response envelope.
+    const updatedWorkItem = this.workItemsService.get(workItemId);
+    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
 
     return {
       work_item: {
@@ -2530,104 +2571,30 @@ export class ExecutionService implements OnModuleInit {
   async archiveAndCloseMergedPullRequest(
     workItemId: string,
   ): Promise<ArchiveAndCloseMergedPullRequestResult> {
-    const initialWorkItem = this.workItemsService.get(workItemId);
+    // Pre-dispatch guard.
+    this.assertNoActiveRunForWorkItem(workItemId);
 
-    // Step 1: idempotent short-circuit when the previous attempt got past
-    // the state transition but failed in the finalizer. Skip guards +
-    // state update, still run gh close (idempotent) and the finalizer.
-    const alreadyDone = initialWorkItem.state === "done";
-    if (!alreadyDone) {
-      // Steps 2 + 3: source state + active-run guards.
-      this.assertWorkItemInMergedPr(workItemId);
-      this.assertNoActiveRunForWorkItem(workItemId);
+    const result = await this.hsmService.dispatch(workItemId, {
+      type: "user.archive_and_finalize",
+    });
+
+    if (result.rejected) {
+      throw new BadRequestException(
+        `cannot_dispose: HSM rejected user.archive_and_finalize from state ${result.prev_state}`,
+      );
     }
 
-    // Step 4: capture a run snapshot BEFORE any mutation so the archiver
-    // can operate on the authoritative run list even after the finalizer
-    // stamps `disposed_at` (default disk scans skip disposed records,
-    // which would otherwise make a retry see an empty list).
-    const runSnapshot = this.captureRunSnapshotForWorkItem(workItemId);
-
-    // Step 5: gh issue close (issue-backed work items only). Errors here
-    // bubble as BadRequestException BEFORE any filesystem mutation so the
-    // retry can re-attempt the whole flow.
-    let closedIssue: ClosedGitHubIssueSummary | null = null;
-    if (initialWorkItem.kind === "issue" && initialWorkItem.repo && initialWorkItem.issue_number) {
-      try {
-        const details = await this.githubService.closeIssue(
-          initialWorkItem.repo,
-          initialWorkItem.issue_number,
-        );
-        closedIssue = {
-          repo: details.repo,
-          number: details.number,
-          url: details.url,
-          title: details.title,
-          state: details.state,
-        };
-      } catch (error) {
-        throw new BadRequestException(
-          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
-        );
-      }
-    }
-
-    // Step 6: move the plan dir into `archives/<slug>/` if it still
-    // exists. A no-op when a prior retry already moved it — the state
-    // update downstream will still run with whatever archive_path the
-    // work item already carries. `archive_already_exists` from the
-    // destination collision path bubbles as BadRequestException.
-    const moveResult = this.movePlanDirToArchives(workItemId);
-
-    // Step 7: archive run artifacts + README. Bypass the
-    // `archiveRunArtifacts` wrapper so we can reuse the pre-captured
-    // snapshot (avoiding a redundant disk re-scan that would drop
-    // disposed runs on retry) and skip the wrapper's active-run guard
-    // which we already ran above.
-    let archiveResult: ArchiveRunArtifactsResult;
-    try {
-      archiveResult = archiveRunArtifactsForWorkItem(this.artifactRoot, initialWorkItem, {
-        runs: runSnapshot,
-        onWarn: (message) => this.logger.warn(message),
-      });
-    } catch (error) {
-      const message = this.getErrorMessage(error);
-      if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
-        throw new BadRequestException(message);
-      }
-      throw error;
-    }
-
-    // Step 8: state transition (skipped on the already-done retry path).
-    // Shallow-merge the archive audit block into `meta` alongside any
-    // existing `studio_post_merge_sync` block from the earlier
-    // merged_pr transition.
-    const archivePath = archiveResult.archive_path ?? moveResult.archive_path ?? initialWorkItem.archive_path;
-    const studioArchive: StudioArchiveMeta = {
-      archived_at: this.now(),
-      readme_path: archiveResult.readme_path,
-      archived_run_ids: archiveResult.archived_run_ids,
-      skipped_run_ids: archiveResult.skipped_run_ids,
-    };
-    const nextMeta: Record<string, unknown> = {
-      ...initialWorkItem.meta,
-      studio_archive: studioArchive,
-    };
-
-    const updatedWorkItem = alreadyDone
-      ? this.workItemsService.update(workItemId, {
-          archive_path: archivePath,
-          meta: nextMeta,
-        })
-      : this.workItemsService.update(workItemId, {
-          state: "done",
-          archive_path: archivePath,
-          meta: nextMeta,
-        });
-
-    // Step 9: finalizer — splice matching runs out of recentRuns and
-    // stamp `disposed_at` on each `status.json`.
+    // Post-dispatch finalizer.
     const removedRunIds = this.removeRunsForWorkItem(workItemId);
+
+    const updatedWorkItem = this.workItemsService.get(workItemId);
+    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
+    const archiveData = result.handler_data?.archive_result as {
+      archive_path: string;
+      readme_path: string | null;
+      archived_run_ids: string[];
+      skipped_run_ids: Array<{ run_id: string; reason: string }>;
+    } | undefined;
 
     return {
       work_item: {
@@ -2641,11 +2608,11 @@ export class ExecutionService implements OnModuleInit {
       },
       closed_issue: closedIssue,
       removed_run_ids: removedRunIds,
-      archive: {
-        archive_path: archiveResult.archive_path,
-        readme_path: archiveResult.readme_path,
-        archived_run_ids: archiveResult.archived_run_ids,
-        skipped_run_ids: archiveResult.skipped_run_ids,
+      archive: archiveData ?? {
+        archive_path: updatedWorkItem.archive_path ?? "",
+        readme_path: null,
+        archived_run_ids: [],
+        skipped_run_ids: [],
       },
       dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
     };
