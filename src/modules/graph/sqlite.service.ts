@@ -95,12 +95,23 @@ export class SQLiteService {
                         'deferred',
                         'cancelled'
                       )
-                      OR state IN (
-                        'pre_pr.planned',
-                        'pre_pr.drafting',
-                        'pre_pr.ready',
-                        'pre_pr.in_progress',
-                        'pre_pr.run_errored'
+                      OR (
+                        instr(state, '.') > 1
+                        AND instr(substr(state, instr(state, '.') + 1), '.') = 0
+                        AND substr(state, instr(state, '.') + 1) IN (
+                          'planned',
+                          'drafting',
+                          'ready',
+                          'in_progress',
+                          'run_errored',
+                          'open_pr',
+                          'merged_pr',
+                          'closed',
+                          'deferred',
+                          'done',
+                          'archived',
+                          'cancelled'
+                        )
                       )
                     ),
         repo            TEXT,

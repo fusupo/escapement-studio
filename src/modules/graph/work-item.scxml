@@ -1,4 +1,14 @@
 <scxml initial="pre_pr">
+  <!--
+    Canonical work-item lifecycle.
+
+    Notes:
+    - `pre_pr` is the composite superstate for all work that happens before a
+      pull request exists.
+    - `pre_pr_history` is a shallow history node used by `deferred` to resume
+      the last active pre-PR child state.
+    - Run outcomes are projected into this machine through `run.*` events.
+  -->
   <state id="pre_pr" initial="planned">
     <history id="pre_pr_history" type="shallow">
       <transition target="planned" />
