@@ -28,6 +28,7 @@ vi.mock("../../reconciliation/reconciliation.service.js", () => ({
   ReconciliationService: class {},
 }));
 
+import { checkIdAlignment } from "../../graph/types.js";
 import { PlanningService } from "../planning.service.js";
 import type { PlanningMutationProposal } from "../types.js";
 
@@ -90,6 +91,19 @@ function getEdge(
   };
 }
 
+function expectAlignedIssueBackedMutations(proposal: PlanningMutationProposal) {
+  for (const mutation of proposal.mutations) {
+    if (mutation.type !== "create_work_item") {
+      continue;
+    }
+    const payload = mutation.payload as { id?: string; kind?: string; issue_number?: number } | undefined;
+    if (payload?.kind !== "issue" || typeof payload.id !== "string" || typeof payload.issue_number !== "number") {
+      continue;
+    }
+    expect(checkIdAlignment(payload.id, payload.kind, payload.issue_number)).toBeNull();
+  }
+}
+
 describe("PlanningService github_create_issue staging", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -114,6 +128,7 @@ describe("PlanningService github_create_issue staging", () => {
     expect(getCreateWorkItemIds(proposal)).toEqual(["studio-83"]);
     expect(proposal.mutations[0].payload?.id).toBe("studio-83");
     expect(proposal.mutations[0].payload?.issue_number).toBe(83);
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain("studio-82");
   });
 
@@ -151,6 +166,7 @@ describe("PlanningService github_create_issue staging", () => {
       from_id: "studio-84",
       to_id: "studio-83",
     });
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
   });
 
@@ -187,6 +203,7 @@ describe("PlanningService github_create_issue staging", () => {
       from_id: "studio-92",
       to_id: "studio-91",
     });
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain('"studio-90"');
   });
 
@@ -224,6 +241,7 @@ describe("PlanningService github_create_issue staging", () => {
       from_id: "studio-85",
       to_id: "studio-84",
     });
+    expectAlignedIssueBackedMutations(proposal);
   });
 
   it("rewrites previously accumulated child references when a later issue creation resolves the placeholder parent ID", async () => {
@@ -260,6 +278,7 @@ describe("PlanningService github_create_issue staging", () => {
       from_id: "studio-84",
       to_id: "studio-83",
     });
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
   });
 
@@ -302,6 +321,7 @@ describe("PlanningService github_create_issue staging", () => {
       from_id: "studio-84",
       to_id: "studio-83",
     });
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
   });
 });

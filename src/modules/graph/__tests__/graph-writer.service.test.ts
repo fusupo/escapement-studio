@@ -261,7 +261,8 @@ describe("GraphWriterService", () => {
       const failed = result as GraphMutationsValidationFailedResult;
       expect(failed.errors).toHaveLength(1);
       expect(failed.errors[0].code).toBe("malformed_payload");
-      expect(failed.errors[0].message).toContain("studio-42");
+      expect(failed.errors[0].message).toContain('expected "studio-42"');
+      expect(failed.errors[0].message).toContain('ID "studio-99" does not match issue_number 42');
     });
 
     it("accepts issue-backed work item with aligned ID", () => {
