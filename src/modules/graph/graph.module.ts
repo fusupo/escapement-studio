@@ -1,18 +1,40 @@
 import { forwardRef, Module } from "@nestjs/common";
 import { ExecutionModule } from "../execution/execution.module.js";
+import { PlansModule } from "../plans/plans.module.js";
 import { EdgesController } from "./edges.controller.js";
 import { EdgesService } from "./edges.service.js";
 import { GraphController } from "./graph.controller.js";
 import { GraphService } from "./graph.service.js";
 import { GraphWriterService } from "./graph-writer.service.js";
+import { HsmActionHandlers } from "./hsm-action-handlers.js";
+import { HsmGuardHandlers } from "./hsm-guard-handlers.js";
 import { SQLiteService } from "./sqlite.service.js";
+import { WorkItemHsmService } from "./work-item-hsm.service.js";
 import { WorkItemsController } from "./work-items.controller.js";
 import { WorkItemsService } from "./work-items.service.js";
 
 @Module({
-  imports: [forwardRef(() => ExecutionModule)],
+  imports: [forwardRef(() => ExecutionModule), forwardRef(() => PlansModule)],
   controllers: [WorkItemsController, EdgesController, GraphController],
-  providers: [SQLiteService, WorkItemsService, EdgesService, GraphService, GraphWriterService],
-  exports: [SQLiteService, WorkItemsService, EdgesService, GraphService, GraphWriterService],
+  providers: [
+    SQLiteService,
+    WorkItemsService,
+    EdgesService,
+    GraphService,
+    GraphWriterService,
+    HsmActionHandlers,
+    HsmGuardHandlers,
+    WorkItemHsmService,
+  ],
+  exports: [
+    SQLiteService,
+    WorkItemsService,
+    EdgesService,
+    GraphService,
+    GraphWriterService,
+    HsmActionHandlers,
+    HsmGuardHandlers,
+    WorkItemHsmService,
+  ],
 })
 export class GraphModule {}

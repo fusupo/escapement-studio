@@ -11,7 +11,7 @@ The checked-in diagram at [`docs/architecture/work-item-state-chart.svg`](./work
 `pre_pr` groups the lifecycle states that exist before a pull request is opened.
 
 - `planned` — the issue exists, but drafting has not started yet
-- `drafting` — the canonical scratchpad is being written or revised
+- `drafting` — a background plan drafter is running or the draft is otherwise being revised
 - `ready` — the draft plan is approved and dispatchable
 - `in_progress` — a run is actively executing against the approved plan
 - `run_errored` — the most recent run terminated in an error state and needs triage
@@ -19,39 +19,44 @@ The checked-in diagram at [`docs/architecture/work-item-state-chart.svg`](./work
 ### Top-level post-`pre_pr` states
 
 - `open_pr` — a pull request exists and is waiting on external GitHub outcomes
-- `merged_pr` — the pull request merged and is waiting for human disposition
+- `merged_pr` — the pull request merged and is waiting for finalization
 - `closed` — the pull request was closed without merge
 - `deferred` — the work item is paused and can later resume through shallow history
 
 ### Terminal states
 
-- `done` — disposition completed without archiving the plan dir
-- `archived` — disposition completed with archival
+- `done` — finalized without archiving the run bundle
+- `archived` — finalized with archived run artifacts on disk
 - `cancelled` — the work item was explicitly abandoned
 
 ## Event vocabulary
 
-The SCXML uses namespaced event families so later integration phases can map different actors into the chart cleanly.
+### `user.*`
+
+Human-initiated lifecycle events.
+
+- `user.start_draft`
+- `user.dispatch`
+- `user.finalize`
+- `user.archive_and_finalize`
+- `user.defer`
+- `user.undefer`
+- `user.cancel`
+- `user.retry`
 
 ### `draft.*`
 
-Planning and review events.
+Async plan-drafter completion signals.
 
-- `draft.start`
-- `draft.approve`
-- `draft.discard`
-- `draft.reopen`
-- `draft.revise_after_error`
+- `draft.completed`
+- `draft.failed`
 
 ### `run.*`
 
-Execution-run outcome events projected into the work-item machine.
+Execution-run outcomes projected into the work-item machine.
 
-- `run.launch`
-- `run.pr_opened`
-- `run.retry_ready`
-- `run.retry_drafting`
-- `run.errored`
+- `run.completed`
+- `run.failed`
 
 ### `gh.*`
 
@@ -61,16 +66,24 @@ External GitHub state changes.
 - `gh.pr_closed`
 - `gh.pr_reopened`
 
-### `user.*`
+## Entry, exit, and guard hooks
 
-Explicit human disposition / control actions.
+The chart now declares the side-effect seams that the runtime wires into the interpreter.
 
-- `user.defer`
-- `user.undefer`
-- `user.retry`
-- `user.close`
-- `user.archive`
-- `user.cancel`
+### Entry actions
+
+- `kickOffPlanDrafter()` — on entry to `drafting`; starts the async drafter invoke
+- `createRunRecord()` — on entry to `in_progress`; persists a new execution run record
+- `stampMeta('studio_post_merge_sync')` — on entry to `merged_pr`; captures the merge event payload into work-item meta
+- `runArchiver()` — on entry to `archived`; archives run artifacts into `archives/<slug>/`
+
+### Exit actions
+
+- `closeGhIssue()` — on exit from `merged_pr`; closes the linked GitHub issue before finalization completes
+
+### Guards
+
+- `prExistsForBranch` — splits `run.completed` from `in_progress` into either `open_pr` or back to `ready`
 
 ## Defer/resume via `pre_pr` shallow history
 
@@ -83,8 +96,6 @@ Mechanics:
 3. `user.undefer` from `deferred` targets `pre_pr_history`
 4. The item resumes at the remembered child state (`drafting`, `ready`, `in_progress`, etc.) instead of resetting to `planned`
 
-Because the history node is **shallow**, it restores only the last direct child of `pre_pr`, which is exactly what this phase needs.
-
 ## Why runs are separate entities
 
 The work-item chart does **not** embed the full run lifecycle.
@@ -92,15 +103,13 @@ The work-item chart does **not** embed the full run lifecycle.
 Instead:
 
 - runs remain separate entities with their own statuses (`queued`, `running`, `completed`, `error`, ...)
-- the work-item state machine consumes only the run outcomes that matter at the work-item level
-- those outcomes enter the chart as `run.*` events (`run.pr_opened`, `run.retry_ready`, `run.errored`, etc.)
+- the work-item HSM consumes only the run outcomes that matter at the work-item level
+- those outcomes enter the chart as `run.*` events (`run.completed`, `run.failed`)
 
 This keeps concerns separated:
 
 - the run machine describes one execution attempt
 - the work-item machine describes the durable lifecycle of the underlying unit of work
-
-That boundary is important for later phases because multiple runs may exist for one work item while the work item still has exactly one canonical lifecycle state.
 
 ## Source of truth and authoring notes
 
