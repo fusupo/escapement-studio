@@ -144,6 +144,23 @@ describe("GraphWriterService", () => {
       const count = (sqlite.getDb().prepare("SELECT COUNT(*) AS c FROM work_items WHERE id = ?").get("item-del") as { c: number }).c;
       expect(count).toBe(0);
     });
+
+    it("deletes connected edges and then deletes the work item in one batch", () => {
+      seedWorkItem(sqlite, "item-a");
+      seedWorkItem(sqlite, "item-b");
+      seedWorkItem(sqlite, "item-c");
+      seedEdge(sqlite, "item-a", "depends_on", "item-b");
+      seedEdge(sqlite, "item-c", "implemented_by", "item-a");
+
+      const connectedEdges = writer.getConnectedEdges("item-a");
+      const result = writer.deleteWorkItemWithEdges("item-a", connectedEdges.map((edge) => edge.id));
+
+      expect(result.status).toBe("applied");
+      const remainingItem = sqlite.getDb().prepare("SELECT COUNT(*) AS c FROM work_items WHERE id = ?").get("item-a") as { c: number };
+      const remainingEdges = sqlite.getDb().prepare("SELECT COUNT(*) AS c FROM edges WHERE from_id = ? OR to_id = ?").get("item-a", "item-a") as { c: number };
+      expect(remainingItem.c).toBe(0);
+      expect(remainingEdges.c).toBe(0);
+    });
   });
 
   describe("apply — stale rejection", () => {

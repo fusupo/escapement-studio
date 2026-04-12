@@ -21,6 +21,14 @@ export class GitHubController {
     return this.githubService.closeIssue(repo, Number(issueNumber));
   }
 
+  @Post("issue/delete")
+  deleteIssue(
+    @Body("repo") repo: string,
+    @Body("issue_number") issueNumber: number,
+  ) {
+    return this.githubService.deleteIssue(repo, Number(issueNumber));
+  }
+
   @Get("pull-request")
   getPullRequest(
     @Query("repo") repo?: string,

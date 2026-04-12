@@ -81,6 +81,12 @@ export interface GitHubCreatedIssue {
   title: string;
 }
 
+export interface GitHubDeletedIssue {
+  repo: string;
+  number: number;
+  deleted: true;
+}
+
 export interface GitHubPullRequestDetails {
   repo: string;
   number: number;
@@ -184,6 +190,30 @@ export class GitHubService {
     ]);
 
     return this.readIssue(repo, issueNumber);
+  }
+
+  async deleteIssue(repo: string, issueNumber: number): Promise<GitHubDeletedIssue> {
+    if (!repo?.trim()) {
+      throw new BadRequestException("repo is required");
+    }
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      throw new BadRequestException("issue_number must be a positive integer");
+    }
+
+    this.runGh([
+      "issue",
+      "delete",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--yes",
+    ]);
+
+    return {
+      repo,
+      number: issueNumber,
+      deleted: true,
+    };
   }
 
   async readIssue(repo: string, issueNumber: number): Promise<GitHubIssueDetails> {
