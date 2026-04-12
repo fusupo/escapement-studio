@@ -262,4 +262,46 @@ describe("PlanningService github_create_issue staging", () => {
     });
     expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
   });
+
+  it("preserves previously resolved aliases when a later grouped create reuses the old placeholder", async () => {
+    const { tool } = makePlanningService([
+      {
+        repo: "fusupo/escapement-studio",
+        number: 83,
+        url: "https://github.com/fusupo/escapement-studio/issues/83",
+        title: "Epic",
+      },
+      {
+        repo: "fusupo/escapement-studio",
+        number: 84,
+        url: "https://github.com/fusupo/escapement-studio/issues/84",
+        title: "Child",
+      },
+    ]);
+
+    await executeCreateIssue(tool, {
+      repo: "fusupo/escapement-studio",
+      title: "Epic",
+      work_item_id: "studio-82",
+    });
+
+    const proposal = await executeCreateIssue(tool, {
+      repo: "fusupo/escapement-studio",
+      title: "Child",
+      work_item_id: "studio-82",
+      parent_id: "studio-82",
+      depends_on_ids: ["studio-82"],
+    });
+
+    expect(getCreateWorkItemIds(proposal)).toEqual(["studio-83", "studio-84"]);
+    expect(getEdge(proposal, "is_part_of")).toEqual({
+      from_id: "studio-84",
+      to_id: "studio-83",
+    });
+    expect(getEdge(proposal, "depends_on")).toEqual({
+      from_id: "studio-84",
+      to_id: "studio-83",
+    });
+    expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
+  });
 });

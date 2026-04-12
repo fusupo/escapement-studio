@@ -1144,9 +1144,13 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     // If the requested ID is already staged as a canonical work item from an
-    // earlier create, treat it as authoritative and do not overwrite it with a
-    // new alias from a later guessed placeholder.
+    // earlier create, or already resolves to one, treat that existing staged ID
+    // as authoritative and do not overwrite the alias chain with a later guess.
     if (stagedWorkItemIds.has(placeholderId)) {
+      return;
+    }
+    const existingResolvedId = this.resolveIssueIdAlias(placeholderId, stagedWorkItemIds);
+    if (existingResolvedId !== placeholderId && stagedWorkItemIds.has(existingResolvedId)) {
       return;
     }
     this.issueIdAliases.set(placeholderId, finalId);
