@@ -83,13 +83,13 @@ export class ExecutionController {
   }
 
   @Post("transition-ready")
-  transitionInProgressToReady(@Body() body: TransitionWorkItemDto) {
-    return this.executionService.transitionInProgressToReady(body.work_item_id);
+  async transitionInProgressToReady(@Body() body: TransitionWorkItemDto) {
+    return await this.executionService.transitionInProgressToReady(body.work_item_id);
   }
 
   @Post("transition-drafting")
-  transitionInProgressToDrafting(@Body() body: TransitionWorkItemDto) {
-    return this.executionService.transitionInProgressToDrafting(body.work_item_id);
+  async transitionInProgressToDrafting(@Body() body: TransitionWorkItemDto) {
+    return await this.executionService.transitionInProgressToDrafting(body.work_item_id);
   }
 
   @Post("close-merged")
