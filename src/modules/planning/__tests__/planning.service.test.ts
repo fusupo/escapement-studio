@@ -190,6 +190,42 @@ describe("PlanningService github_create_issue staging", () => {
     expect(JSON.stringify(proposal)).not.toContain('"studio-90"');
   });
 
+  it("does not overwrite an already staged canonical ID when a later placeholder guess collides with it", async () => {
+    const { tool } = makePlanningService([
+      {
+        repo: "fusupo/escapement-studio",
+        number: 84,
+        url: "https://github.com/fusupo/escapement-studio/issues/84",
+        title: "First issue",
+      },
+      {
+        repo: "fusupo/escapement-studio",
+        number: 85,
+        url: "https://github.com/fusupo/escapement-studio/issues/85",
+        title: "Second issue",
+      },
+    ]);
+
+    await executeCreateIssue(tool, {
+      repo: "fusupo/escapement-studio",
+      title: "First issue",
+      work_item_id: "studio-83",
+    });
+
+    const proposal = await executeCreateIssue(tool, {
+      repo: "fusupo/escapement-studio",
+      title: "Second issue",
+      work_item_id: "studio-84",
+      depends_on_ids: ["studio-84"],
+    });
+
+    expect(getCreateWorkItemIds(proposal)).toEqual(["studio-84", "studio-85"]);
+    expect(getEdge(proposal, "depends_on")).toEqual({
+      from_id: "studio-85",
+      to_id: "studio-84",
+    });
+  });
+
   it("rewrites previously accumulated child references when a later issue creation resolves the placeholder parent ID", async () => {
     const { tool } = makePlanningService([
       {
