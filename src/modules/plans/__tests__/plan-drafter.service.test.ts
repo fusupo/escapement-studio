@@ -16,12 +16,13 @@ import type { WorkItemRecord } from "../../graph/types.js";
 // can configure how the next createAgentSession call behaves.
 
 let mockAssistantText: string | null = "";
-let mockBehavior: "ok" | "throw_in_create" | "throw_in_prompt" = "ok";
+let mockBehavior: "ok" | "throw_in_create" | "throw_in_prompt" | "pending_until_dispose" = "ok";
 let mockSessionMessages: unknown[] = [];
+let mockDisposeCallCount = 0;
 type MockAttempt = {
   assistantText: string | null;
   messages?: unknown[];
-  behavior?: "ok" | "throw_in_create" | "throw_in_prompt";
+  behavior?: "ok" | "throw_in_create" | "throw_in_prompt" | "pending_until_dispose";
 };
 let mockAttemptQueue: MockAttempt[] = [];
 let mockCreateSessionCallCount = 0;
@@ -48,12 +49,24 @@ vi.mock("@mariozechner/pi-coding-agent", () => {
           if (behavior === "throw_in_prompt") {
             throw new Error("session.prompt blew up");
           }
+          if (behavior === "pending_until_dispose") {
+            await new Promise((_, reject) => {
+              const poll = () => {
+                if (mockDisposeCallCount > 0) {
+                  reject(new Error("session cancelled via dispose"));
+                  return;
+                }
+                setTimeout(poll, 0);
+              };
+              poll();
+            });
+          }
         },
         getLastAssistantText() {
           return assistantText;
         },
         dispose() {
-          // no-op
+          mockDisposeCallCount++;
         },
         subscribe(_fn: unknown) {
           return () => {};
@@ -133,6 +146,7 @@ beforeEach(() => {
   mockSessionMessages = [];
   mockAttemptQueue = [];
   mockCreateSessionCallCount = 0;
+  mockDisposeCallCount = 0;
 });
 
 describe("PlanDrafterService.loadSkillBody", () => {
@@ -353,7 +367,7 @@ describe("PlanDrafterService.parseEnvelope", () => {
   });
 });
 
-describe("PlanDrafterService.draft (integration with mocked pi-coding-agent)", () => {
+describe("PlanDrafterService.startDraft / draft (integration with mocked pi-coding-agent)", () => {
   it("returns a parsed envelope on a successful agent run", async () => {
     const service = makeService();
     const result = await service.draft(makeWorkItem(), "issue body");
@@ -457,5 +471,16 @@ describe("PlanDrafterService.draft (integration with mocked pi-coding-agent)", (
     const service = makeService();
     await expect(service.draft(makeWorkItem(), null)).rejects.toThrow(/empty assistant message/);
     expect(mockCreateSessionCallCount).toBe(2);
+  });
+
+  it("actively cancels the underlying session and rejects the handle", async () => {
+    mockBehavior = "pending_until_dispose";
+    const service = makeService();
+
+    const handle = service.startDraft(makeWorkItem(), null);
+    handle.cancel();
+
+    await expect(handle.completion).rejects.toThrow(/draft cancelled/);
+    expect(mockDisposeCallCount).toBeGreaterThan(0);
   });
 });

@@ -30,6 +30,19 @@ type DraftAttemptResult =
   | { kind: "ok"; envelope: PlanDraftEnvelope }
   | { kind: "retry_empty"; error: Error };
 
+export class PlanDraftCancelledError extends Error {
+  constructor(workItemId: string) {
+    super(`PlanDrafterService.startDraft: draft cancelled for ${workItemId}`);
+    this.name = "PlanDraftCancelledError";
+  }
+}
+
+export interface PlanDraftHandle {
+  sessionId: string | null;
+  completion: Promise<PlanDraftEnvelope>;
+  cancel: () => void;
+}
+
 @Injectable()
 export class PlanDrafterService {
   private readonly logger = new Logger(PlanDrafterService.name);
@@ -58,6 +71,13 @@ export class PlanDrafterService {
     workItem: WorkItemRecord,
     issueBody: string | null,
   ): Promise<PlanDraftEnvelope> {
+    return await this.startDraft(workItem, issueBody).completion;
+  }
+
+  startDraft(
+    workItem: WorkItemRecord,
+    issueBody: string | null,
+  ): PlanDraftHandle {
     const skillBody = this.loadSkillBody();
     const prompt = this.buildDraftPrompt({ skillBody, workItem, issueBody });
 
@@ -65,29 +85,57 @@ export class PlanDrafterService {
       `Drafting plan for ${workItem.id} (prompt size: ${prompt.length} chars)`,
     );
 
-    let lastError: Error | null = null;
-    for (let attempt = 1; attempt <= PlanDrafterService.MAX_DRAFT_ATTEMPTS; attempt++) {
-      const result = await this.runDraftAttempt({ prompt, workItem });
-      if (result.kind === "ok") {
-        const envelope = result.envelope;
-        this.logger.log(
-          `Drafted plan for ${workItem.id}${attempt > 1 ? ` (attempt ${attempt})` : ""}: ` +
-            `${envelope.implementation_tasks.length} tasks, ` +
-            `${envelope.affected_files.length} files, ${envelope.questions.length} open questions`,
+    let cancelled = false;
+    let currentSession: { sessionId?: string; dispose: () => void } | null = null;
+    const completion = (async () => {
+      let lastError: Error | null = null;
+      for (let attempt = 1; attempt <= PlanDrafterService.MAX_DRAFT_ATTEMPTS; attempt++) {
+        if (cancelled) {
+          throw new PlanDraftCancelledError(workItem.id);
+        }
+        const result = await this.runDraftAttempt({
+          prompt,
+          workItem,
+          onSession: (session) => {
+            currentSession = session;
+          },
+          isCancelled: () => cancelled,
+        });
+        if (cancelled) {
+          throw new PlanDraftCancelledError(workItem.id);
+        }
+        if (result.kind === "ok") {
+          const envelope = result.envelope;
+          this.logger.log(
+            `Drafted plan for ${workItem.id}${attempt > 1 ? ` (attempt ${attempt})` : ""}: ` +
+              `${envelope.implementation_tasks.length} tasks, ` +
+              `${envelope.affected_files.length} files, ${envelope.questions.length} open questions`,
+          );
+          return envelope;
+        }
+        lastError = result.error;
+        if (attempt === PlanDrafterService.MAX_DRAFT_ATTEMPTS) {
+          throw lastError;
+        }
+        this.logger.warn(
+          `PlanDrafterService.draft: attempt ${attempt}/${PlanDrafterService.MAX_DRAFT_ATTEMPTS} ` +
+            `for ${workItem.id} hit a retryable session error; starting a fresh session. ` +
+            `Underlying: ${lastError.message}`,
         );
-        return envelope;
       }
-      lastError = result.error;
-      if (attempt === PlanDrafterService.MAX_DRAFT_ATTEMPTS) {
-        throw lastError;
-      }
-      this.logger.warn(
-        `PlanDrafterService.draft: attempt ${attempt}/${PlanDrafterService.MAX_DRAFT_ATTEMPTS} ` +
-          `for ${workItem.id} hit a retryable session error; starting a fresh session. ` +
-          `Underlying: ${lastError.message}`,
-      );
-    }
-    throw lastError ?? new Error("PlanDrafterService.draft: exhausted attempts with no error");
+      throw lastError ?? new Error("PlanDrafterService.draft: exhausted attempts with no error");
+    })();
+
+    return {
+      get sessionId() {
+        return currentSession?.sessionId ?? null;
+      },
+      completion,
+      cancel: () => {
+        cancelled = true;
+        currentSession?.dispose();
+      },
+    };
   }
 
   /**
@@ -101,6 +149,8 @@ export class PlanDrafterService {
   private async runDraftAttempt(args: {
     prompt: string;
     workItem: WorkItemRecord;
+    onSession?: (session: { sessionId?: string; dispose: () => void } | null) => void;
+    isCancelled?: () => boolean;
   }): Promise<DraftAttemptResult> {
     const { prompt, workItem } = args;
 
@@ -120,6 +170,13 @@ export class PlanDrafterService {
       this.logger.warn(modelFallbackMessage);
     }
 
+    if (args.isCancelled?.()) {
+      session.dispose();
+      throw new PlanDraftCancelledError(workItem.id);
+    }
+
+    args.onSession?.(session);
+
     let assistantText: string;
     let sessionMessagesSnapshot: unknown[] = [];
     try {
@@ -130,7 +187,13 @@ export class PlanDrafterService {
       // Guarded: not all session implementations (e.g. test mocks) expose `messages`.
       const rawMessages = (session as unknown as { messages?: unknown[] }).messages;
       sessionMessagesSnapshot = Array.isArray(rawMessages) ? [...rawMessages] : [];
+    } catch (error) {
+      if (args.isCancelled?.()) {
+        throw new PlanDraftCancelledError(workItem.id);
+      }
+      throw error;
     } finally {
+      args.onSession?.(null);
       session.dispose();
     }
 

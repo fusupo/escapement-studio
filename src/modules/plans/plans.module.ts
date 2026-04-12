@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { forwardRef, Module } from "@nestjs/common";
 import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
 import { SettingsModule } from "../settings/settings.module.js";
@@ -14,7 +14,7 @@ import { PlansService } from "./plans.service.js";
  * PlansModule, so no forwardRef cycles.
  */
 @Module({
-  imports: [GraphModule, GitHubModule, SettingsModule],
+  imports: [forwardRef(() => GraphModule), GitHubModule, SettingsModule],
   controllers: [PlansController],
   providers: [PlansService, PlanDrafterService],
   exports: [PlansService, PlanDrafterService],

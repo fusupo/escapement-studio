@@ -20,10 +20,6 @@
 
   <!-- Pre-PR lifecycle: planning, drafting, execution, and run recovery. -->
   <state id="pre_pr" initial="planned">
-    <!--
-      Shallow history restores whichever child of `pre_pr` was active when the
-      item was deferred. Default is `planned` if no prior child state exists.
-    -->
     <history id="pre_pr_history" type="shallow">
       <transition target="planned" />
     </history>
@@ -45,13 +41,11 @@
       <transition event="draft.failed" target="run_errored" />
     </state>
 
-    <!-- `ready`: the plan is approved and an execution run may be launched. -->
     <state id="ready">
       <transition event="user.start_draft" target="drafting" />
       <transition event="user.dispatch" target="in_progress" action="createRunRecord" />
     </state>
 
-    <!-- `in_progress`: a run is actively executing against the approved plan. -->
     <state id="in_progress">
       <transition event="run.completed" cond="pr_exists" target="open_pr" />
       <transition event="run.completed" cond="!pr_exists" target="merged_pr" />
