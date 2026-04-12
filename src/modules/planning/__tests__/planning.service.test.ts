@@ -28,6 +28,7 @@ vi.mock("../../reconciliation/reconciliation.service.js", () => ({
   ReconciliationService: class {},
 }));
 
+import { checkIdAlignment } from "../../graph/types.js";
 import { PlanningService } from "../planning.service.js";
 import type { PlanningMutationProposal } from "../types.js";
 
@@ -90,6 +91,19 @@ function getEdge(
   };
 }
 
+function expectAlignedIssueBackedMutations(proposal: PlanningMutationProposal) {
+  for (const mutation of proposal.mutations) {
+    if (mutation.type !== "create_work_item") {
+      continue;
+    }
+    const payload = mutation.payload as { id?: string; kind?: string; issue_number?: number } | undefined;
+    if (payload?.kind !== "issue" || typeof payload.id !== "string" || typeof payload.issue_number !== "number") {
+      continue;
+    }
+    expect(checkIdAlignment(payload.id, payload.kind, payload.issue_number)).toBeNull();
+  }
+}
+
 describe("PlanningService github_create_issue staging", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -114,6 +128,7 @@ describe("PlanningService github_create_issue staging", () => {
     expect(getCreateWorkItemIds(proposal)).toEqual(["studio-83"]);
     expect(proposal.mutations[0].payload?.id).toBe("studio-83");
     expect(proposal.mutations[0].payload?.issue_number).toBe(83);
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain("studio-82");
   });
 
@@ -151,6 +166,7 @@ describe("PlanningService github_create_issue staging", () => {
       from_id: "studio-84",
       to_id: "studio-83",
     });
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
   });
 
@@ -187,7 +203,45 @@ describe("PlanningService github_create_issue staging", () => {
       from_id: "studio-92",
       to_id: "studio-91",
     });
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain('"studio-90"');
+  });
+
+  it("does not overwrite an already staged canonical ID when a later placeholder guess collides with it", async () => {
+    const { tool } = makePlanningService([
+      {
+        repo: "fusupo/escapement-studio",
+        number: 84,
+        url: "https://github.com/fusupo/escapement-studio/issues/84",
+        title: "First issue",
+      },
+      {
+        repo: "fusupo/escapement-studio",
+        number: 85,
+        url: "https://github.com/fusupo/escapement-studio/issues/85",
+        title: "Second issue",
+      },
+    ]);
+
+    await executeCreateIssue(tool, {
+      repo: "fusupo/escapement-studio",
+      title: "First issue",
+      work_item_id: "studio-83",
+    });
+
+    const proposal = await executeCreateIssue(tool, {
+      repo: "fusupo/escapement-studio",
+      title: "Second issue",
+      work_item_id: "studio-84",
+      depends_on_ids: ["studio-84"],
+    });
+
+    expect(getCreateWorkItemIds(proposal)).toEqual(["studio-84", "studio-85"]);
+    expect(getEdge(proposal, "depends_on")).toEqual({
+      from_id: "studio-85",
+      to_id: "studio-84",
+    });
+    expectAlignedIssueBackedMutations(proposal);
   });
 
   it("rewrites previously accumulated child references when a later issue creation resolves the placeholder parent ID", async () => {
@@ -224,6 +278,50 @@ describe("PlanningService github_create_issue staging", () => {
       from_id: "studio-84",
       to_id: "studio-83",
     });
+    expectAlignedIssueBackedMutations(proposal);
+    expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
+  });
+
+  it("preserves previously resolved aliases when a later grouped create reuses the old placeholder", async () => {
+    const { tool } = makePlanningService([
+      {
+        repo: "fusupo/escapement-studio",
+        number: 83,
+        url: "https://github.com/fusupo/escapement-studio/issues/83",
+        title: "Epic",
+      },
+      {
+        repo: "fusupo/escapement-studio",
+        number: 84,
+        url: "https://github.com/fusupo/escapement-studio/issues/84",
+        title: "Child",
+      },
+    ]);
+
+    await executeCreateIssue(tool, {
+      repo: "fusupo/escapement-studio",
+      title: "Epic",
+      work_item_id: "studio-82",
+    });
+
+    const proposal = await executeCreateIssue(tool, {
+      repo: "fusupo/escapement-studio",
+      title: "Child",
+      work_item_id: "studio-82",
+      parent_id: "studio-82",
+      depends_on_ids: ["studio-82"],
+    });
+
+    expect(getCreateWorkItemIds(proposal)).toEqual(["studio-83", "studio-84"]);
+    expect(getEdge(proposal, "is_part_of")).toEqual({
+      from_id: "studio-84",
+      to_id: "studio-83",
+    });
+    expect(getEdge(proposal, "depends_on")).toEqual({
+      from_id: "studio-84",
+      to_id: "studio-83",
+    });
+    expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
   });
 });

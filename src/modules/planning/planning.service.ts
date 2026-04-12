@@ -644,7 +644,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         const stagedWorkItemIds = this.getStagedWorkItemIds(existingProposal);
         const requestedWorkItemId = params.work_item_id?.trim();
         const workItemId = deriveIssueWorkItemId(created.number);
-        this.rememberIssueIdAlias(requestedWorkItemId, workItemId);
+        this.rememberIssueIdAlias(requestedWorkItemId, workItemId, stagedWorkItemIds);
 
         const groupId = `issue-${created.number}`;
         const parentId = this.resolveIssueIdAlias(params.parent_id, stagedWorkItemIds);
@@ -1134,9 +1134,23 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private rememberIssueIdAlias(requestedId: string | null | undefined, finalId: string) {
+  private rememberIssueIdAlias(
+    requestedId: string | null | undefined,
+    finalId: string,
+    stagedWorkItemIds: ReadonlySet<string> = new Set(),
+  ) {
     const placeholderId = requestedId?.trim();
     if (!placeholderId || placeholderId === finalId) {
+      return;
+    }
+    // If the requested ID is already staged as a canonical work item from an
+    // earlier create, or already resolves to one, treat that existing staged ID
+    // as authoritative and do not overwrite the alias chain with a later guess.
+    if (stagedWorkItemIds.has(placeholderId)) {
+      return;
+    }
+    const existingResolvedId = this.resolveIssueIdAlias(placeholderId, stagedWorkItemIds);
+    if (existingResolvedId !== placeholderId && stagedWorkItemIds.has(existingResolvedId)) {
       return;
     }
     this.issueIdAliases.set(placeholderId, finalId);

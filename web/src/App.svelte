@@ -217,10 +217,6 @@
     graphContextMenu = { open: false, x: 0, y: 0, item: null };
   }
 
-  function leafState(state) {
-    return state?.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
-  }
-
   function normalizeLaunchEligibilityError(workItemId, message) {
     return {
       work_item_id: workItemId,
