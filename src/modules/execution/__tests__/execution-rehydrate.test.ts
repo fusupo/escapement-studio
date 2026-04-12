@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ExecutionService } from "../execution.service.js";
 import type { ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
+import { canonicalScratchpadPath } from "../../../lib/context-layout.js";
 
 function makeRun(runId: string, overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecord {
   return {
@@ -262,6 +263,78 @@ describe("ExecutionService activity persistence", () => {
     expect(persisted.activity_log.at(-1)).toMatchObject({
       kind: "user_message",
       message: "Can you explain what failed?",
+    });
+  });
+});
+
+describe("ExecutionService run detail rehydration", () => {
+  let artifactRoot: string;
+
+  beforeEach(() => {
+    artifactRoot = mkdtempSync(join(tmpdir(), "exec-detail-"));
+    mkdirSync(join(artifactRoot, "runs"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(artifactRoot, { recursive: true, force: true });
+  });
+
+  it("rehydrates recent run details from status.json, canonical scratchpads, and surviving worktrees", () => {
+    const runsDir = join(artifactRoot, "runs");
+    const worktreePath = join(artifactRoot, "worktrees", "studio-176-branch");
+    mkdirSync(worktreePath, { recursive: true });
+
+    const run = makeRun("run_detail", {
+      status: "completed",
+      updated_at: "2026-04-10T07:00:00.000Z",
+      worktree_path: worktreePath,
+      artifact_dir: join(runsDir, "run_detail"),
+      activity_log: [
+        { timestamp: "2026-04-10T06:00:00.000Z", kind: "user_message", message: "Please persist this run." },
+        { timestamp: "2026-04-10T06:05:00.000Z", kind: "agent_message", message: "Persistence is now durable." },
+      ],
+    });
+    writeRun(runsDir, run);
+
+    const canonicalPath = canonicalScratchpadPath(artifactRoot, run.work_item_id);
+    mkdirSync(dirname(canonicalPath), { recursive: true });
+    writeFileSync(canonicalPath, "canonical scratchpad content", "utf8");
+    writeFileSync(join(worktreePath, "SCRATCHPAD_studio_176.md"), [
+      "# Scratchpad",
+      "",
+      "## Implementation Plan",
+      "- [x] Persist run state",
+      "- [ ] Rehydrate detail endpoints",
+    ].join("\n"), "utf8");
+
+    const service = makeServiceWithEmptyBuffer(artifactRoot);
+    service.hydrateRecentRunsFromDisk();
+
+    expect(service.listRecentRuns().map((candidate) => candidate.run_id)).toEqual(["run_detail"]);
+    expect(service.getRunChatHistory("run_detail").messages).toEqual([
+      {
+        timestamp: "2026-04-10T06:00:00.000Z",
+        role: "user",
+        text: "Please persist this run.",
+      },
+      {
+        timestamp: "2026-04-10T06:05:00.000Z",
+        role: "assistant",
+        text: "Persistence is now durable.",
+      },
+    ]);
+    expect(service.getRunScratchpad("run_detail")).toEqual({
+      run_id: "run_detail",
+      content: "canonical scratchpad content",
+    });
+    expect(service.getRunChecklist("run_detail")).toEqual({
+      run_id: "run_detail",
+      items: [
+        { text: "Persist run state", checked: true },
+        { text: "Rehydrate detail endpoints", checked: false },
+      ],
+      completed: 1,
+      total: 2,
     });
   });
 });
