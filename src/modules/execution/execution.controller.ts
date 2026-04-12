@@ -6,6 +6,8 @@ import type {
   CleanupWorktreeDto,
   CloseMergedPullRequestResult,
   CreateExecutionPullRequestDto,
+  DeleteWorkItemDto,
+  DeleteWorkItemResult,
   FollowUpMessageDto,
   LaunchExecutionRunDto,
   ResolveDisambiguationDto,
@@ -100,6 +102,11 @@ export class ExecutionController {
   @Post("archive-and-close-merged")
   archiveAndCloseMergedPullRequest(@Body() body: TransitionWorkItemDto) {
     return this.executionService.archiveAndCloseMergedPullRequest(body.work_item_id);
+  }
+
+  @Post("delete-work-item")
+  deleteWorkItem(@Body() body: DeleteWorkItemDto): Promise<DeleteWorkItemResult> {
+    return this.executionService.deleteWorkItem(body);
   }
 
   @Get("runs/:runId/chat")

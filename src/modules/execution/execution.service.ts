@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger, MessageEvent, NotFoundException, OnModuleInit } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, MessageEvent, NotFoundException, OnModuleInit, forwardRef } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -28,6 +28,7 @@ import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
+import { PlansService } from "../plans/plans.service.js";
 import { SettingsService } from "../settings/settings.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
@@ -57,6 +58,8 @@ import type {
   LaunchExecutionRunResult,
   CleanupWorktreeDto,
   CleanupWorktreeResult,
+  DeleteWorkItemDto,
+  DeleteWorkItemResult,
   ResolveDisambiguationDto,
   ResolveDisambiguationResult,
   RunChatHistory,
@@ -92,6 +95,7 @@ export class ExecutionService implements OnModuleInit {
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
+    @Inject(forwardRef(() => PlansService)) private readonly plansService: PlansService,
   ) {
     this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
   }
@@ -2791,6 +2795,94 @@ export class ExecutionService implements OnModuleInit {
       this.workItemsService.update(workItemId, { archive_path: nextArchivePath });
     }
     return this.workItemsService.get(workItemId);
+  }
+
+  async deleteWorkItem(input: DeleteWorkItemDto): Promise<DeleteWorkItemResult> {
+    const workItemId = input.work_item_id?.trim();
+    if (!workItemId) {
+      throw new BadRequestException("work_item_id is required");
+    }
+    if (input.confirm_delete !== true) {
+      throw new BadRequestException("confirm_delete must be true");
+    }
+
+    const workItem = this.workItemsService.get(workItemId);
+    this.assertDeleteEligible(workItem);
+    this.assertNoActiveRunForWorkItem(workItemId);
+
+    const connectedEdges = this.workItemsService.getConnectedEdges(workItemId);
+    if (connectedEdges.length > 0 && input.acknowledge_connected_edges !== true) {
+      throw new BadRequestException(
+        `delete_work_item_requires_connected_edge_acknowledgement: ${workItemId}`,
+      );
+    }
+
+    const warnings: string[] = [];
+    let githubIssue: DeleteWorkItemResult["github_issue"] = {
+      attempted: false,
+      deleted: false,
+      fallback_used: false,
+      message: null,
+    };
+
+    try {
+      githubIssue = {
+        attempted: true,
+        deleted: true,
+        fallback_used: false,
+        message: null,
+      };
+      await this.githubService.deleteIssue(workItem.repo ?? "", Number(workItem.issue_number));
+    } catch (error) {
+      const message = this.getErrorMessage(error);
+      if (input.allow_graph_delete_without_github !== true) {
+        throw new BadRequestException(`github_issue_delete_failed: ${message}`);
+      }
+      githubIssue = {
+        attempted: true,
+        deleted: false,
+        fallback_used: true,
+        message,
+      };
+      warnings.push(`GitHub issue was not deleted: ${message}`);
+    }
+
+    const planCleanup = this.plansService.deletePlanArtifacts(workItemId);
+    const graphResult = this.workItemsService.deleteWithConnectedEdges(workItemId, connectedEdges.map((edge) => edge.id));
+
+    return {
+      deleted: true,
+      work_item: {
+        id: workItem.id,
+        name: workItem.name,
+        state: workItem.state,
+        repo: workItem.repo,
+        issue_number: workItem.issue_number,
+        issue_url: workItem.issue_url,
+      },
+      graph: graphResult,
+      github_issue: githubIssue,
+      plan_cleanup: planCleanup,
+      warnings,
+    };
+  }
+
+  private leafState(state: string): string {
+    return state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+  }
+
+  private assertDeleteEligible(workItem: WorkItemRecord): void {
+    const leafState = this.leafState(workItem.state);
+    const eligibleStates = new Set(["planned", "drafting", "ready"]);
+
+    if (workItem.kind !== "issue" || !workItem.repo || !workItem.issue_number) {
+      throw new BadRequestException(`delete_work_item_not_issue_backed: ${workItem.id}`);
+    }
+    if (!eligibleStates.has(leafState)) {
+      throw new BadRequestException(
+        `delete_work_item_ineligible_state: ${workItem.id} is ${workItem.state}; destructive delete is limited to planned, drafting, or ready items`,
+      );
+    }
   }
 
   /**

@@ -10,7 +10,7 @@ import {
   ensurePlanDir,
   planDir,
 } from "../../../lib/context-layout.js";
-import type { ExecutionDispatchPreview, ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
+import type { DeleteWorkItemResult, ExecutionDispatchPreview, ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
 import type { DispatchResult, WorkItemRecord, WorkItemState } from "../../graph/types.js";
 
 /**
@@ -28,6 +28,8 @@ interface HarnessService {
   workItemsService: {
     get: (id: string) => WorkItemRecord;
     update: (id: string, patch: Partial<WorkItemRecord>) => WorkItemRecord;
+    getConnectedEdges: (id: string) => Array<{ id: number; from_id: string; rel: string; to_id: string }>;
+    deleteWithConnectedEdges: (id: string, edgeIds: number[]) => { deleted: true; id: string; removed_edge_ids: number[] };
   };
   listRecentRuns: () => ExecutionRunRecord[];
 
@@ -39,6 +41,7 @@ interface HarnessService {
   // studio-87 close flow deps
   githubService: {
     closeIssue: ReturnType<typeof vi.fn>;
+    deleteIssue: ReturnType<typeof vi.fn>;
   };
   // studio-197 write-through
   githubBatchCache: {
@@ -56,6 +59,7 @@ interface HarnessService {
   closeMergedPullRequest: ExecutionService["closeMergedPullRequest"];
   archiveAndCloseMergedPullRequest: ExecutionService["archiveAndCloseMergedPullRequest"];
   cancelWorkItem: ExecutionService["cancelWorkItem"];
+  deleteWorkItem: ExecutionService["deleteWorkItem"];
   // Private helpers exposed via prototype for direct testing
   assertWorkItemInMergedPr: (id: string) => WorkItemRecord;
   assertNoActiveRunForWorkItem: (id: string) => void;
@@ -134,6 +138,10 @@ function makeService(params: {
   workItem?: WorkItemRecord;
   runs?: ExecutionRunRecord[];
   githubCloseIssue?: ReturnType<typeof vi.fn>;
+  githubDeleteIssue?: ReturnType<typeof vi.fn>;
+  connectedEdges?: Array<{ id: number; from_id: string; rel: string; to_id: string }>;
+  deleteWithConnectedEdges?: ReturnType<typeof vi.fn>;
+  deletePlanArtifacts?: ReturnType<typeof vi.fn>;
   updateImpl?: (id: string, patch: Partial<WorkItemRecord>) => WorkItemRecord;
   hsmDispatch?: ReturnType<typeof vi.fn>;
 }): HarnessService {
@@ -142,6 +150,7 @@ function makeService(params: {
 
   service.artifactRoot = params.artifactRoot;
   service.logger = { log: vi.fn(), warn: vi.fn() };
+  const connectedEdges = params.connectedEdges ?? [];
   service.workItemsService = {
     get: (id: string) => {
       if (id !== currentWorkItem.id) {
@@ -160,6 +169,13 @@ function makeService(params: {
       currentWorkItem = { ...currentWorkItem, ...patch, updated_at: "2026-04-09T00:00:01.000Z" };
       return currentWorkItem;
     },
+    getConnectedEdges: (id: string) => (id === currentWorkItem.id ? connectedEdges : []),
+    deleteWithConnectedEdges: (params.deleteWithConnectedEdges ?? vi.fn((id: string, edgeIds: number[]) => {
+      if (id !== currentWorkItem.id) {
+        throw new NotFoundException(`Work item not found: ${id}`);
+      }
+      return { deleted: true as const, id, removed_edge_ids: [...edgeIds].sort((a, b) => a - b) };
+    })) as HarnessService["workItemsService"]["deleteWithConnectedEdges"],
   };
 
   // studio-87 close-flow deps. recentRuns is the real in-memory buffer
@@ -179,6 +195,7 @@ function makeService(params: {
         assignees: [],
         body_hash: "hash",
       })),
+    deleteIssue: params.githubDeleteIssue ?? vi.fn(async (repo: string, issueNumber: number) => ({ repo, number: issueNumber, deleted: true })),
   };
   // Stub filesystem + event emission so we don't need real artifact dirs
   // or a live Subject. The real method delegates to node:fs / rxjs.
@@ -221,6 +238,9 @@ function makeService(params: {
     upsertIssue: vi.fn(),
     invalidate: vi.fn(),
     invalidateAll: vi.fn(),
+  };
+  (service as unknown as { plansService: { deletePlanArtifacts: ReturnType<typeof vi.fn> } }).plansService = {
+    deletePlanArtifacts: params.deletePlanArtifacts ?? vi.fn(() => ({ removed: false, path: null })),
   };
 
   return service;
@@ -295,6 +315,86 @@ describe("ADR 014 step 7: disposition flow", () => {
         );
       },
     );
+  });
+
+  describe("deleteWorkItem", () => {
+    it("deletes an eligible issue-backed work item, cleans plan artifacts, and removes connected edges", async () => {
+      const deletePlanArtifacts = vi.fn(() => ({ removed: true, path: "/tmp/plans/studio-157" }));
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "drafting" }),
+        connectedEdges: [
+          { id: 11, from_id: "studio-157", rel: "depends_on", to_id: "studio-200" },
+        ],
+        deletePlanArtifacts,
+      });
+
+      const result = await service.deleteWorkItem({
+        work_item_id: "studio-157",
+        confirm_delete: true,
+        acknowledge_connected_edges: true,
+      });
+
+      expect(service.githubService.deleteIssue).toHaveBeenCalledWith("fusupo/escapement-studio", 157);
+      expect(deletePlanArtifacts).toHaveBeenCalledWith("studio-157");
+      expect(service.workItemsService.deleteWithConnectedEdges).toHaveBeenCalledWith("studio-157", [11]);
+      expect(result).toMatchObject({
+        deleted: true,
+        graph: { deleted: true, removed_edge_ids: [11] },
+        github_issue: { attempted: true, deleted: true, fallback_used: false, message: null },
+        plan_cleanup: { removed: true, path: "/tmp/plans/studio-157" },
+        warnings: [],
+      } satisfies Partial<DeleteWorkItemResult>);
+    });
+
+    it("rejects delete when an active run exists", async () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "planned" }),
+        runs: [makeRun({ run_id: "exec_active", status: "running" })],
+      });
+
+      await expect(service.deleteWorkItem({ work_item_id: "studio-157", confirm_delete: true })).rejects.toThrow(
+        /cannot_dispose_work_item_active_run.*exec_active/,
+      );
+    });
+
+    it("requires explicit acknowledgement before deleting connected work items", async () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "ready" }),
+        connectedEdges: [{ id: 9, from_id: "studio-157", rel: "depends_on", to_id: "studio-200" }],
+      });
+
+      await expect(service.deleteWorkItem({ work_item_id: "studio-157", confirm_delete: true })).rejects.toThrow(
+        /delete_work_item_requires_connected_edge_acknowledgement/,
+      );
+    });
+
+    it("falls back to graph deletion when GitHub delete fails and fallback is explicitly allowed", async () => {
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "planned" }),
+        githubDeleteIssue: vi.fn(async () => {
+          throw new BadRequestException("gh command failed: not authorized");
+        }),
+      });
+
+      const result = await service.deleteWorkItem({
+        work_item_id: "studio-157",
+        confirm_delete: true,
+        allow_graph_delete_without_github: true,
+      });
+
+      expect(result.github_issue).toEqual({
+        attempted: true,
+        deleted: false,
+        fallback_used: true,
+        message: "gh command failed: not authorized",
+      });
+      expect(result.graph).toEqual({ deleted: true, id: "studio-157", removed_edge_ids: [] });
+      expect(result.warnings[0]).toContain("GitHub issue was not deleted");
+    });
   });
 
   describe("movePlanDirToArchives", () => {

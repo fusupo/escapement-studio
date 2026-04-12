@@ -287,6 +287,40 @@ export interface TransitionWorkItemDto {
   work_item_id: string;
 }
 
+export interface DeleteWorkItemDto {
+  work_item_id: string;
+  confirm_delete: boolean;
+  acknowledge_connected_edges?: boolean;
+  allow_graph_delete_without_github?: boolean;
+}
+
+export interface DeleteWorkItemResult {
+  deleted: true;
+  work_item: {
+    id: string;
+    name: string;
+    state: string;
+    repo: string | null;
+    issue_number: number | null;
+    issue_url: string | null;
+  };
+  graph: {
+    deleted: true;
+    removed_edge_ids: number[];
+  };
+  github_issue: {
+    attempted: boolean;
+    deleted: boolean;
+    fallback_used: boolean;
+    message: string | null;
+  };
+  plan_cleanup: {
+    removed: boolean;
+    path: string | null;
+  };
+  warnings: string[];
+}
+
 /**
  * studio-87: summary of a GitHub issue closed as part of the merged-PR
  * close flow. Populated when the work item is issue-backed (kind=issue,
