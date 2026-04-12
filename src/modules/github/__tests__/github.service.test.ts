@@ -271,3 +271,127 @@ describe("GitHubService reconciliation", () => {
     });
   });
 });
+
+describe("GitHubService batch list methods", () => {
+  it("lists pull requests with normalized fields and commands", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const runGhJson = vi.fn().mockResolvedValue([
+      {
+        number: 194,
+        url: "https://github.com/fusupo/escapement-studio/pull/194",
+        title: "Batch cache",
+        state: "CLOSED",
+        isDraft: false,
+        baseRefName: "develop",
+        headRefName: "studio-194-branch",
+        mergedAt: "2026-04-12T00:00:00.000Z",
+      },
+    ]);
+    (service as any).runGhJson = runGhJson;
+    (service as any).logger = { warn: vi.fn() };
+
+    const result = await service.listPullRequests("HTTPS://github.com/FUSUPO/escapement-studio/");
+
+    expect(runGhJson).toHaveBeenCalledWith([
+      "pr",
+      "list",
+      "--repo",
+      "fusupo/escapement-studio",
+      "--state",
+      "all",
+      "--limit",
+      "300",
+      "--json",
+      "number,url,title,state,isDraft,baseRefName,headRefName,mergedAt",
+    ]);
+    expect(result).toEqual([
+      {
+        number: 194,
+        state: "MERGED",
+        merged_at: "2026-04-12T00:00:00.000Z",
+        head_ref: "studio-194-branch",
+        base_ref: "develop",
+        url: "https://github.com/fusupo/escapement-studio/pull/194",
+        title: "Batch cache",
+        is_draft: false,
+      },
+    ]);
+  });
+
+  it("lists issues with normalized closed_at fields and empty responses", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const runGhJson = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          number: 194,
+          title: "Batch cache issue",
+          url: "https://github.com/fusupo/escapement-studio/issues/194",
+          state: "CLOSED",
+          closedAt: "2026-04-12T00:00:00.000Z",
+        },
+      ]);
+    (service as any).runGhJson = runGhJson;
+    (service as any).logger = { warn: vi.fn() };
+
+    expect(await service.listIssues("fusupo/escapement-studio")).toEqual([]);
+    expect(await service.listIssues("fusupo/escapement-studio")).toEqual([
+      {
+        number: 194,
+        state: "closed",
+        closed_at: "2026-04-12T00:00:00.000Z",
+        url: "https://github.com/fusupo/escapement-studio/issues/194",
+        title: "Batch cache issue",
+      },
+    ]);
+    expect(runGhJson).toHaveBeenLastCalledWith([
+      "issue",
+      "list",
+      "--repo",
+      "fusupo/escapement-studio",
+      "--state",
+      "all",
+      "--limit",
+      "500",
+      "--json",
+      "number,title,url,state,closedAt",
+    ]);
+  });
+
+  it("warns when batch list results hit the hard limits", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const logger = { warn: vi.fn() };
+    (service as any).logger = logger;
+    (service as any).runGhJson = vi.fn()
+      .mockResolvedValueOnce(Array.from({ length: 300 }, (_, index) => ({
+        number: index + 1,
+        url: `https://github.com/fusupo/escapement-studio/pull/${index + 1}`,
+        title: `PR ${index + 1}`,
+        state: "OPEN",
+        isDraft: false,
+        baseRefName: "develop",
+        headRefName: `branch-${index + 1}`,
+        mergedAt: null,
+      })))
+      .mockResolvedValueOnce(Array.from({ length: 500 }, (_, index) => ({
+        number: index + 1,
+        title: `Issue ${index + 1}`,
+        url: `https://github.com/fusupo/escapement-studio/issues/${index + 1}`,
+        state: "OPEN",
+        closedAt: null,
+      })));
+
+    await service.listPullRequests("fusupo/escapement-studio");
+    await service.listIssues("fusupo/escapement-studio");
+
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("propagates batch list failures", async () => {
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    (service as any).runGhJson = vi.fn().mockRejectedValue(new Error("gh failed"));
+
+    await expect(service.listPullRequests("fusupo/escapement-studio")).rejects.toThrow("gh failed");
+    await expect(service.listIssues("fusupo/escapement-studio")).rejects.toThrow("gh failed");
+  });
+});
