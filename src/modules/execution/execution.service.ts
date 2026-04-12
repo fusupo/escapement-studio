@@ -203,8 +203,7 @@ export class ExecutionService implements OnModuleInit {
    * exercise the rehydration path independently of `onModuleInit`.
    */
   hydrateRecentRunsFromDisk(): void {
-    const runsDir = join(this.artifactRoot, "runs");
-    const loaded = loadRunRecordsFromDisk(runsDir);
+    const loaded = loadRunRecordsForArtifactRoot(this.artifactRoot);
     const existingIds = new Set(this.recentRuns.map((run) => run.run_id));
     for (const run of loaded) {
       if (existingIds.has(run.run_id)) continue;
@@ -1421,12 +1420,21 @@ export class ExecutionService implements OnModuleInit {
   }
 
   private pushActivity(runId: string, kind: ActivityLogEntryKind, message: string, detail?: string) {
-    const run = this.getRun(runId);
-    if (!run) {
+    const index = this.recentRuns.findIndex((candidate) => candidate.run_id === runId);
+    if (index === -1) {
       return;
     }
-    const entry: ActivityLogEntry = { timestamp: this.now(), kind, message, ...(detail ? { detail } : {}) };
-    run.activity_log.push(entry);
+
+    const timestamp = this.now();
+    const entry: ActivityLogEntry = { timestamp, kind, message, ...(detail ? { detail } : {}) };
+    const nextRun: ExecutionRunRecord = {
+      ...this.recentRuns[index],
+      updated_at: timestamp,
+      activity_log: [...this.recentRuns[index]!.activity_log, entry],
+    };
+
+    this.recentRuns[index] = nextRun;
+    this.writeStatus(nextRun);
   }
 
   private resolveLaunchEligibility(

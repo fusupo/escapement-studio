@@ -25,6 +25,7 @@ interface HarnessService {
   warnings: string[];
   syncScratchpadToCanonical: ExecutionService["syncScratchpadToCanonical"];
   getRunScratchpad: ExecutionService["getRunScratchpad"];
+  getRunChecklist: ExecutionService["getRunChecklist"];
   writeScratchpad: (
     run: ExecutionRunRecord,
     node: ExecutionDispatchNodePreview,
@@ -188,6 +189,36 @@ describe("ExecutionService scratchpad canonical flow", () => {
       const service = makeService(tmpRoot);
       const result = service.getRunScratchpad("nonexistent");
       expect(result.content).toBe(null);
+    });
+  });
+
+  describe("getRunChecklist", () => {
+    it("reconstructs checklist state from the surviving worktree scratchpad", () => {
+      const run = makeRun({
+        worktree_path: worktree,
+        artifact_dir: join(tmpRoot, "runs", "exec_test"),
+      });
+      const service = makeService(tmpRoot, run);
+
+      writeFileSync(join(worktree, "SCRATCHPAD_studio_999.md"), [
+        "# Scratchpad",
+        "",
+        "## Implementation Plan",
+        "- [x] Finish persistence layer",
+        "- [ ] Verify restart hydration",
+        "",
+        "## Work Log",
+      ].join("\n"), "utf8");
+
+      expect(service.getRunChecklist("exec_test")).toEqual({
+        run_id: "exec_test",
+        items: [
+          { text: "Finish persistence layer", checked: true },
+          { text: "Verify restart hydration", checked: false },
+        ],
+        completed: 1,
+        total: 2,
+      });
     });
   });
 
