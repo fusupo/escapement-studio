@@ -1,9 +1,9 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { parseJsonArray } from "../../lib/manifest-core.js";
 import { GraphWriterService } from "./graph-writer.service.js";
 import { SQLiteService } from "./sqlite.service.js";
-import { deriveIssueWorkItemId, type CreateWorkItemDto, type MisalignedWorkItem, type UpdateWorkItemDto, type WorkItemRecord } from "./types.js";
+import { deriveIssueWorkItemId, type CreateWorkItemDto, type MisalignedWorkItem, type UpdateWorkItemDto, type WorkItemRecord, type WorkItemState } from "./types.js";
 
 interface RawWorkItemRecord {
   id: string;
@@ -24,6 +24,8 @@ interface RawWorkItemRecord {
 
 @Injectable()
 export class WorkItemsService {
+  private readonly logger = new Logger(WorkItemsService.name);
+
   constructor(
     @Inject(SQLiteService) private readonly sqlite: SQLiteService,
     @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
@@ -139,6 +141,18 @@ export class WorkItemsService {
       }
     }
     return misaligned;
+  }
+
+  /**
+   * Logged escape hatch for setting work item state directly, bypassing
+   * the HSM. Intended for migration tooling and exceptional recovery
+   * scenarios. All calls are logged with the provided reason.
+   *
+   * Production code should use `WorkItemHsmService.dispatch()` instead.
+   */
+  unsafeSetState(id: string, state: WorkItemState, reason: string): WorkItemRecord {
+    this.logger.warn(`unsafeSetState: ${id} → ${state} (reason: ${reason})`);
+    return this.update(id, { state });
   }
 
   delete(id: string): { deleted: true; id: string } {

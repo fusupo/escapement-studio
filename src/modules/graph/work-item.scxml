@@ -4,84 +4,88 @@
   version="1.0"
   datamodel="ecmascript"
   initial="pre_pr">
+  <!--
+    Canonical work-item lifecycle for Studio's HSM.
+
+    Notes:
+    - `pre_pr` is the composite superstate for all planning/execution work that
+      happens before a pull request exists.
+    - `pre_pr_history` is a shallow history node used by `deferred` to resume
+      the last active pre-PR child state.
+    - Runs remain separate entities. Their outcomes are projected into this
+      machine through `run.*` events rather than modeled as nested run states.
+    - This chart preserves the current Studio event/action contract used by
+      `WorkItemHsmService` and its tests.
+  -->
+
+  <!-- Pre-PR lifecycle: planning, drafting, execution, and run recovery. -->
   <state id="pre_pr" initial="planned">
     <history id="pre_pr_history" type="shallow">
       <transition target="planned" />
     </history>
 
-    <transition event="user.defer" target="deferred" />
+    <!-- Shared transitions inherited by all pre-PR substates. -->
+    <transition event="gh.pr_opened" target="open_pr" />
     <transition event="user.cancel" target="cancelled" />
+    <transition event="user.defer" target="deferred" action="rememberHistory" />
 
+    <!-- `planned`: issue exists, but drafting has not started yet. -->
     <state id="planned">
       <transition event="user.start_draft" target="drafting" />
+      <transition event="user.dispatch" target="in_progress" action="createRunRecord" />
     </state>
 
+    <!-- `drafting`: the scratchpad/plan is being authored or revised. -->
     <state id="drafting">
-      <invoke id="plan-drafter" />
-      <onentry>
-        <script>kickOffPlanDrafter()</script>
-      </onentry>
       <transition event="draft.completed" target="ready" />
-      <transition event="draft.failed" target="planned" />
+      <transition event="draft.failed" target="run_errored" />
     </state>
 
     <state id="ready">
       <transition event="user.start_draft" target="drafting" />
-      <transition event="user.dispatch" target="in_progress" />
+      <transition event="user.dispatch" target="in_progress" action="createRunRecord" />
     </state>
 
     <state id="in_progress">
-      <onentry>
-        <script>createRunRecord()</script>
-      </onentry>
-      <transition event="run.completed" cond="prExistsForBranch" target="../open_pr" />
-      <transition event="run.completed" target="ready" />
-      <transition event="run.failed" target="run_errored" />
-    </state>
-
-    <state id="run_errored">
-      <transition event="user.retry" target="ready" />
+      <transition event="run.completed" cond="pr_exists" target="open_pr" />
+      <transition event="run.completed" cond="!pr_exists" target="merged_pr" />
+      <transition event="run.error" target="run_errored" />
+      <transition event="user.investigate" target="ready" />
       <transition event="user.start_draft" target="drafting" />
     </state>
+
+    <!-- `run_errored`: the latest run failed and needs human intervention. -->
+    <state id="run_errored">
+      <transition event="user.retry" target="in_progress" action="createRunRecord" />
+      <transition event="user.investigate" target="ready" />
+      <transition event="user.resolve_disambiguation" target="ready" />
+    </state>
   </state>
 
-  <state id="open_pr">
-    <transition event="gh.pr_merged" target="merged_pr" />
-    <transition event="gh.pr_closed" target="closed" />
-    <transition event="user.cancel" target="cancelled" />
-  </state>
-
-  <state id="merged_pr">
-    <onentry>
-      <script>stampMeta('studio_post_merge_sync')</script>
-    </onentry>
-    <onexit>
-      <script>closeGhIssue()</script>
-    </onexit>
-    <transition event="user.finalize" target="done" />
-    <transition event="user.archive_and_finalize" target="archived" />
-  </state>
-
-  <state id="closed">
-    <transition event="gh.pr_reopened" target="open_pr" />
-    <transition event="user.start_draft" target="drafting" />
-    <transition event="user.finalize" target="done" />
-    <transition event="user.archive_and_finalize" target="archived" />
-    <transition event="user.cancel" target="cancelled" />
-  </state>
-
+  <!-- `deferred`: paused outside the active queue until resumed. -->
   <state id="deferred">
     <transition event="user.undefer" target="pre_pr_history" />
-    <transition event="user.cancel" target="cancelled" />
   </state>
 
-  <final id="done" />
+  <!-- `open_pr`: a pull request exists and is awaiting external outcome. -->
+  <state id="open_pr" onentry="stampMeta:studio_open_pr_sync">
+    <transition event="gh.pr_merged" target="merged_pr" />
+    <transition event="gh.issue_closed" target="closed" />
+  </state>
 
-  <final id="archived">
-    <onentry>
-      <script>runArchiver()</script>
-    </onentry>
-  </final>
+  <!-- `merged_pr`: merged successfully; finalize or archive next. -->
+  <state id="merged_pr" onentry="stampMeta:studio_post_merge_sync">
+    <transition event="user.finalize" target="done" action="closeGhIssue" />
+    <transition event="user.archive_and_finalize" target="archived" action="closeGhIssue,runArchiver" />
+  </state>
 
-  <final id="cancelled" />
+  <!-- `closed`: issue/PR closed without the normal merged disposition. -->
+  <state id="closed" onentry="stampMeta:studio_issue_close_sync">
+    <transition event="user.finalize" target="done" />
+    <transition event="user.archive_and_finalize" target="archived" action="runArchiver" />
+  </state>
+
+  <state id="done" final="true" />
+  <state id="archived" final="true" />
+  <state id="cancelled" final="true" />
 </scxml>

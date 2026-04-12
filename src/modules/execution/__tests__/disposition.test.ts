@@ -11,7 +11,7 @@ import {
   planDir,
 } from "../../../lib/context-layout.js";
 import type { ExecutionDispatchPreview, ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
-import type { WorkItemRecord, WorkItemState } from "../../graph/types.js";
+import type { DispatchResult, WorkItemRecord, WorkItemState } from "../../graph/types.js";
 
 /**
  * ADR 014 step 7: disposition flow for `merged_pr → done` and plan dir
@@ -31,6 +31,11 @@ interface HarnessService {
   };
   listRecentRuns: () => ExecutionRunRecord[];
 
+  // studio-196 HSM dispatch
+  hsmService: {
+    dispatch: ReturnType<typeof vi.fn>;
+  };
+
   // studio-87 close flow deps
   githubService: {
     closeIssue: ReturnType<typeof vi.fn>;
@@ -49,6 +54,19 @@ interface HarnessService {
   assertNoActiveRunForWorkItem: (id: string) => void;
   movePlanDirToArchives: (id: string) => { moved: boolean; archive_path: string | null };
   removeRunsForWorkItem: (id: string) => string[];
+}
+
+function makeDispatchResult(overrides: Partial<DispatchResult> = {}): DispatchResult {
+  return {
+    work_item_id: "studio-157",
+    prev_state: "merged_pr",
+    next_state: "done",
+    event: { type: "user.finalize" },
+    applied_actions: [],
+    mutation_applied: true,
+    rejected: false,
+    ...overrides,
+  };
 }
 
 function makeDispatchPreviewStub(): ExecutionDispatchPreview {
@@ -110,6 +128,7 @@ function makeService(params: {
   runs?: ExecutionRunRecord[];
   githubCloseIssue?: ReturnType<typeof vi.fn>;
   updateImpl?: (id: string, patch: Partial<WorkItemRecord>) => WorkItemRecord;
+  hsmDispatch?: ReturnType<typeof vi.fn>;
 }): HarnessService {
   const service = Object.create(ExecutionService.prototype) as HarnessService;
   let currentWorkItem = params.workItem ?? makeWorkItem();
@@ -159,6 +178,36 @@ function makeService(params: {
   service.writeStatus = vi.fn();
   service.emitRun = vi.fn();
   service.getPreview = vi.fn(() => makeDispatchPreviewStub()) as HarnessService["getPreview"];
+
+  // studio-196: default HSM dispatch mock — transitions to done for user.finalize.
+  // The mock updates currentWorkItem's state so workItemsService.get returns
+  // the post-transition snapshot.
+  service.hsmService = {
+    dispatch: params.hsmDispatch ?? vi.fn(async (_id: string, event: { type: string }) => {
+      const prevState = currentWorkItem.state;
+      const eventStateMap: Record<string, string> = {
+        "user.archive_and_finalize": "archived",
+        "user.cancel": "cancelled",
+        "user.finalize": "done",
+      };
+      const nextState = eventStateMap[event.type] ?? "done";
+      currentWorkItem = { ...currentWorkItem, state: nextState as WorkItemState, updated_at: "2026-04-09T00:00:01.000Z" };
+      return makeDispatchResult({
+        prev_state: prevState,
+        next_state: nextState as WorkItemState,
+        event: event as DispatchResult["event"],
+        applied_actions: prevState === "merged_pr"
+          ? (event.type === "user.archive_and_finalize"
+            ? ["closeGhIssue", "runArchiver"]
+            : ["closeGhIssue"])
+          : (event.type === "user.archive_and_finalize" ? ["runArchiver"] : []),
+        handler_data: prevState === "merged_pr" && currentWorkItem.kind === "issue" && currentWorkItem.issue_number
+          ? { closed_issue: { repo: currentWorkItem.repo, number: currentWorkItem.issue_number, url: currentWorkItem.issue_url, title: "Disposition test issue", state: "CLOSED" } }
+          : undefined,
+      });
+    }),
+  };
+
   return service;
 }
 
@@ -281,8 +330,8 @@ describe("ADR 014 step 7: disposition flow", () => {
     });
   });
 
-  describe("closeMergedPullRequest (studio-87 full close flow)", () => {
-    it("happy path: closes gh issue, transitions to done, removes runs, returns envelope", async () => {
+  describe("closeMergedPullRequest (studio-196 HSM dispatch flow)", () => {
+    it("happy path: dispatches user.finalize, removes runs, returns envelope", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
@@ -308,12 +357,9 @@ describe("ADR 014 step 7: disposition flow", () => {
       expect(result.dispatch_preview).toBeTruthy();
       expect(result.dispatch_preview.groups).toEqual([]);
 
-      // github.closeIssue called once with repo + issue number
-      expect(service.githubService.closeIssue).toHaveBeenCalledTimes(1);
-      expect(service.githubService.closeIssue).toHaveBeenCalledWith(
-        "fusupo/escapement-studio",
-        157,
-      );
+      // HSM dispatch called with correct event
+      expect(service.hsmService.dispatch).toHaveBeenCalledTimes(1);
+      expect(service.hsmService.dispatch).toHaveBeenCalledWith("studio-157", { type: "user.finalize" });
 
       // Matching run spliced, other run preserved
       expect(service.recentRuns.map((r) => r.run_id)).toEqual(["exec_other"]);
@@ -336,7 +382,7 @@ describe("ADR 014 step 7: disposition flow", () => {
       expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(false);
     });
 
-    it("non-issue-backed work item skips the github close step", async () => {
+    it("non-issue-backed work item returns null closed_issue from handler_data", async () => {
       const service = makeService({
         artifactRoot: tmpRoot,
         workItem: makeWorkItem({
@@ -350,16 +396,15 @@ describe("ADR 014 step 7: disposition flow", () => {
 
       expect(result.closed_issue).toBeNull();
       expect(result.work_item.state).toBe("done");
-      expect(service.githubService.closeIssue).not.toHaveBeenCalled();
     });
 
-    it("gh-close failure bubbles as BadRequestException and leaves state untouched", async () => {
-      const closeSpy = vi.fn(async () => {
-        throw new Error("gh not authenticated");
+    it("dispatch failure bubbles as-is and leaves runs intact", async () => {
+      const dispatchMock = vi.fn(async () => {
+        throw new BadRequestException("close_merged_failed_github_close: gh not authenticated");
       });
       const service = makeService({
         artifactRoot: tmpRoot,
-        githubCloseIssue: closeSpy,
+        hsmDispatch: dispatchMock,
         runs: [makeRun({ run_id: "exec_still_here", status: "completed" })],
       });
 
@@ -372,58 +417,6 @@ describe("ADR 014 step 7: disposition flow", () => {
       expect(service.workItemsService.get("studio-157").state).toBe("merged_pr");
       expect(service.recentRuns.map((r) => r.run_id)).toEqual(["exec_still_here"]);
       expect(service.writeStatus).not.toHaveBeenCalled();
-    });
-
-    it("state transition failure after a successful gh close surfaces and leaves runs intact", async () => {
-      const closeSpy = vi.fn(async (repo: string, issueNumber: number) => ({
-        repo,
-        number: issueNumber,
-        title: "t",
-        body: "",
-        url: "u",
-        state: "CLOSED",
-        labels: [],
-        assignees: [],
-        body_hash: "h",
-      }));
-      const updateImpl = vi.fn(() => {
-        throw new Error("db write failed");
-      });
-      const service = makeService({
-        artifactRoot: tmpRoot,
-        githubCloseIssue: closeSpy,
-        updateImpl,
-        runs: [makeRun({ run_id: "exec_retryable", status: "completed" })],
-      });
-
-      await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(/db write failed/);
-
-      // gh close did happen; the retry-safety contract says a second attempt
-      // re-runs the whole flow. Runs were not yet disposed because the
-      // finalizer runs AFTER the state transition.
-      expect(closeSpy).toHaveBeenCalledTimes(1);
-      expect(service.recentRuns.map((r) => r.run_id)).toEqual(["exec_retryable"]);
-      expect(service.writeStatus).not.toHaveBeenCalled();
-    });
-
-    it("idempotent retry when the work item is already done", async () => {
-      // Simulates a retry after a prior attempt got past the state
-      // transition but died in the finalizer. Guards must short-circuit,
-      // gh close must still run (idempotent), and the finalizer must run
-      // so leftover runs are disposed.
-      const service = makeService({
-        artifactRoot: tmpRoot,
-        workItem: makeWorkItem({ state: "done" }),
-        runs: [makeRun({ run_id: "exec_leftover", status: "completed" })],
-      });
-
-      const result = await service.closeMergedPullRequest("studio-157");
-
-      expect(result.work_item.state).toBe("done");
-      expect(result.removed_run_ids).toEqual(["exec_leftover"]);
-      expect(service.recentRuns).toEqual([]);
-      // gh close still ran (idempotent) even though work item was done
-      expect(service.githubService.closeIssue).toHaveBeenCalledTimes(1);
     });
 
     it("removes no runs when there are no matching recent runs", async () => {
@@ -439,21 +432,20 @@ describe("ADR 014 step 7: disposition flow", () => {
       expect(service.writeStatus).not.toHaveBeenCalled();
     });
 
-    it.each<WorkItemState>(["open_pr", "in_progress", "ready", "drafting", "planned"])(
-      "throws when state is %s (not merged_pr, not done)",
-      async (state) => {
-        const service = makeService({
-          artifactRoot: tmpRoot,
-          workItem: makeWorkItem({ state }),
-        });
-        await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(BadRequestException);
-        await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(
-          /work_item_not_in_merged_pr/,
-        );
-      },
-    );
+    it("throws when HSM rejects the event (invalid source state)", async () => {
+      const dispatchMock = vi.fn(async () =>
+        makeDispatchResult({ rejected: true, prev_state: "open_pr", next_state: "open_pr", mutation_applied: false }),
+      );
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "open_pr" }),
+        hsmDispatch: dispatchMock,
+      });
+      await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(BadRequestException);
+      await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(/cannot_dispose/);
+    });
 
-    it("throws when an active run exists", async () => {
+    it("throws when an active run exists (pre-dispatch guard)", async () => {
       const service = makeService({
         artifactRoot: tmpRoot,
         runs: [makeRun({ status: "running" })],
@@ -461,6 +453,31 @@ describe("ADR 014 step 7: disposition flow", () => {
       await expect(service.closeMergedPullRequest("studio-157")).rejects.toThrow(
         /cannot_dispose_work_item_active_run/,
       );
+      // HSM dispatch should NOT have been called
+      expect(service.hsmService.dispatch).not.toHaveBeenCalled();
+    });
+
+    it("from closed state: dispatches user.finalize, no closeGhIssue in actions", async () => {
+      const dispatchMock = vi.fn(async () =>
+        makeDispatchResult({
+          prev_state: "closed",
+          next_state: "done",
+          applied_actions: [], // closed -> done has no closeGhIssue
+        }),
+      );
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "closed" }),
+        hsmDispatch: dispatchMock,
+      });
+      // After dispatch, workItemsService.get must return the post-transition state.
+      (service as any).workItemsService.get = vi.fn(() => makeWorkItem({ state: "done" }));
+
+      const result = await service.closeMergedPullRequest("studio-157");
+
+      expect(result.work_item.state).toBe("done");
+      expect(result.closed_issue).toBeNull();
+      expect(dispatchMock).toHaveBeenCalledWith("studio-157", { type: "user.finalize" });
     });
   });
 
@@ -510,56 +527,70 @@ describe("ADR 014 step 7: disposition flow", () => {
     });
   });
 
-  describe("archiveAndCloseMergedPullRequest", () => {
-    it("moves the plan dir, sets archive_path, and transitions to done", async () => {
-      ensurePlanDir(tmpRoot, "studio-157");
-      writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "approved plan", "utf8");
+  describe("archiveAndCloseMergedPullRequest (studio-196 HSM dispatch flow)", () => {
+    it("dispatches user.archive_and_finalize, removes runs, returns envelope", async () => {
+      const archiveResult = {
+        archive_path: archiveDir(tmpRoot, "studio-157"),
+        readme_path: null,
+        archived_run_ids: [],
+        skipped_run_ids: [],
+      };
+      const dispatchMock = vi.fn(async () =>
+        makeDispatchResult({
+          next_state: "archived" as WorkItemState,
+          event: { type: "user.archive_and_finalize" },
+          applied_actions: ["closeGhIssue", "runArchiver"],
+          handler_data: {
+            closed_issue: { repo: "fusupo/escapement-studio", number: 157, url: "https://github.com/fusupo/escapement-studio/issues/157", title: "Disposition test issue", state: "CLOSED" },
+            archive_result: archiveResult,
+          },
+        }),
+      );
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        hsmDispatch: dispatchMock,
+        workItem: makeWorkItem({ state: "merged_pr" }),
+      });
+      // Update the workItem state to match what dispatch returns
+      (service as any).workItemsService.get = vi.fn(() =>
+        makeWorkItem({ state: "archived" as WorkItemState, archive_path: archiveDir(tmpRoot, "studio-157") }),
+      );
 
-      const service = makeService({ artifactRoot: tmpRoot });
       const result = await service.archiveAndCloseMergedPullRequest("studio-157");
 
-      expect(result.work_item.state).toBe("done");
+      expect(result.work_item.state).toBe("archived");
       expect(result.work_item.archive_path).toBe(archiveDir(tmpRoot, "studio-157"));
-      // Plan dir moved
-      expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(false);
-      expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(true);
-      expect(
-        readFileSync(join(archiveDir(tmpRoot, "studio-157"), "SCRATCHPAD_studio_157.md"), "utf8"),
-      ).toBe("approved plan");
+      expect(result.closed_issue).toEqual({
+        repo: "fusupo/escapement-studio",
+        number: 157,
+        url: "https://github.com/fusupo/escapement-studio/issues/157",
+        title: "Disposition test issue",
+        state: "CLOSED",
+      });
+      expect(result.archive).toEqual(archiveResult);
+      expect(dispatchMock).toHaveBeenCalledWith("studio-157", { type: "user.archive_and_finalize" });
     });
 
-    it("state transition still happens when the plan dir was already gone", async () => {
-      // No ensurePlanDir call — archive step will be a no-op
-      const service = makeService({ artifactRoot: tmpRoot });
-      const result = await service.archiveAndCloseMergedPullRequest("studio-157");
-
-      expect(result.work_item.state).toBe("done");
-      // Run archival still establishes the archive location even when the
-      // plan dir was already absent.
-      expect(result.work_item.archive_path).toBe(archiveDir(tmpRoot, "studio-157"));
-      expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(true);
-    });
-
-    it("guards reject BEFORE the filesystem is touched", async () => {
-      ensurePlanDir(tmpRoot, "studio-157");
-      writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
-
+    it("throws when HSM rejects the event (invalid source state)", async () => {
+      const dispatchMock = vi.fn(async () =>
+        makeDispatchResult({
+          rejected: true,
+          prev_state: "open_pr",
+          next_state: "open_pr",
+          mutation_applied: false,
+        }),
+      );
       const service = makeService({
         artifactRoot: tmpRoot,
         workItem: makeWorkItem({ state: "open_pr" }),
+        hsmDispatch: dispatchMock,
       });
       await expect(service.archiveAndCloseMergedPullRequest("studio-157")).rejects.toThrow(
-        /work_item_not_in_merged_pr/,
+        /cannot_dispose/,
       );
-      // Plan dir still present — guard ran before filesystem
-      expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(true);
-      expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(false);
     });
 
-    it("active-run guard rejects BEFORE the filesystem is touched", async () => {
-      ensurePlanDir(tmpRoot, "studio-157");
-      writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
-
+    it("active-run guard rejects BEFORE dispatch is called", async () => {
       const service = makeService({
         artifactRoot: tmpRoot,
         runs: [makeRun({ status: "running" })],
@@ -567,12 +598,44 @@ describe("ADR 014 step 7: disposition flow", () => {
       await expect(service.archiveAndCloseMergedPullRequest("studio-157")).rejects.toThrow(
         /cannot_dispose_work_item_active_run/,
       );
-      expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(true);
+      expect(service.hsmService.dispatch).not.toHaveBeenCalled();
+    });
+
+    it("from closed state: dispatches archive_and_finalize, runs runArchiver but NOT closeGhIssue", async () => {
+      const archiveResult = {
+        archive_path: archiveDir(tmpRoot, "studio-157"),
+        readme_path: null,
+        archived_run_ids: [],
+        skipped_run_ids: [],
+      };
+      const dispatchMock = vi.fn(async () =>
+        makeDispatchResult({
+          prev_state: "closed",
+          next_state: "archived" as WorkItemState,
+          event: { type: "user.archive_and_finalize" },
+          applied_actions: ["runArchiver"], // NO closeGhIssue from closed
+          handler_data: { archive_result: archiveResult },
+        }),
+      );
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "closed" }),
+        hsmDispatch: dispatchMock,
+      });
+      (service as any).workItemsService.get = vi.fn(() =>
+        makeWorkItem({ state: "archived" as WorkItemState, archive_path: archiveDir(tmpRoot, "studio-157") }),
+      );
+
+      const result = await service.archiveAndCloseMergedPullRequest("studio-157");
+
+      expect(result.work_item.state).toBe("archived");
+      expect(result.closed_issue).toBeNull(); // No closeGhIssue from closed
+      expect(result.archive).toEqual(archiveResult);
     });
   });
 
   describe("cancelWorkItem", () => {
-    it("moves the plan dir and transitions to cancelled", () => {
+    it("moves the plan dir and transitions to cancelled", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
@@ -581,7 +644,7 @@ describe("ADR 014 step 7: disposition flow", () => {
         // Valid source state for cancellation (per VALID_HUMAN_TRANSITIONS)
         workItem: makeWorkItem({ state: "drafting" }),
       });
-      const result = service.cancelWorkItem("studio-157");
+      const result = await service.cancelWorkItem("studio-157");
 
       expect(result.state).toBe("cancelled");
       expect(result.archive_path).toBe(archiveDir(tmpRoot, "studio-157"));
@@ -589,18 +652,18 @@ describe("ADR 014 step 7: disposition flow", () => {
       expect(existsSync(archiveDir(tmpRoot, "studio-157"))).toBe(true);
     });
 
-    it("handles the no-plan-dir case by still transitioning", () => {
+    it("handles the no-plan-dir case by still transitioning", async () => {
       const service = makeService({
         artifactRoot: tmpRoot,
         workItem: makeWorkItem({ state: "planned" }),
       });
-      const result = service.cancelWorkItem("studio-157");
+      const result = await service.cancelWorkItem("studio-157");
 
       expect(result.state).toBe("cancelled");
       expect(result.archive_path).toBe(null);
     });
 
-    it("active-run guard rejects before the filesystem is touched", () => {
+    it("active-run guard rejects before the filesystem is touched", async () => {
       ensurePlanDir(tmpRoot, "studio-157");
       writeFileSync(canonicalScratchpadPath(tmpRoot, "studio-157"), "plan", "utf8");
 
@@ -609,7 +672,7 @@ describe("ADR 014 step 7: disposition flow", () => {
         workItem: makeWorkItem({ state: "in_progress" }),
         runs: [makeRun({ status: "running" })],
       });
-      expect(() => service.cancelWorkItem("studio-157")).toThrow(/cannot_dispose_work_item_active_run/);
+      await expect(service.cancelWorkItem("studio-157")).rejects.toThrow(/cannot_dispose_work_item_active_run/);
       expect(existsSync(planDir(tmpRoot, "studio-157"))).toBe(true);
     });
   });

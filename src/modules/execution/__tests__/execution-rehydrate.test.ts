@@ -144,6 +144,7 @@ describe("ExecutionService.onModuleInit", () => {
     (service as any).recentRuns = [];
     (service as any).recentRunLimit = 16;
     (service as any).workItemReconciler = reconcilerStub;
+    (service as any).hsmService = { registerActionHandler: vi.fn() };
 
     await service.onModuleInit();
 
@@ -171,6 +172,7 @@ describe("ExecutionService.onModuleInit", () => {
         throw new Error("reconciler boom");
       }),
     };
+    (service as any).hsmService = { registerActionHandler: vi.fn() };
 
     await service.onModuleInit();
 

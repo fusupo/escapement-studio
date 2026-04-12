@@ -25,6 +25,7 @@ import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
+import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { SettingsService } from "../settings/settings.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
@@ -85,6 +86,7 @@ export class ExecutionService implements OnModuleInit {
   constructor(
     @Inject(GraphService) private readonly graphService: GraphService,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
+    @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
@@ -119,6 +121,73 @@ export class ExecutionService implements OnModuleInit {
         `Failed to hydrate recentRuns from disk: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+
+    // studio-196: register HSM action handlers for disposition flows.
+    this.hsmService.registerActionHandler("closeGhIssue", async (workItem, _event, ctx) => {
+      if (workItem.kind !== "issue" || !workItem.repo || !workItem.issue_number) {
+        return; // Not issue-backed; skip.
+      }
+      try {
+        const details = await this.githubService.closeIssue(workItem.repo, workItem.issue_number);
+        ctx.handler_data.closed_issue = {
+          repo: details.repo,
+          number: details.number,
+          url: details.url,
+          title: details.title,
+          state: details.state,
+        };
+      } catch (error) {
+        throw new BadRequestException(
+          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
+        );
+      }
+    });
+
+    this.hsmService.registerActionHandler("runArchiver", async (workItem, _event, ctx) => {
+      // Pre-capture run snapshot before any mutation.
+      const runSnapshot = this.captureRunSnapshotForWorkItem(workItem.id);
+
+      // Move plan dir to archives.
+      const moveResult = this.movePlanDirToArchives(workItem.id);
+
+      // Archive run artifacts + README.
+      let archiveResult: ArchiveRunArtifactsResult;
+      try {
+        archiveResult = archiveRunArtifactsForWorkItem(this.artifactRoot, workItem, {
+          runs: runSnapshot,
+          onWarn: (message) => this.logger.warn(message),
+        });
+      } catch (error) {
+        const message = this.getErrorMessage(error);
+        if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
+          throw new BadRequestException(message);
+        }
+        throw error;
+      }
+
+      // Stamp archive meta into the runtime context meta so the HSM
+      // persists it in the same mutation batch as the state transition.
+      const archivePath =
+        archiveResult.archive_path ?? moveResult.archive_path ?? workItem.archive_path;
+      const studioArchive: StudioArchiveMeta = {
+        archived_at: this.now(),
+        readme_path: archiveResult.readme_path,
+        archived_run_ids: archiveResult.archived_run_ids,
+        skipped_run_ids: archiveResult.skipped_run_ids,
+      };
+      ctx.meta.studio_archive = studioArchive;
+
+      // Set archive_path on the work item via patch_overrides.
+      ctx.patch_overrides.archive_path = archivePath;
+
+      // Surface archive results for the response envelope.
+      ctx.handler_data.archive_result = {
+        archive_path: archivePath,
+        readme_path: archiveResult.readme_path,
+        archived_run_ids: archiveResult.archived_run_ids,
+        skipped_run_ids: archiveResult.skipped_run_ids,
+      };
+    });
   }
 
   /**
@@ -350,7 +419,7 @@ export class ExecutionService implements OnModuleInit {
       return { accepted: false, run };
     }
 
-    const launchState = this.markWorkItemInProgressOnLaunch(workItem);
+    const launchState = await this.markWorkItemInProgressOnLaunch(workItem);
     const run = this.createRunRecord({
       workItem: launchState.workItem,
       branch: node.branch,
@@ -477,23 +546,29 @@ export class ExecutionService implements OnModuleInit {
     this.appendEvent(nextRun, { type: "pull_request_created", pull_request: pullRequest });
     this.writeSummary(nextRun);
 
-    // Update work item: set state to open_pr and store PR metadata
+    // Update work item: dispatch HSM event for state transition, then
+    // write non-state fields (branch, meta.pull_request) separately.
     try {
-      const existingMeta = workItem.meta ?? {};
+      const prPayload = {
+        number: pullRequest.number,
+        url: pullRequest.url,
+        title: pullRequest.title,
+        is_draft: pullRequest.is_draft,
+        head_ref: pullRequest.head_ref,
+        base_ref: pullRequest.base_ref,
+        created_at: pullRequest.created_at,
+      };
+      await this.hsmService.dispatch(run.work_item_id, {
+        type: "gh.pr_opened",
+        pull_request: prPayload,
+      });
+      // Write additional fields that the HSM doesn't manage.
+      const existingMeta = this.workItemsService.get(run.work_item_id).meta ?? {};
       this.workItemsService.update(run.work_item_id, {
-        state: "open_pr",
         branch: run.branch,
         meta: {
           ...existingMeta,
-          pull_request: {
-            number: pullRequest.number,
-            url: pullRequest.url,
-            title: pullRequest.title,
-            is_draft: pullRequest.is_draft,
-            head_ref: pullRequest.head_ref,
-            base_ref: pullRequest.base_ref,
-            created_at: pullRequest.created_at,
-          },
+          pull_request: prPayload,
         },
       });
     } catch (updateError) {
@@ -531,8 +606,19 @@ export class ExecutionService implements OnModuleInit {
     // ADR 014 step 3: post-merge sync lands on 'merged_pr', not 'done'.
     // 'merged_pr' is a stable resting state that the disposition flow
     // (ADR 014 step 7) will transition to 'done' after archival completes.
+    // HSM handles the state transition; non-state fields follow separately.
+    await this.hsmService.dispatch(workItem.id, {
+      type: "gh.pr_merged",
+      pull_request: {
+        number: pullRequest.number,
+        url: pullRequest.url,
+        title: pullRequest.title,
+        head_ref: pullRequest.head_ref,
+        base_ref: pullRequest.base_ref,
+        merged_at: pullRequest.merged_at,
+      },
+    });
     this.workItemsService.update(workItem.id, {
-      state: "merged_pr",
       actual_files: actualFilesSelection.files,
       branch: nextBranch,
       archive_path: nextArchivePath,
@@ -2243,7 +2329,7 @@ export class ExecutionService implements OnModuleInit {
     }
   }
 
-  private markWorkItemInProgressOnLaunch(workItem: WorkItemRecord): { workItem: WorkItemRecord; transitioned: boolean } {
+  private async markWorkItemInProgressOnLaunch(workItem: WorkItemRecord): Promise<{ workItem: WorkItemRecord; transitioned: boolean }> {
     // ADR 014 step 5: only launchable states transition to in_progress. The
     // eligibility safety check `launchable_state` already rejects anything
     // else before this method is reached; this guard is defensive.
@@ -2256,8 +2342,9 @@ export class ExecutionService implements OnModuleInit {
       return { workItem, transitioned: false };
     }
 
+    await this.hsmService.dispatch(workItem.id, { type: "user.dispatch" });
     return {
-      workItem: this.workItemsService.update(workItem.id, { state: "in_progress" }),
+      workItem: this.workItemsService.get(workItem.id),
       transitioned: true,
     };
   }
@@ -2275,14 +2362,15 @@ export class ExecutionService implements OnModuleInit {
    * is rich enough to distinguish "plan valid" from "plan needs rework"
    * (the latter going to `drafting`).
    */
-  transitionInProgressToReady(workItemId: string): WorkItemRecord {
+  async transitionInProgressToReady(workItemId: string): Promise<WorkItemRecord> {
     const workItem = this.workItemsService.get(workItemId);
     if (workItem.state !== "in_progress") {
       throw new BadRequestException(
         `Cannot transition ${workItemId} from ${workItem.state} to ready (requires in_progress)`,
       );
     }
-    return this.workItemsService.update(workItemId, { state: "ready" });
+    await this.hsmService.dispatch(workItemId, { type: "user.investigate" });
+    return this.workItemsService.get(workItemId);
   }
 
   /**
@@ -2293,14 +2381,15 @@ export class ExecutionService implements OnModuleInit {
    * operator-triggered in step 5 — automatic failure classification is
    * deferred to step 7 (run disposition).
    */
-  transitionInProgressToDrafting(workItemId: string): WorkItemRecord {
+  async transitionInProgressToDrafting(workItemId: string): Promise<WorkItemRecord> {
     const workItem = this.workItemsService.get(workItemId);
     if (workItem.state !== "in_progress") {
       throw new BadRequestException(
         `Cannot transition ${workItemId} from ${workItem.state} to drafting (requires in_progress)`,
       );
     }
-    return this.workItemsService.update(workItemId, { state: "drafting" });
+    await this.hsmService.dispatch(workItemId, { type: "user.start_draft" });
+    return this.workItemsService.get(workItemId);
   }
 
   /**
@@ -2346,51 +2435,23 @@ export class ExecutionService implements OnModuleInit {
    * `syncMergedPullRequest` including a post-close `dispatch_preview`.
    */
   async closeMergedPullRequest(workItemId: string): Promise<CloseMergedPullRequestResult> {
-    const initialWorkItem = this.workItemsService.get(workItemId);
+    // Pre-dispatch guard: refuse while a run is live (HSM doesn't know about runs).
+    this.assertNoActiveRunForWorkItem(workItemId);
 
-    // Idempotent short-circuit: if the work item is already `done`, the
-    // previous attempt got past the state transition but may have failed
-    // during the finalizer. Skip the guards + state update, still run the
-    // finalizer so any leftover run records get disposed.
-    const alreadyDone = initialWorkItem.state === "done";
-    if (!alreadyDone) {
-      this.assertWorkItemInMergedPr(workItemId);
-      this.assertNoActiveRunForWorkItem(workItemId);
+    const result = await this.hsmService.dispatch(workItemId, { type: "user.finalize" });
+
+    if (result.rejected) {
+      throw new BadRequestException(
+        `cannot_dispose: HSM rejected user.finalize from state ${result.prev_state}`,
+      );
     }
 
-    // Step 3: close the linked GitHub issue (issue-backed work items only).
-    // gh issue close is idempotent — closing an already-closed issue is a
-    // no-op per the gh CLI contract, so retries after a partial failure
-    // are safe. A failure here bubbles as BadRequestException and leaves
-    // the work item in `merged_pr` for another attempt.
-    let closedIssue: ClosedGitHubIssueSummary | null = null;
-    if (initialWorkItem.kind === "issue" && initialWorkItem.repo && initialWorkItem.issue_number) {
-      try {
-        const details = await this.githubService.closeIssue(
-          initialWorkItem.repo,
-          initialWorkItem.issue_number,
-        );
-        closedIssue = {
-          repo: details.repo,
-          number: details.number,
-          url: details.url,
-          title: details.title,
-          state: details.state,
-        };
-      } catch (error) {
-        throw new BadRequestException(
-          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
-        );
-      }
-    }
-
-    // Step 4: state transition (skipped on the already-done retry path).
-    const updatedWorkItem = alreadyDone
-      ? initialWorkItem
-      : this.workItemsService.update(workItemId, { state: "done" });
-
-    // Step 5: finalizer — splice runs and stamp disposed_at on disk.
+    // Post-dispatch finalizer: dispose matching runs.
     const removedRunIds = this.removeRunsForWorkItem(workItemId);
+
+    // Build the response envelope.
+    const updatedWorkItem = this.workItemsService.get(workItemId);
+    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
 
     return {
       work_item: {
@@ -2553,104 +2614,30 @@ export class ExecutionService implements OnModuleInit {
   async archiveAndCloseMergedPullRequest(
     workItemId: string,
   ): Promise<ArchiveAndCloseMergedPullRequestResult> {
-    const initialWorkItem = this.workItemsService.get(workItemId);
+    // Pre-dispatch guard.
+    this.assertNoActiveRunForWorkItem(workItemId);
 
-    // Step 1: idempotent short-circuit when the previous attempt got past
-    // the state transition but failed in the finalizer. Skip guards +
-    // state update, still run gh close (idempotent) and the finalizer.
-    const alreadyDone = initialWorkItem.state === "done";
-    if (!alreadyDone) {
-      // Steps 2 + 3: source state + active-run guards.
-      this.assertWorkItemInMergedPr(workItemId);
-      this.assertNoActiveRunForWorkItem(workItemId);
+    const result = await this.hsmService.dispatch(workItemId, {
+      type: "user.archive_and_finalize",
+    });
+
+    if (result.rejected) {
+      throw new BadRequestException(
+        `cannot_dispose: HSM rejected user.archive_and_finalize from state ${result.prev_state}`,
+      );
     }
 
-    // Step 4: capture a run snapshot BEFORE any mutation so the archiver
-    // can operate on the authoritative run list even after the finalizer
-    // stamps `disposed_at` (default disk scans skip disposed records,
-    // which would otherwise make a retry see an empty list).
-    const runSnapshot = this.captureRunSnapshotForWorkItem(workItemId);
-
-    // Step 5: gh issue close (issue-backed work items only). Errors here
-    // bubble as BadRequestException BEFORE any filesystem mutation so the
-    // retry can re-attempt the whole flow.
-    let closedIssue: ClosedGitHubIssueSummary | null = null;
-    if (initialWorkItem.kind === "issue" && initialWorkItem.repo && initialWorkItem.issue_number) {
-      try {
-        const details = await this.githubService.closeIssue(
-          initialWorkItem.repo,
-          initialWorkItem.issue_number,
-        );
-        closedIssue = {
-          repo: details.repo,
-          number: details.number,
-          url: details.url,
-          title: details.title,
-          state: details.state,
-        };
-      } catch (error) {
-        throw new BadRequestException(
-          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
-        );
-      }
-    }
-
-    // Step 6: move the plan dir into `archives/<slug>/` if it still
-    // exists. A no-op when a prior retry already moved it — the state
-    // update downstream will still run with whatever archive_path the
-    // work item already carries. `archive_already_exists` from the
-    // destination collision path bubbles as BadRequestException.
-    const moveResult = this.movePlanDirToArchives(workItemId);
-
-    // Step 7: archive run artifacts + README. Bypass the
-    // `archiveRunArtifacts` wrapper so we can reuse the pre-captured
-    // snapshot (avoiding a redundant disk re-scan that would drop
-    // disposed runs on retry) and skip the wrapper's active-run guard
-    // which we already ran above.
-    let archiveResult: ArchiveRunArtifactsResult;
-    try {
-      archiveResult = archiveRunArtifactsForWorkItem(this.artifactRoot, initialWorkItem, {
-        runs: runSnapshot,
-        onWarn: (message) => this.logger.warn(message),
-      });
-    } catch (error) {
-      const message = this.getErrorMessage(error);
-      if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
-        throw new BadRequestException(message);
-      }
-      throw error;
-    }
-
-    // Step 8: state transition (skipped on the already-done retry path).
-    // Shallow-merge the archive audit block into `meta` alongside any
-    // existing `studio_post_merge_sync` block from the earlier
-    // merged_pr transition.
-    const archivePath = archiveResult.archive_path ?? moveResult.archive_path ?? initialWorkItem.archive_path;
-    const studioArchive: StudioArchiveMeta = {
-      archived_at: this.now(),
-      readme_path: archiveResult.readme_path,
-      archived_run_ids: archiveResult.archived_run_ids,
-      skipped_run_ids: archiveResult.skipped_run_ids,
-    };
-    const nextMeta: Record<string, unknown> = {
-      ...initialWorkItem.meta,
-      studio_archive: studioArchive,
-    };
-
-    const updatedWorkItem = alreadyDone
-      ? this.workItemsService.update(workItemId, {
-          archive_path: archivePath,
-          meta: nextMeta,
-        })
-      : this.workItemsService.update(workItemId, {
-          state: "done",
-          archive_path: archivePath,
-          meta: nextMeta,
-        });
-
-    // Step 9: finalizer — splice matching runs out of recentRuns and
-    // stamp `disposed_at` on each `status.json`.
+    // Post-dispatch finalizer.
     const removedRunIds = this.removeRunsForWorkItem(workItemId);
+
+    const updatedWorkItem = this.workItemsService.get(workItemId);
+    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
+    const archiveData = result.handler_data?.archive_result as {
+      archive_path: string;
+      readme_path: string | null;
+      archived_run_ids: string[];
+      skipped_run_ids: Array<{ run_id: string; reason: string }>;
+    } | undefined;
 
     return {
       work_item: {
@@ -2664,11 +2651,11 @@ export class ExecutionService implements OnModuleInit {
       },
       closed_issue: closedIssue,
       removed_run_ids: removedRunIds,
-      archive: {
-        archive_path: archiveResult.archive_path,
-        readme_path: archiveResult.readme_path,
-        archived_run_ids: archiveResult.archived_run_ids,
-        skipped_run_ids: archiveResult.skipped_run_ids,
+      archive: archiveData ?? {
+        archive_path: updatedWorkItem.archive_path ?? "",
+        readme_path: null,
+        archived_run_ids: [],
+        skipped_run_ids: [],
       },
       dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
     };
@@ -2722,13 +2709,16 @@ export class ExecutionService implements OnModuleInit {
    * `planned`, `drafting`, `ready`, `in_progress`, `open_pr` (the `cancelled`
    * row in `VALID_HUMAN_TRANSITIONS`).
    */
-  cancelWorkItem(workItemId: string): WorkItemRecord {
+  async cancelWorkItem(workItemId: string): Promise<WorkItemRecord> {
     this.assertNoActiveRunForWorkItem(workItemId);
     const moveResult = this.movePlanDirToArchives(workItemId);
-    return this.workItemsService.update(workItemId, {
-      state: "cancelled",
-      archive_path: moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path,
-    });
+    await this.hsmService.dispatch(workItemId, { type: "user.cancel" });
+    // Write archive_path separately — the HSM doesn't manage this field.
+    const nextArchivePath = moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path;
+    if (nextArchivePath) {
+      this.workItemsService.update(workItemId, { archive_path: nextArchivePath });
+    }
+    return this.workItemsService.get(workItemId);
   }
 
   /**

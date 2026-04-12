@@ -1,95 +1,245 @@
-import { describe, expect, it, vi } from "vitest";
-import { HsmActionHandlers, type HsmActionContext, type WorkItemHsmEvent } from "../hsm-action-handlers.js";
-import { HsmGuardHandlers } from "../hsm-guard-handlers.js";
+import { Logger } from "@nestjs/common";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GraphWriterService } from "../graph-writer.service.js";
 import { WorkItemHsmService } from "../work-item-hsm.service.js";
-import type { WorkItemRecord, WorkItemState } from "../types.js";
+import type { DispatchResult, WorkItemHsmEvent, WorkItemRecord, WorkItemState } from "../types.js";
+import { WorkItemsService } from "../work-items.service.js";
 
-function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
+function makeWorkItem(state: WorkItemState, meta: Record<string, unknown> = {}): WorkItemRecord {
   return {
-    id: "studio-202",
-    name: "HSM action handler wiring",
+    id: "studio-200",
+    name: "HSM test",
     kind: "issue",
-    state: "planned",
+    state,
     repo: "fusupo/escapement-studio",
-    issue_number: 202,
-    issue_url: "https://github.com/fusupo/escapement-studio/issues/202",
+    issue_number: 200,
+    issue_url: "https://github.com/fusupo/escapement-studio/issues/200",
     scope_hint: null,
-    branch: "studio-202-branch",
+    branch: "studio-200-branch",
     archive_path: null,
     predicted_files: [],
     actual_files: [],
-    meta: {},
-    updated_at: "2026-04-12T00:00:00.000Z",
-    ...overrides,
+    meta,
+    updated_at: "2026-04-12T00:00:00Z",
   };
 }
 
-function makeHarness(initialState: WorkItemState = "planned") {
-  let current = makeWorkItem({ state: initialState });
-  const workItemsService = {
+function createHarness(initialState: WorkItemState, meta: Record<string, unknown> = {}) {
+  let current = makeWorkItem(initialState, meta);
+
+  const workItems = {
     get: vi.fn(() => current),
-    update: vi.fn((_id: string, patch: Partial<WorkItemRecord>) => {
-      current = { ...current, ...patch, meta: patch.meta ?? current.meta };
-      return current;
+  } as unknown as WorkItemsService;
+
+  const graphWriter = {
+    apply: vi.fn(({ mutations }: { mutations: Array<{ id: string; patch: Partial<WorkItemRecord> }> }) => {
+      const patch = mutations[0]?.patch ?? {};
+      current = { ...current, ...patch };
+      return {
+        status: "applied",
+        proposal_id: null,
+        applied_mutation_ids: ["u1"],
+        previous_graph_version: "0",
+        new_graph_version: "1",
+      };
     }),
+  } as unknown as GraphWriterService;
+
+  const service = new WorkItemHsmService(workItems, graphWriter);
+  service.onModuleInit();
+
+  return {
+    service,
+    graphWriter,
+    getCurrent: () => current,
   };
-
-  const actions = Object.create(HsmActionHandlers.prototype) as HsmActionHandlers;
-  actions.createRunRecord = vi.fn(async () => ({ output: { run_id: "exec_1" } }));
-  actions.stampMeta = vi.fn((blockName: string) => async (ctx: HsmActionContext) => ({
-    patch: {
-      meta: {
-        ...ctx.workItem.meta,
-        [blockName]: { at: ctx.now(), ...(ctx.event.payload ?? {}) },
-      },
-    },
-  }));
-  actions.closeGhIssue = vi.fn(async () => ({}));
-  actions.runArchiver = vi.fn(async () => ({ patch: { archive_path: "/tmp/archive/studio-202" } }));
-  actions.kickOffPlanDrafter = vi.fn(() => ({ completion: Promise.resolve(), cancel: vi.fn(), sessionId: "draft-1" }));
-
-  const guards = Object.create(HsmGuardHandlers.prototype) as HsmGuardHandlers;
-  guards.prExistsForBranch = vi.fn(async () => true);
-
-  const service = new WorkItemHsmService(
-    workItemsService as never,
-    actions,
-    guards,
-  );
-
-  return { service, actions, guards, workItemsService, getCurrent: () => current };
 }
 
 describe("WorkItemHsmService", () => {
-  it("starts the drafter invoke on planned -> drafting", async () => {
-    const harness = makeHarness("planned");
+  const loggerDebugSpy = vi.spyOn(Logger.prototype, "debug").mockImplementation(() => undefined);
 
-    const result = await harness.service.dispatch("studio-202", { type: "user.start_draft" });
-
-    expect(result.nextState).toBe("drafting");
-    expect(harness.actions.kickOffPlanDrafter).toHaveBeenCalledTimes(1);
+  beforeEach(() => {
+    loggerDebugSpy.mockClear();
   });
 
-  it("routes run.completed through the PR-existence guard", async () => {
-    const harness = makeHarness("in_progress");
-
-    const result = await harness.service.dispatch("studio-202", { type: "run.completed" });
-
-    expect(harness.guards.prExistsForBranch).toHaveBeenCalledTimes(1);
-    expect(result.nextState).toBe("open_pr");
+  afterEach(() => {
+    loggerDebugSpy.mockClear();
   });
 
-  it("applies the merged-pr entry action registry", async () => {
-    const harness = makeHarness("open_pr");
-    const event: WorkItemHsmEvent = {
-      type: "gh.pr_merged",
-      payload: { pull_request: { number: 202, url: "https://example.test/pr/202" } },
-    };
+  it("parses the canonical SCXML chart on module init", () => {
+    const harness = createHarness("planned");
+    expect(harness.service.getEnabledEvents("studio-200")).toContain("user.start_draft");
+  });
 
-    const result = await harness.service.dispatch("studio-202", event);
+  it("fails loudly on malformed SCXML", () => {
+    const service = new WorkItemHsmService({ get: vi.fn() } as unknown as WorkItemsService, {
+      apply: vi.fn(),
+    } as unknown as GraphWriterService);
 
-    expect(result.nextState).toBe("merged_pr");
-    expect(harness.actions.stampMeta).toHaveBeenCalledWith("studio_post_merge_sync");
-    expect(harness.getCurrent().meta).toHaveProperty("studio_post_merge_sync");
+    Object.defineProperty(service, "chartPath", { value: __filename, writable: false });
+    expect(() => service.onModuleInit()).toThrow();
+  });
+
+  it("dispatches user.start_draft from planned to pre_pr.drafting with one update mutation", async () => {
+    const harness = createHarness("planned");
+
+    const result = await harness.service.dispatch("studio-200", { type: "user.start_draft" });
+
+    expect(result.next_state).toBe("pre_pr.drafting");
+    expect(result.mutation_applied).toBe(true);
+    expect((harness.graphWriter.apply as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect((harness.graphWriter.apply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatchObject({
+      mutations: [{ kind: "update_work_item", id: "studio-200", patch: { state: "pre_pr.drafting" } }],
+    });
+  });
+
+  it("rejects illegal events without mutation and logs a debug rejection", async () => {
+    const harness = createHarness("planned");
+
+    const result = await harness.service.dispatch("studio-200", { type: "user.finalize" });
+
+    expect(result.rejected).toBe(true);
+    expect(result.mutation_applied).toBe(false);
+    expect(harness.graphWriter.apply).not.toHaveBeenCalled();
+    expect(loggerDebugSpy).toHaveBeenCalledWith(expect.stringContaining("rejected by HSM"));
+  });
+
+  it("rehydrates from pre_pr.in_progress and opens a PR state with stamped meta", async () => {
+    const harness = createHarness("pre_pr.in_progress");
+
+    const result = await harness.service.dispatch("studio-200", {
+      type: "run.completed",
+      run_id: "run-1",
+      pr_exists: true,
+    });
+
+    expect(result.next_state).toBe("open_pr");
+    expect(result.applied_actions).toContain("stampMeta:studio_open_pr_sync");
+    expect(harness.getCurrent().meta).toMatchObject({
+      studio_open_pr_sync: {
+        source_event: "run.completed",
+      },
+    });
+  });
+
+  it("returns the enabled user events for merged_pr", () => {
+    const harness = createHarness("merged_pr");
+    expect(harness.service.getEnabledEvents("studio-200")).toEqual([
+      "user.finalize",
+      "user.archive_and_finalize",
+    ]);
+  });
+
+  const transitionCases: Array<[WorkItemState, WorkItemHsmEvent, WorkItemState]> = [
+    ["planned", { type: "user.start_draft" }, "pre_pr.drafting"],
+    ["pre_pr.drafting", { type: "draft.completed" }, "pre_pr.ready"],
+    ["pre_pr.drafting", { type: "draft.failed", reason: "boom" }, "pre_pr.run_errored"],
+    ["pre_pr.ready", { type: "user.dispatch" }, "pre_pr.in_progress"],
+    ["pre_pr.in_progress", { type: "run.error", run_id: "r1", reason: "boom" }, "pre_pr.run_errored"],
+    ["pre_pr.run_errored", { type: "user.retry" }, "pre_pr.in_progress"],
+    ["pre_pr.run_errored", { type: "user.investigate" }, "pre_pr.ready"],
+    ["pre_pr.run_errored", { type: "user.resolve_disambiguation" }, "pre_pr.ready"],
+    ["pre_pr.in_progress", { type: "run.completed", run_id: "r2", pr_exists: false }, "merged_pr"],
+    ["pre_pr.ready", { type: "user.defer" }, "deferred"],
+    ["pre_pr.ready", { type: "user.cancel" }, "cancelled"],
+    ["open_pr", { type: "gh.pr_merged", pull_request: { number: 7 } }, "merged_pr"],
+    ["open_pr", { type: "gh.issue_closed", issue: { number: 200 } }, "closed"],
+    ["merged_pr", { type: "user.finalize" }, "done"],
+    ["merged_pr", { type: "user.archive_and_finalize" }, "archived"],
+    ["closed", { type: "user.finalize" }, "done"],
+    ["closed", { type: "user.archive_and_finalize" }, "archived"],
+  ];
+
+  it.each(transitionCases)("transitions %s via %o to %s", async (from, event, expected) => {
+    const harness = createHarness(from);
+    const result = await harness.service.dispatch("studio-200", event);
+    expect(result.next_state).toBe(expected);
+  });
+
+  it("restores pre_pr history on user.undefer", async () => {
+    const harness = createHarness("deferred", {
+      studio_hsm: {
+        deferred_from_state: "pre_pr.ready",
+      },
+    });
+
+    const result = await harness.service.dispatch("studio-200", { type: "user.undefer" });
+
+    expect(result.next_state).toBe("pre_pr.ready");
+    expect(harness.getCurrent().meta).toMatchObject({ studio_hsm: {} });
+  });
+
+  describe("action handler registry (studio-196)", () => {
+    it("registered async handler is called during dispatch", async () => {
+      const harness = createHarness("merged_pr");
+      const handler = vi.fn(async () => {});
+      harness.service.registerActionHandler("closeGhIssue", handler);
+
+      await harness.service.dispatch("studio-200", { type: "user.finalize" });
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "studio-200" }),
+        { type: "user.finalize" },
+        expect.objectContaining({ meta: expect.any(Object), handler_data: expect.any(Object) }),
+      );
+    });
+
+    it("handler that throws prevents state write", async () => {
+      const harness = createHarness("merged_pr");
+      harness.service.registerActionHandler("closeGhIssue", async () => {
+        throw new Error("gh close failed");
+      });
+
+      await expect(harness.service.dispatch("studio-200", { type: "user.finalize" })).rejects.toThrow(
+        "gh close failed",
+      );
+
+      // State unchanged — graphWriter.apply never called
+      expect(harness.graphWriter.apply).not.toHaveBeenCalled();
+      expect(harness.getCurrent().state).toBe("merged_pr");
+    });
+
+    it("handler_data populated by handler is returned in DispatchResult", async () => {
+      const harness = createHarness("merged_pr");
+      harness.service.registerActionHandler("closeGhIssue", async (_wi, _ev, ctx) => {
+        ctx.handler_data.closed_issue = { repo: "test/repo", number: 42 };
+      });
+
+      const result = await harness.service.dispatch("studio-200", { type: "user.finalize" });
+
+      expect(result.handler_data).toEqual({ closed_issue: { repo: "test/repo", number: 42 } });
+    });
+
+    it("patch_overrides from handler are merged into the mutation", async () => {
+      const harness = createHarness("merged_pr");
+      harness.service.registerActionHandler("runArchiver", async (_wi, _ev, ctx) => {
+        ctx.patch_overrides.archive_path = "/archives/studio-200";
+      });
+
+      // Use archive_and_finalize which triggers runArchiver (and closeGhIssue on merged_pr)
+      harness.service.registerActionHandler("closeGhIssue", async () => {});
+      await harness.service.dispatch("studio-200", { type: "user.archive_and_finalize" });
+
+      const appliedCall = (harness.graphWriter.apply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(appliedCall.mutations[0].patch).toMatchObject({
+        state: "archived",
+        archive_path: "/archives/studio-200",
+      });
+    });
+
+    it("throws when registering a duplicate handler name", () => {
+      const harness = createHarness("planned");
+      harness.service.registerActionHandler("closeGhIssue", async () => {});
+      expect(() => harness.service.registerActionHandler("closeGhIssue", async () => {})).toThrow(
+        /already registered/,
+      );
+    });
+
+    it("handler_data is undefined when no handler populates it", async () => {
+      const harness = createHarness("planned");
+      const result = await harness.service.dispatch("studio-200", { type: "user.start_draft" });
+      expect(result.handler_data).toBeUndefined();
+    });
   });
 });

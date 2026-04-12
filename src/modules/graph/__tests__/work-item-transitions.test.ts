@@ -50,14 +50,14 @@ function makeController(initialState: WorkItemState = "planned") {
   } as unknown as WorkItemsService;
 
   const executionService = {
-    transitionInProgressToReady: vi.fn((id: string) => {
+    transitionInProgressToReady: vi.fn(async (id: string) => {
       if (current.state !== "in_progress") {
         throw new BadRequestException(`Cannot transition ${id} from ${current.state} to ready`);
       }
       current = { ...current, state: "ready" };
       return current;
     }),
-    cancelWorkItem: vi.fn((_id: string) => {
+    cancelWorkItem: vi.fn(async (_id: string) => {
       current = { ...current, state: "cancelled" };
       return current;
     }),
@@ -94,19 +94,19 @@ describe("WorkItemsController.transition", () => {
     ];
 
     for (const [from, to] of allowed) {
-      it(`permits ${from} → ${to}`, () => {
+      it(`permits ${from} → ${to}`, async () => {
         const harness = makeController(from);
-        const result = harness.controller.transition("studio-153", { to });
+        const result = await harness.controller.transition("studio-153", { to });
         expect(result.state).toBe(to);
       });
     }
   });
 
   describe("in_progress → ready delegation", () => {
-    it("delegates in_progress → ready to ExecutionService.transitionInProgressToReady", () => {
+    it("delegates in_progress → ready to ExecutionService.transitionInProgressToReady", async () => {
       const harness = makeController("in_progress");
 
-      const result = harness.controller.transition("studio-153", { to: "ready" });
+      const result = await harness.controller.transition("studio-153", { to: "ready" });
 
       expect(harness.executionService.transitionInProgressToReady).toHaveBeenCalledWith("studio-153");
       expect(harness.workItemsService.update).not.toHaveBeenCalled();
@@ -120,10 +120,10 @@ describe("WorkItemsController.transition", () => {
     // state update.
     const sources: WorkItemState[] = ["planned", "drafting", "ready", "in_progress", "open_pr"];
     for (const from of sources) {
-      it(`delegates ${from} → cancelled to ExecutionService.cancelWorkItem`, () => {
+      it(`delegates ${from} → cancelled to ExecutionService.cancelWorkItem`, async () => {
         const harness = makeController(from);
 
-        const result = harness.controller.transition("studio-153", { to: "cancelled" });
+        const result = await harness.controller.transition("studio-153", { to: "cancelled" });
 
         expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith("studio-153");
         expect(harness.workItemsService.update).not.toHaveBeenCalled();
@@ -146,9 +146,9 @@ describe("WorkItemsController.transition", () => {
     ];
 
     for (const [from, to] of disallowed) {
-      it(`rejects ${from} → ${to}`, () => {
+      it(`rejects ${from} → ${to}`, async () => {
         const harness = makeController(from);
-        expect(() => harness.controller.transition("studio-153", { to })).toThrow(
+        await expect(harness.controller.transition("studio-153", { to })).rejects.toThrow(
           BadRequestException,
         );
       });
@@ -156,9 +156,9 @@ describe("WorkItemsController.transition", () => {
   });
 
   describe("input validation", () => {
-    it("rejects a missing `to` field", () => {
+    it("rejects a missing `to` field", async () => {
       const harness = makeController("planned");
-      expect(() => harness.controller.transition("studio-153", {} as { to: WorkItemState })).toThrow(
+      await expect(harness.controller.transition("studio-153", {} as { to: WorkItemState })).rejects.toThrow(
         /to.*required/,
       );
     });

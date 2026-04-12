@@ -40,10 +40,15 @@ interface HarnessDrafterService {
   draft(workItem: WorkItemRecord, issueBody: string | null): Promise<PlanDraftEnvelope>;
 }
 
+interface HarnessHsmService {
+  dispatch(workItemId: string, event: { type: string }): Promise<{ mutation_applied: boolean }>;
+}
+
 interface Harness {
   service: PlansService;
   workItems: Map<string, WorkItemRecord>;
   updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }>;
+  dispatchCalls: Array<{ workItemId: string; event: { type: string } }>;
   templates: StudioIssueTemplate[];
   artifactRoot: string;
   drafter: HarnessDrafterService;
@@ -111,9 +116,16 @@ function makeHarness(
 ): Harness {
   const workItems = new Map<string, WorkItemRecord>([[initial.id, initial]]);
   const updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }> = [];
+  const dispatchCalls: Array<{ workItemId: string; event: { type: string } }> = [];
   const drafterCalls: Array<{ workItem: WorkItemRecord; issueBody: string | null }> = [];
   const templates: StudioIssueTemplate[] = [makeTemplate("feature", "Feature Request")];
   const artifactRoot = mkdtempSync(join(tmpdir(), "studio-154-"));
+
+  // Map HSM event types to the resulting state for the mock.
+  const eventToState: Record<string, WorkItemState> = {
+    "user.start_draft": "drafting",
+    "draft.completed": "ready",
+  };
 
   const workItemsService: HarnessWorkItemsService = {
     get(id: string): WorkItemRecord {
@@ -134,6 +146,25 @@ function makeHarness(
       return next;
     },
   };
+
+  const hsmService: HarnessHsmService = {
+    async dispatch(workItemId: string, event: { type: string }) {
+      dispatchCalls.push({ workItemId, event });
+      const current = workItems.get(workItemId);
+      if (!current) throw new NotFoundException(`Work item not found: ${workItemId}`);
+      const nextState = eventToState[event.type];
+      if (nextState) {
+        const next: WorkItemRecord = {
+          ...current,
+          state: nextState,
+          updated_at: new Date("2026-04-09T00:00:05.000Z").toISOString(),
+        };
+        workItems.set(workItemId, next);
+      }
+      return { mutation_applied: true };
+    },
+  };
+
   const templateService: HarnessTemplateService = {
     listTemplates: () => templates,
   };
@@ -148,12 +179,13 @@ function makeHarness(
 
   const service = Object.create(PlansService.prototype) as PlansService;
   (service as unknown as { workItemsService: HarnessWorkItemsService }).workItemsService = workItemsService;
+  (service as unknown as { hsmService: HarnessHsmService }).hsmService = hsmService;
   (service as unknown as { templateService: HarnessTemplateService }).templateService = templateService;
   (service as unknown as { drafter: HarnessDrafterService }).drafter = drafter;
   (service as unknown as { artifactRoot: string }).artifactRoot = artifactRoot;
   (service as unknown as { logger: { log: (m: string) => void } }).logger = { log: () => {} };
 
-  return { service, workItems, updateCalls, templates, artifactRoot, drafter, drafterCalls };
+  return { service, workItems, updateCalls, dispatchCalls, templates, artifactRoot, drafter, drafterCalls };
 }
 
 function cleanup(h: Harness) {
@@ -179,10 +211,12 @@ describe("PlansService.prepare", () => {
     expect(harness.drafterCalls[0].workItem.id).toBe("studio-154");
     expect(harness.drafterCalls[0].issueBody).toBe("Mocked issue body from fixture.");
 
-    // Two update calls: predicted_files refresh, then state transition
+    // One update call for predicted_files refresh; state transition via HSM dispatch
     expect(harness.updateCalls).toEqual([
       { id: "studio-154", patch: { predicted_files: ["src/foo.ts", "src/bar.ts"] } },
-      { id: "studio-154", patch: { state: "drafting" } },
+    ]);
+    expect(harness.dispatchCalls).toEqual([
+      { workItemId: "studio-154", event: { type: "user.start_draft" } },
     ]);
 
     // Scratchpad contains drafted content (not the legacy stub placeholders)
@@ -252,9 +286,10 @@ describe("PlansService.prepare", () => {
     // No predicted_files update — current value preserved
     const predictedUpdate = harness.updateCalls.find((c) => c.patch.predicted_files !== undefined);
     expect(predictedUpdate).toBeUndefined();
-    // State transition still happens
-    const stateUpdate = harness.updateCalls.find((c) => c.patch.state === "drafting");
-    expect(stateUpdate).toBeDefined();
+    // State transition via HSM dispatch still happens
+    expect(harness.dispatchCalls).toEqual([
+      { workItemId: "studio-154", event: { type: "user.start_draft" } },
+    ]);
   });
 
   it("refreshes predicted_files from drafter envelope.affected_files", async () => {
@@ -457,55 +492,57 @@ describe("PlansService.approve", () => {
     harness.workItems.set(workItem.id, { ...workItem, state: "drafting" });
   }
 
-  it("transitions drafting → ready and records approver metadata", () => {
+  it("transitions drafting → ready and records approver metadata", async () => {
     harness = makeHarness(makeWorkItem({ state: "drafting" }));
     primeDraft(harness.workItems.get("studio-154")!, ["src/foo.ts"]);
     harness.updateCalls.length = 0; // clear the primeDraft set() noise
 
-    const result = harness.service.approve("studio-154", { approved_by: "alice" });
+    const result = await harness.service.approve("studio-154", { approved_by: "alice" });
 
     expect(result.metadata.state).toBe("ready");
     expect(result.metadata.approved_by).toBe("alice");
     expect(typeof result.metadata.approved_at).toBe("string");
-    // The last update call should be the state transition to ready
-    const stateUpdate = harness.updateCalls.find((c) => c.patch.state === "ready");
-    expect(stateUpdate).toBeDefined();
+    // State transition via HSM dispatch
+    expect(harness.dispatchCalls).toContainEqual({
+      workItemId: "studio-154",
+      event: { type: "draft.completed" },
+    });
   });
 
-  it("defaults approved_by to 'local' when dto omits it", () => {
+  it("defaults approved_by to 'local' when dto omits it", async () => {
     harness = makeHarness(makeWorkItem({ state: "drafting" }));
     primeDraft(harness.workItems.get("studio-154")!, ["src/foo.ts"]);
 
-    const result = harness.service.approve("studio-154");
+    const result = await harness.service.approve("studio-154");
 
     expect(result.metadata.approved_by).toBe("local");
   });
 
-  it("refines predicted_files from ## Affected Files and returns diff", () => {
+  it("refines predicted_files from ## Affected Files and returns diff", async () => {
     const workItem = makeWorkItem({ state: "drafting", predicted_files: ["old.ts", "shared.ts"] });
     harness = makeHarness(workItem);
     primeDraft(workItem, ["shared.ts", "new.ts"]);
     harness.updateCalls.length = 0;
 
-    const result = harness.service.approve("studio-154");
+    const result = await harness.service.approve("studio-154");
 
     expect(result.predicted_files_diff).toEqual({
       added: ["new.ts"],
       removed: ["old.ts"],
       unchanged: ["shared.ts"],
     });
-    // predicted_files update call came first, then state transition to ready
+    // predicted_files update call came first, then state transition via HSM
     const predictedUpdate = harness.updateCalls.find((c) => c.patch.predicted_files !== undefined);
     expect(predictedUpdate?.patch.predicted_files).toEqual(["shared.ts", "new.ts"]);
   });
 
-  it("leaves predicted_files unchanged when ## Affected Files is empty", () => {
+  it("leaves predicted_files unchanged when ## Affected Files is empty", async () => {
     const workItem = makeWorkItem({ state: "drafting", predicted_files: ["keep.ts"] });
     harness = makeHarness(workItem);
     primeDraft(workItem, []); // empty Affected Files
     harness.updateCalls.length = 0;
 
-    const result = harness.service.approve("studio-154");
+    const result = await harness.service.approve("studio-154");
 
     expect(result.predicted_files_diff).toEqual({
       added: [],
@@ -519,17 +556,17 @@ describe("PlansService.approve", () => {
 
   const rejectedStates: WorkItemState[] = ["planned", "ready", "in_progress", "open_pr", "merged_pr", "done", "deferred", "cancelled"];
   for (const state of rejectedStates) {
-    it(`rejects approve when state is ${state}`, () => {
+    it(`rejects approve when state is ${state}`, async () => {
       harness = makeHarness(makeWorkItem({ state }));
-      expect(() => harness.service.approve("studio-154")).toThrow(BadRequestException);
+      await expect(harness.service.approve("studio-154")).rejects.toThrow(BadRequestException);
     });
   }
 
-  it("throws NotFoundException when the canonical scratchpad is missing", () => {
+  it("throws NotFoundException when the canonical scratchpad is missing", async () => {
     harness = makeHarness(makeWorkItem({ state: "drafting" }));
     // Ensure plan dir exists but not scratchpad
     ensurePlanDir(harness.artifactRoot, "studio-154");
-    expect(() => harness.service.approve("studio-154")).toThrow(NotFoundException);
+    await expect(harness.service.approve("studio-154")).rejects.toThrow(NotFoundException);
   });
 });
 
@@ -540,7 +577,7 @@ describe("PlansService.reopen", () => {
     if (harness) cleanup(harness);
   });
 
-  it("transitions ready → drafting and clears approver metadata", () => {
+  it("transitions ready → drafting and clears approver metadata", async () => {
     harness = makeHarness(makeWorkItem({ state: "ready" }));
     ensurePlanDir(harness.artifactRoot, "studio-154");
     // Seed metadata with an approved state
@@ -559,19 +596,23 @@ describe("PlansService.reopen", () => {
     writeFileSync(metadataPath, JSON.stringify(approved), "utf8");
     writeFileSync(canonicalScratchpadPath(harness.artifactRoot, "studio-154"), "# Plan", "utf8");
 
-    const result = harness.service.reopen("studio-154");
+    const result = await harness.service.reopen("studio-154");
 
     expect(result.metadata.state).toBe("drafting");
     expect(result.metadata.approved_at).toBeNull();
     expect(result.metadata.approved_by).toBeNull();
-    expect(harness.updateCalls).toEqual([{ id: "studio-154", patch: { state: "drafting" } }]);
+    // State transition via HSM dispatch, no direct update calls for state
+    expect(harness.dispatchCalls).toEqual([
+      { workItemId: "studio-154", event: { type: "user.start_draft" } },
+    ]);
+    expect(harness.updateCalls).toEqual([]);
   });
 
   const rejectedStates: WorkItemState[] = ["planned", "drafting", "in_progress", "open_pr", "merged_pr", "done", "deferred", "cancelled"];
   for (const state of rejectedStates) {
-    it(`rejects reopen when state is ${state}`, () => {
+    it(`rejects reopen when state is ${state}`, async () => {
       harness = makeHarness(makeWorkItem({ state }));
-      expect(() => harness.service.reopen("studio-154")).toThrow(BadRequestException);
+      await expect(harness.service.reopen("studio-154")).rejects.toThrow(BadRequestException);
     });
   }
 });
@@ -640,7 +681,7 @@ describe("PlansService lifecycle (integration)", () => {
     );
 
     // 2. approve
-    const afterApprove = harness.service.approve("studio-154", { approved_by: "marc" });
+    const afterApprove = await harness.service.approve("studio-154", { approved_by: "marc" });
     expect(afterApprove.metadata.state).toBe("ready");
     expect(afterApprove.metadata.approved_by).toBe("marc");
     expect(afterApprove.predicted_files_diff?.added).toEqual(["src/new.ts"]);
@@ -653,13 +694,13 @@ describe("PlansService lifecycle (integration)", () => {
     expect(diskMetadata?.approved_by).toBe("marc");
 
     // 3. reopen
-    const afterReopen = harness.service.reopen("studio-154");
+    const afterReopen = await harness.service.reopen("studio-154");
     expect(afterReopen.metadata.state).toBe("drafting");
     expect(afterReopen.metadata.approved_at).toBeNull();
     expect(harness.workItems.get("studio-154")?.state).toBe("drafting");
 
     // 4. approve again — should succeed on the second pass
-    const afterApprove2 = harness.service.approve("studio-154");
+    const afterApprove2 = await harness.service.approve("studio-154");
     expect(afterApprove2.metadata.state).toBe("ready");
     expect(harness.workItems.get("studio-154")?.state).toBe("ready");
   });

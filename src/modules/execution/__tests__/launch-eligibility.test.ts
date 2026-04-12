@@ -144,6 +144,19 @@ function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: bool
 
   (service as any).worktreeRoot = "/tmp/studio-worktrees";
 
+  (service as any).hsmService = {
+    async dispatch(id: string, event: { type: string }) {
+      if (event.type === "user.dispatch") {
+        currentWorkItem = {
+          ...currentWorkItem,
+          state: "in_progress",
+          updated_at: "2026-04-09T00:00:01.000Z",
+        };
+      }
+      return { mutation_applied: true };
+    },
+  };
+
   // ADR 014 step 5: launch() now calls appendRunIdToPlanMetadata after
   // persisting the run. Stub it to a no-op so these tests don't need to
   // wire up plan metadata on the filesystem.
@@ -269,10 +282,10 @@ describe("launch eligibility", () => {
     const result = await harness.service.launch({ work_item_id: workItem.id, prompt: "Launch" });
 
     expect(result.accepted).toBe(true);
-    expect(harness.updateCalls).toEqual([{ id: workItem.id, patch: { state: "in_progress" } }]);
+    // State transition now via HSM dispatch, not direct update
+    expect(harness.updateCalls).toEqual([]);
     expect(harness.getCurrentWorkItem().state).toBe("in_progress");
     expect(harness.executionOrder).toEqual([
-      `update:${workItem.id}:in_progress`,
       "activity:Execution run queued. Work item state updated to in_progress.",
       "executeRun",
     ]);
@@ -285,10 +298,10 @@ describe("launch eligibility", () => {
     const result = await harness.service.launch({ work_item_id: workItem.id, prompt: "Launch" });
 
     expect(result.accepted).toBe(true);
-    expect(harness.updateCalls).toEqual([{ id: workItem.id, patch: { state: "in_progress" } }]);
+    // State transition now via HSM dispatch, not direct update
+    expect(harness.updateCalls).toEqual([]);
     expect(harness.getCurrentWorkItem().state).toBe("in_progress");
     expect(harness.executionOrder).toEqual([
-      `update:${workItem.id}:in_progress`,
       "activity:Execution run queued. Work item state updated to in_progress.",
       "executeRun",
     ]);
@@ -394,8 +407,14 @@ describe("launch eligibility", () => {
 describe("ExecutionService.transitionInProgressToReady", () => {
   function makeTransitionHarness(workItem: WorkItemRecord) {
     const service = Object.create(ExecutionService.prototype) as ExecutionService;
-    const updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }> = [];
+    const dispatchCalls: Array<{ id: string; event: { type: string } }> = [];
     let currentWorkItem = workItem;
+
+    // Map HSM event types to resulting states for mock.
+    const eventToState: Record<string, WorkItemState> = {
+      "user.investigate": "ready",
+      "user.start_draft": "drafting",
+    };
 
     (service as any).workItemsService = {
       get: (id: string) => {
@@ -404,57 +423,68 @@ describe("ExecutionService.transitionInProgressToReady", () => {
         }
         return currentWorkItem;
       },
-      update: (id: string, patch: Partial<WorkItemRecord>) => {
-        updateCalls.push({ id, patch });
-        currentWorkItem = {
-          ...currentWorkItem,
-          ...patch,
-          updated_at: "2026-04-09T00:00:01.000Z",
-        };
-        return currentWorkItem;
+    };
+
+    (service as any).hsmService = {
+      async dispatch(id: string, event: { type: string }) {
+        dispatchCalls.push({ id, event });
+        const nextState = eventToState[event.type];
+        if (nextState) {
+          currentWorkItem = {
+            ...currentWorkItem,
+            state: nextState,
+            updated_at: "2026-04-09T00:00:01.000Z",
+          };
+        }
+        return { mutation_applied: true };
       },
     };
 
-    return { service, updateCalls, getCurrentWorkItem: () => currentWorkItem };
+    return { service, dispatchCalls, getCurrentWorkItem: () => currentWorkItem };
   }
 
-  it("transitions a work item from in_progress to ready", () => {
+  it("transitions a work item from in_progress to ready", async () => {
     const workItem = makeWorkItem({ state: "in_progress" });
     const harness = makeTransitionHarness(workItem);
 
-    const result = harness.service.transitionInProgressToReady(workItem.id);
+    const result = await harness.service.transitionInProgressToReady(workItem.id);
 
     expect(result.state).toBe("ready");
-    expect(harness.updateCalls).toEqual([{ id: workItem.id, patch: { state: "ready" } }]);
+    expect(harness.dispatchCalls).toEqual([{ id: workItem.id, event: { type: "user.investigate" } }]);
     expect(harness.getCurrentWorkItem().state).toBe("ready");
   });
 
-  it("throws when the current state is not in_progress", () => {
+  it("throws when the current state is not in_progress", async () => {
     const workItem = makeWorkItem({ state: "planned" });
     const harness = makeTransitionHarness(workItem);
 
-    expect(() => harness.service.transitionInProgressToReady(workItem.id)).toThrow(
+    await expect(harness.service.transitionInProgressToReady(workItem.id)).rejects.toThrow(
       /Cannot transition .* from planned to ready/,
     );
-    expect(harness.updateCalls).toEqual([]);
+    expect(harness.dispatchCalls).toEqual([]);
   });
 
-  it("throws when the current state is ready (no-op rejection)", () => {
+  it("throws when the current state is ready (no-op rejection)", async () => {
     const workItem = makeWorkItem({ state: "ready" });
     const harness = makeTransitionHarness(workItem);
 
-    expect(() => harness.service.transitionInProgressToReady(workItem.id)).toThrow(
+    await expect(harness.service.transitionInProgressToReady(workItem.id)).rejects.toThrow(
       /Cannot transition .* from ready to ready/,
     );
-    expect(harness.updateCalls).toEqual([]);
+    expect(harness.dispatchCalls).toEqual([]);
   });
 });
 
 describe("ExecutionService.transitionInProgressToDrafting (ADR 014 step 5)", () => {
   function makeTransitionHarness(workItem: WorkItemRecord) {
     const service = Object.create(ExecutionService.prototype) as ExecutionService;
-    const updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }> = [];
+    const dispatchCalls: Array<{ id: string; event: { type: string } }> = [];
     let currentWorkItem = workItem;
+
+    const eventToState: Record<string, WorkItemState> = {
+      "user.investigate": "ready",
+      "user.start_draft": "drafting",
+    };
 
     (service as any).workItemsService = {
       get: (id: string) => {
@@ -463,58 +493,64 @@ describe("ExecutionService.transitionInProgressToDrafting (ADR 014 step 5)", () 
         }
         return currentWorkItem;
       },
-      update: (id: string, patch: Partial<WorkItemRecord>) => {
-        updateCalls.push({ id, patch });
-        currentWorkItem = {
-          ...currentWorkItem,
-          ...patch,
-          updated_at: "2026-04-09T00:00:01.000Z",
-        };
-        return currentWorkItem;
+    };
+
+    (service as any).hsmService = {
+      async dispatch(id: string, event: { type: string }) {
+        dispatchCalls.push({ id, event });
+        const nextState = eventToState[event.type];
+        if (nextState) {
+          currentWorkItem = {
+            ...currentWorkItem,
+            state: nextState,
+            updated_at: "2026-04-09T00:00:01.000Z",
+          };
+        }
+        return { mutation_applied: true };
       },
     };
 
-    return { service, updateCalls, getCurrentWorkItem: () => currentWorkItem };
+    return { service, dispatchCalls, getCurrentWorkItem: () => currentWorkItem };
   }
 
-  it("transitions a work item from in_progress to drafting", () => {
+  it("transitions a work item from in_progress to drafting", async () => {
     const workItem = makeWorkItem({ state: "in_progress" });
     const harness = makeTransitionHarness(workItem);
 
-    const result = harness.service.transitionInProgressToDrafting(workItem.id);
+    const result = await harness.service.transitionInProgressToDrafting(workItem.id);
 
     expect(result.state).toBe("drafting");
-    expect(harness.updateCalls).toEqual([{ id: workItem.id, patch: { state: "drafting" } }]);
+    expect(harness.dispatchCalls).toEqual([{ id: workItem.id, event: { type: "user.start_draft" } }]);
     expect(harness.getCurrentWorkItem().state).toBe("drafting");
   });
 
-  it("throws when the current state is not in_progress (planned)", () => {
+  it("throws when the current state is not in_progress (planned)", async () => {
     const workItem = makeWorkItem({ state: "planned" });
     const harness = makeTransitionHarness(workItem);
 
-    expect(() => harness.service.transitionInProgressToDrafting(workItem.id)).toThrow(
+    await expect(harness.service.transitionInProgressToDrafting(workItem.id)).rejects.toThrow(
       /Cannot transition .* from planned to drafting/,
     );
-    expect(harness.updateCalls).toEqual([]);
+    expect(harness.dispatchCalls).toEqual([]);
   });
 
-  it("throws when the current state is ready", () => {
+  it("throws when the current state is ready", async () => {
     const workItem = makeWorkItem({ state: "ready" });
     const harness = makeTransitionHarness(workItem);
 
-    expect(() => harness.service.transitionInProgressToDrafting(workItem.id)).toThrow(
+    await expect(harness.service.transitionInProgressToDrafting(workItem.id)).rejects.toThrow(
       /Cannot transition .* from ready to drafting/,
     );
-    expect(harness.updateCalls).toEqual([]);
+    expect(harness.dispatchCalls).toEqual([]);
   });
 
-  it("throws when the current state is drafting (no-op rejection)", () => {
+  it("throws when the current state is drafting (no-op rejection)", async () => {
     const workItem = makeWorkItem({ state: "drafting" });
     const harness = makeTransitionHarness(workItem);
 
-    expect(() => harness.service.transitionInProgressToDrafting(workItem.id)).toThrow(
+    await expect(harness.service.transitionInProgressToDrafting(workItem.id)).rejects.toThrow(
       /Cannot transition .* from drafting to drafting/,
     );
-    expect(harness.updateCalls).toEqual([]);
+    expect(harness.dispatchCalls).toEqual([]);
   });
 });

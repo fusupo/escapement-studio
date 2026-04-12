@@ -63,10 +63,11 @@ export class SQLiteService {
   }
 
   private migrateWorkItemStates() {
-    // Guard sentinel is `archived`. Older Studio schemas already include
-    // `merged_pr`, so that earlier sentinel would skip this broader migration.
+    // Treat the migration as complete only once the schema allows both the
+    // dotted HSM states introduced by ADR 015 and the newer terminal
+    // disposition state `archived`.
     const tableInfo = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_items'").get() as { sql: string } | undefined;
-    if (!tableInfo?.sql || tableInfo.sql.includes("'archived'")) {
+    if (!tableInfo?.sql || (tableInfo.sql.includes("pre_pr.in_progress") && tableInfo.sql.includes("'archived'"))) {
       return; // already migrated or no table
     }
 
