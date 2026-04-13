@@ -4,8 +4,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import {
-  canonicalScratchpadPath,
-  ensurePlanDir,
   readPlanMetadata,
   runDir,
   workItemSlug,
@@ -16,6 +14,7 @@ import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-w
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { RunStore } from "./run-store.service.js";
+import { ScratchpadService } from "./scratchpad.service.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { WorktreeService } from "./worktree.service.js";
 import { GitHubService } from "../github/github.service.js";
@@ -28,7 +27,6 @@ import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
   ArchivedRunBundle,
-  ChecklistItem,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
   ExecutionChecklistSnapshot,
@@ -62,8 +60,6 @@ export class ExecutionService implements OnModuleInit {
   // Chat history derived from activity_log (agent_message + user_message entries)
   /** Disambiguation gate resolvers — calling the stored function unblocks the coding phase */
   private readonly disambiguationGates = new Map<string, { resolve: (additionalContext?: string) => void }>();
-  /** Last-emitted checklist snapshots per run — used for dedup */
-  private readonly lastChecklistSnapshots = new Map<string, string>();
 
   constructor(
     @Inject(GraphService) private readonly graphService: GraphService,
@@ -74,6 +70,7 @@ export class ExecutionService implements OnModuleInit {
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
     @Inject(RunStore) private readonly runStore: RunStore,
+    @Inject(ScratchpadService) private readonly scratchpadService: ScratchpadService,
     @Inject(WorktreeService) private readonly worktreeService: WorktreeService,
   ) {
     this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
@@ -373,7 +370,7 @@ export class ExecutionService implements OnModuleInit {
     // auto_commit: false (the auto-commit guard is inside an optional
     // branch) and they cover both the current staged state and the
     // branch's full committed history relative to the base ref.
-    const prStagedViolations = this.findStagedScratchpadViolations(run.worktree_path);
+    const prStagedViolations = this.scratchpadService.findStagedScratchpadViolations(run.worktree_path);
     if (prStagedViolations.length > 0) {
       this.runStore.appendEvent(run, {
         type: "scratchpad_commit_blocked",
@@ -386,7 +383,7 @@ export class ExecutionService implements OnModuleInit {
       );
     }
 
-    const committedViolations = this.findCommittedScratchpadViolations(run.worktree_path, baseRef);
+    const committedViolations = this.scratchpadService.findCommittedScratchpadViolations(run.worktree_path, baseRef);
     if (committedViolations.length > 0) {
       this.runStore.appendEvent(run, {
         type: "scratchpad_commit_blocked",
@@ -689,7 +686,7 @@ export class ExecutionService implements OnModuleInit {
     // the canonical scratchpad is the executable contract — copied into the
     // worktree verbatim and the setup-phase agent turn is skipped below.
     // Otherwise (fallback for `planned` items) a skeleton is synthesized.
-    const scratchpadResult = this.writeScratchpad(run, node);
+    const scratchpadResult = this.scratchpadService.writeScratchpad(run, node);
     const scratchpadPath = scratchpadResult.path;
     const hasApprovedPlan = scratchpadResult.source === "canonical_ready";
     this.pushActivity(
@@ -700,7 +697,7 @@ export class ExecutionService implements OnModuleInit {
         : `Scratchpad written to ${scratchpadPath}`,
     );
     this.runStore.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
-    this.emitChecklistIfChanged(run);
+    this.scratchpadService.emitChecklistIfChanged(run);
 
     // --- Create agent session ---
     const { session, modelFallbackMessage } = await createAgentSession({
@@ -761,7 +758,7 @@ export class ExecutionService implements OnModuleInit {
           };
           try {
             const scratchpadContent = readFileSync(scratchpadPath, "utf8");
-            openItems = this.parseScratchpadOpenItems(scratchpadContent);
+            openItems = this.scratchpadService.parseScratchpadOpenItems(scratchpadContent);
           } catch (error) {
             this.logger.warn(
               `executeRun: failed to read approved scratchpad at ${scratchpadPath} ` +
@@ -803,8 +800,8 @@ export class ExecutionService implements OnModuleInit {
               await session.prompt(
                 `The approved plan for ${run.work_item_id} (${run.work_item_name}) had open items that the user just resolved with this additional context:\n\n${additionalContext}\n\nRead ${scratchpadName} in the current worktree, update the "### Clarifications Needed" and "## Blockers" sections to reflect the resolution, and make any other edits implied by the user's feedback. Then confirm you're ready to start coding.`,
               );
-              this.syncScratchpadToCanonical(run);
-              this.emitChecklistIfChanged(run);
+              this.scratchpadService.syncScratchpadToCanonical(run);
+              this.scratchpadService.emitChecklistIfChanged(run);
             }
 
             run = this.runStore.updateRun(runId, {
@@ -830,10 +827,10 @@ export class ExecutionService implements OnModuleInit {
 
         // Sync the agent's scratchpad edits back to the canonical plan file
         // (end of setup phase, before the approval gate).
-        this.syncScratchpadToCanonical(run);
+        this.scratchpadService.syncScratchpadToCanonical(run);
 
         // Setup prompt finished — now switch to disambiguating so the UI shows the approval gate
-        this.emitChecklistIfChanged(run);
+        this.scratchpadService.emitChecklistIfChanged(run);
         run = this.runStore.updateRun(runId, {
           status: "disambiguating",
           progress_message: "Setup complete. Review the implementation plan and approve to start coding.",
@@ -852,8 +849,8 @@ export class ExecutionService implements OnModuleInit {
           await session.prompt(
             `The user provided feedback on your plan:\n\n${additionalContext}\n\nUpdate the ${scratchpadName} implementation plan accordingly, then confirm you're ready to start coding.`
           );
-          this.syncScratchpadToCanonical(run);
-          this.emitChecklistIfChanged(run);
+          this.scratchpadService.syncScratchpadToCanonical(run);
+          this.scratchpadService.emitChecklistIfChanged(run);
         }
 
         run = this.runStore.updateRun(runId, {
@@ -874,9 +871,9 @@ export class ExecutionService implements OnModuleInit {
 
       // Sync the agent's final scratchpad state back to canonical
       // (end of do-work phase).
-      this.syncScratchpadToCanonical(run);
+      this.scratchpadService.syncScratchpadToCanonical(run);
 
-      this.emitChecklistIfChanged(run);
+      this.scratchpadService.emitChecklistIfChanged(run);
     } finally {
       unsubscribe();
       this.disambiguationGates.delete(run.run_id);
@@ -934,13 +931,7 @@ export class ExecutionService implements OnModuleInit {
     if (!run) {
       return { run_id: runId, items: [], completed: 0, total: 0 };
     }
-    const items = this.readChecklistFromWorktree(run);
-    return {
-      run_id: runId,
-      items,
-      completed: items.filter((i) => i.checked).length,
-      total: items.length,
-    };
+    return this.scratchpadService.getRunChecklist(run);
   }
 
   getRunScratchpad(runId: string): { run_id: string; content: string | null } {
@@ -948,21 +939,7 @@ export class ExecutionService implements OnModuleInit {
     if (!run) {
       return { run_id: runId, content: null };
     }
-
-    // Prefer the canonical plan file (source of truth, synced at each phase boundary)
-    const canonicalPath = canonicalScratchpadPath(this.artifactRoot, run.work_item_id);
-    if (existsSync(canonicalPath)) {
-      return { run_id: runId, content: readFileSync(canonicalPath, "utf8") };
-    }
-
-    // Fall back to the live worktree copy (active run before first sync-back)
-    const slug = workItemSlug(run.work_item_id);
-    const worktreePath = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
-    if (existsSync(worktreePath)) {
-      return { run_id: runId, content: readFileSync(worktreePath, "utf8") };
-    }
-
-    return { run_id: runId, content: null };
+    return this.scratchpadService.getRunScratchpad(run);
   }
 
   listArchivedRunBundles(): ArchivedRunBundle[] {
@@ -1085,8 +1062,8 @@ export class ExecutionService implements OnModuleInit {
       await session.prompt(message);
       // ADR 014 step 5: sync the agent's scratchpad edits back to canonical
       // at follow-up turn completion (phase boundary).
-      this.syncScratchpadToCanonical(run);
-      this.emitChecklistIfChanged(run);
+      this.scratchpadService.syncScratchpadToCanonical(run);
+      this.scratchpadService.emitChecklistIfChanged(run);
     } finally {
       unsubscribe();
       this.activeSessions.delete(run.run_id);
@@ -1134,7 +1111,7 @@ export class ExecutionService implements OnModuleInit {
       this.runStore.appendEvent(run, { type: event.type, tool_name: toolName });
       this.pushActivity(runId, "tool_end", `Tool finished: ${toolName ?? "unknown"}`);
       this.runStore.updateRun(runId, { progress_message: `${toolName ?? "tool"} finished.` });
-      this.emitChecklistIfChanged(run);
+      this.scratchpadService.emitChecklistIfChanged(run);
       return;
     }
 
@@ -1161,64 +1138,6 @@ export class ExecutionService implements OnModuleInit {
       this.pushActivity(runId, "turn_end", "Execution turn completed.");
       this.runStore.updateRun(runId, { progress_message: "Execution turn completed." });
     }
-  }
-
-  /**
-   * Parse checklist items from the ## Implementation Plan section of a scratchpad.
-   * Only matches `- [ ]` and `- [x]` lines within that section.
-   */
-  parseImplementationPlanChecklist(content: string): ChecklistItem[] {
-    const lines = content.split("\n");
-    const items: ChecklistItem[] = [];
-    let inSection = false;
-
-    for (const line of lines) {
-      // Detect heading boundaries
-      if (/^##\s/.test(line)) {
-        inSection = /^##\s+Implementation Plan/i.test(line);
-        continue;
-      }
-      if (inSection) {
-        const match = line.match(/^\s*-\s+\[([\sxX])\]\s+(.+)$/);
-        if (match) {
-          items.push({
-            checked: match[1].toLowerCase() === "x",
-            text: match[2].trim(),
-          });
-        }
-      }
-    }
-    return items;
-  }
-
-  private readChecklistFromWorktree(run: ExecutionRunRecord): ChecklistItem[] {
-    const slug = workItemSlug(run.work_item_id);
-    const scratchpadPath = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
-    if (!existsSync(scratchpadPath)) {
-      return [];
-    }
-    try {
-      const content = readFileSync(scratchpadPath, "utf8");
-      return this.parseImplementationPlanChecklist(content);
-    } catch {
-      return [];
-    }
-  }
-
-  private emitChecklistIfChanged(run: ExecutionRunRecord): void {
-    const items = this.readChecklistFromWorktree(run);
-    const snapshot: ExecutionChecklistSnapshot = {
-      run_id: run.run_id,
-      items,
-      completed: items.filter((i) => i.checked).length,
-      total: items.length,
-    };
-    const key = JSON.stringify(snapshot.items);
-    if (this.lastChecklistSnapshots.get(run.run_id) === key) {
-      return; // No change
-    }
-    this.lastChecklistSnapshots.set(run.run_id, key);
-    this.runStore.emitEvent("execution_checklist", run.run_id, snapshot);
   }
 
   private pushActivity(runId: string, kind: ActivityLogEntryKind, message: string, detail?: string) {
@@ -1483,83 +1402,6 @@ export class ExecutionService implements OnModuleInit {
     return `Execute work item ${workItem.id}: ${workItem.name}`;
   }
 
-  /** Build a structured scratchpad markdown document for the execution worktree. */
-  buildScratchpad(run: ExecutionRunRecord, node: ExecutionDispatchNodePreview): string {
-    const owned = node.files_owned.length
-      ? node.files_owned.map((path) => `- ${path}`).join("\n")
-      : "- (none predicted)";
-    const shared = node.files_shared.length
-      ? node.files_shared.map((file) => `- ${file.path} (${file.assessment}/${file.confidence})`).join("\n")
-      : "- (none)";
-    const forbidden = node.files_forbidden.length
-      ? node.files_forbidden.map((path) => `- ${path}`).join("\n")
-      : "- (none)";
-
-    return [
-      `# Scratchpad: ${run.work_item_id} — ${run.work_item_name}`,
-      "",
-      "## Context",
-      `- **Repo:** ${run.repo ?? "(not set)"}`,
-      `- **Issue:** ${run.issue_url ?? "(not linked)"}`,
-      `- **Branch:** ${run.branch}`,
-      `- **Base ref:** ${run.base_ref}`,
-      `- **Scope hint:** ${node.scope_hint ?? "(not set)"}`,
-      `- **Created:** ${run.created_at}`,
-      "",
-      "## File Ownership",
-      "",
-      "### Owned",
-      owned,
-      "",
-      "### Shared",
-      shared,
-      "",
-      "### Forbidden",
-      forbidden,
-      "",
-      "## Acceptance Criteria",
-      "<!-- Fill in from the issue body during setup phase -->",
-      "",
-      "- [ ] (to be filled by setup phase)",
-      "",
-      "## Implementation Plan",
-      "<!-- The setup phase agent will replace these with specific, concrete tasks -->",
-      "",
-      "- [ ] Analyze scope and identify changes needed",
-      "- [ ] Implement changes",
-      "- [ ] Run tests / verify",
-      "- [ ] Summarize results",
-      "",
-      "## Affected Files",
-      "<!-- List specific files that will be modified, with what changes -->",
-      "",
-      "## Quality Checks",
-      "- [ ] TypeScript compilation passes (`npm run check`)",
-      "- [ ] Tests pass (`npm test`)",
-      "- [ ] Build succeeds (`npm run build:web`)",
-      "",
-      "## Questions / Concerns",
-      "<!-- Surface any ambiguities during setup — resolve with user before coding -->",
-      "",
-      "## Work Log",
-      "",
-      `### ${new Date().toISOString().slice(0, 10)} - Setup`,
-      "- Scratchpad created by Studio execution service",
-      `- Branch: ${run.branch}`,
-      "",
-      "## Blockers",
-      "",
-    ].join("\n");
-  }
-
-  /**
-   * Sync the agent's worktree scratchpad back to the canonical plan file.
-   *
-   * Called at each phase boundary in executeRun. If the worktree copy is
-   * missing (e.g. the agent deleted it), logs a warning and leaves the
-   * canonical file unchanged — the canonical retains its last-known-good
-   * state.
-   */
   /**
    * ADR 014 step 5: record a run ID on the plan metadata.
    *
@@ -1588,136 +1430,6 @@ export class ExecutionService implements OnModuleInit {
           this.getErrorMessage(error),
       );
     }
-  }
-
-  /**
-   * Parse a scratchpad's `### Clarifications Needed` and `## Blockers`
-   * sections into string arrays of open items.
-   *
-   * Contract: matches the shape written by `PlansService.prepare`
-   * (plans.service.ts ~lines 383–415) — flat top-level `- ` bullets,
-   * or a single `_(none)_` sentinel when the drafter surfaced no items.
-   *
-   * Behavior:
-   *   - Scans line-by-line for the two headings.
-   *   - Collects lines starting with `- ` as bullet items until the next
-   *     `#`-prefixed heading line (any level — keeps the parser simple
-   *     and matches the flat structure the drafter emits).
-   *   - Filters out blank lines and the `_(none)_` sentinel so an empty
-   *     section reads as an empty array.
-   *   - Missing heading → empty array for that section.
-   *
-   * Used by `executeRun` when an approved plan is loaded to decide
-   * whether the disambiguation gate should fire before coding starts.
-   */
-  private parseScratchpadOpenItems(content: string): {
-    questions: string[];
-    blockers: string[];
-  } {
-    const lines = content.split(/\r?\n/);
-    const collect = (headingMatch: (line: string) => boolean): string[] => {
-      const items: string[] = [];
-      let i = 0;
-      while (i < lines.length) {
-        if (headingMatch(lines[i])) {
-          i += 1;
-          while (i < lines.length) {
-            const line = lines[i];
-            if (/^\s*#/.test(line)) break;
-            const trimmed = line.trim();
-            if (trimmed.startsWith("- ")) {
-              const body = trimmed.slice(2).trim();
-              if (body && body !== "_(none)_") {
-                items.push(body);
-              }
-            }
-            i += 1;
-          }
-          break;
-        }
-        i += 1;
-      }
-      return items;
-    };
-    const questions = collect((line) => /^\s*###\s+Clarifications Needed\s*$/.test(line));
-    const blockers = collect((line) => /^\s*##\s+Blockers\s*$/.test(line));
-    return { questions, blockers };
-  }
-
-  private syncScratchpadToCanonical(run: ExecutionRunRecord): void {
-    const slug = workItemSlug(run.work_item_id);
-    const worktreeScratchpad = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
-    const canonical = canonicalScratchpadPath(this.artifactRoot, run.work_item_id);
-    if (!existsSync(worktreeScratchpad)) {
-      this.logger.warn(
-        `syncScratchpadToCanonical: worktree scratchpad missing for run ${run.run_id} ` +
-          `at ${worktreeScratchpad}; canonical left unchanged.`,
-      );
-      return;
-    }
-    writeFileSync(canonical, readFileSync(worktreeScratchpad, "utf8"), "utf8");
-  }
-
-  /**
-   * Seed the worktree scratchpad from the canonical plan file.
-   *
-   * ADR 014 step 2/4/5: the canonical scratchpad lives at
-   * `plans/<slug>/SCRATCHPAD_<slug>.md` and is the source of truth.
-   *
-   * After ADR 014 step 4 lands, a work item that reached `ready` state via
-   * `PlansService.approve` already has an approved canonical scratchpad —
-   * no skeleton synthesis happens here and the setup-phase agent turn is
-   * skipped upstream (caller uses the returned `source` field).
-   *
-   * The fallback path (no plan metadata or plan state is null/drafting, for
-   * `planned` items under the step 5 transitional gate) still generates a
-   * skeleton via `buildScratchpad` and writes it to canonical. This path
-   * goes away when every launch goes through prepare→approve.
-   *
-   * Returns `{ path, source }`:
-   *   - `canonical_ready`    — plan was approved, content came from canonical
-   *   - `carried_forward`    — canonical existed but plan state was not `ready`
-   *                            (e.g. legacy plan dir with no metadata state)
-   *   - `synthesized`        — no canonical file existed; skeleton generated
-   */
-  private writeScratchpad(
-    run: ExecutionRunRecord,
-    node: ExecutionDispatchNodePreview,
-  ): { path: string; source: "canonical_ready" | "carried_forward" | "synthesized" } {
-    ensurePlanDir(this.artifactRoot, run.work_item_id);
-    const canonicalPath = canonicalScratchpadPath(this.artifactRoot, run.work_item_id);
-    const metadata = readPlanMetadata(this.artifactRoot, run.work_item_id);
-
-    let content: string;
-    let source: "canonical_ready" | "carried_forward" | "synthesized";
-
-    if (metadata?.state === "ready") {
-      // Step 5 happy path: an approved plan must have a canonical scratchpad.
-      if (!existsSync(canonicalPath)) {
-        throw new BadRequestException(
-          `ready_plan_scratchpad_missing: work item ${run.work_item_id} is marked ready ` +
-            `but canonical scratchpad is missing at ${canonicalPath}`,
-        );
-      }
-      content = readFileSync(canonicalPath, "utf8");
-      source = "canonical_ready";
-    } else if (existsSync(canonicalPath)) {
-      // Legacy / fallback: canonical exists but plan is not in `ready` state.
-      // Carry the existing plan forward — edits from prior runs survive.
-      content = readFileSync(canonicalPath, "utf8");
-      source = "carried_forward";
-    } else {
-      // Fallback: first run for this work item, no canonical exists.
-      // Generate a skeleton and persist to canonical.
-      content = this.buildScratchpad(run, node);
-      writeFileSync(canonicalPath, content, "utf8");
-      source = "synthesized";
-    }
-
-    const slug = workItemSlug(run.work_item_id);
-    const worktreeScratchpad = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
-    writeFileSync(worktreeScratchpad, content, "utf8");
-    return { path: worktreeScratchpad, source };
   }
 
   createHsmRunRecord(workItem: WorkItemRecord, options: {
@@ -1867,7 +1579,7 @@ export class ExecutionService implements OnModuleInit {
 
     // ADR 014 step 6: hard guard against committing `SCRATCHPAD_*.md`.
     // Replaces the silent `.gitignore` trick — disobedience is now visible.
-    const stagedViolations = this.findStagedScratchpadViolations(run.worktree_path);
+    const stagedViolations = this.scratchpadService.findStagedScratchpadViolations(run.worktree_path);
     if (stagedViolations.length > 0) {
       this.runStore.appendEvent(run, {
         type: "scratchpad_commit_blocked",
@@ -1888,42 +1600,6 @@ export class ExecutionService implements OnModuleInit {
     if (changedFiles.length > 0) {
       this.runStore.updateRun(run.run_id, { changed_files: changedFiles });
     }
-  }
-
-  /**
-   * ADR 014 step 6: detect `SCRATCHPAD_*.md` files in the git index.
-   *
-   * Basename match at any path depth. Returns an empty array when the
-   * index is clean. Callers use the list both for the rejection error
-   * message and for the `scratchpad_commit_blocked` event payload.
-   */
-  private findStagedScratchpadViolations(worktreePath: string): string[] {
-    const output = this.worktreeService.runGitIn(worktreePath, ["diff", "--cached", "--name-only"], { allowFailure: true });
-    return output
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && this.isScratchpadPath(line));
-  }
-
-  /**
-   * ADR 014 step 6: detect `SCRATCHPAD_*.md` files introduced by this
-   * branch relative to its base ref.
-   *
-   * Uses three-dot `$base...HEAD` (merge-base relative) so files that
-   * changed on the base branch are not spuriously flagged. This matches
-   * what GitHub shows in a pull-request diff.
-   */
-  private findCommittedScratchpadViolations(worktreePath: string, baseRef: string): string[] {
-    const output = this.worktreeService.runGitIn(worktreePath, ["diff", "--name-only", `${baseRef}...HEAD`], { allowFailure: true });
-    return output
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && this.isScratchpadPath(line));
-  }
-
-  /** Basename match for `SCRATCHPAD_*.md` at any path depth. */
-  private isScratchpadPath(path: string): boolean {
-    return /(?:^|\/)SCRATCHPAD_[^/]*\.md$/.test(path);
   }
 
   private buildCommitMessage(workItem: WorkItemRecord): string {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ExecutionService } from "../execution.service.js";
 import { RunStore } from "../run-store.service.js";
+import { ScratchpadService } from "../scratchpad.service.js";
 import type { ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
 import { canonicalScratchpadPath } from "../../../lib/context-layout.js";
 
@@ -71,6 +72,15 @@ function makeExecutionServiceHarness(
   (service as any).activeSessions = new Map();
   (service as any).now = () => "2026-04-10T06:00:00.000Z";
   (service as any).extractTextFromMessage = (message: any) => message?.text ?? null;
+  // Phase 4c (#232): the thin-wrapper HTTP getters
+  // (`getRunScratchpad` / `getRunChecklist`) delegate to a real
+  // ScratchpadService instance. Construct a bare-prototype
+  // ScratchpadService with the same artifactRoot so the rehydrate
+  // tests can exercise the canonical + worktree read paths.
+  const scratchpad = Object.create(ScratchpadService.prototype) as ScratchpadService;
+  (scratchpad as any).artifactRoot = artifactRoot;
+  (scratchpad as any).logger = { warn: vi.fn() };
+  (service as any).scratchpadService = scratchpad;
   Object.assign(service as any, extras);
   return service;
 }

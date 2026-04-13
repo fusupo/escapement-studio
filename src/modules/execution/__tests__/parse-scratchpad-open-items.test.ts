@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ExecutionService } from "../execution.service.js";
+import { ScratchpadService } from "../scratchpad.service.js";
 
 /**
- * Unit tests for the private `parseScratchpadOpenItems` helper.
+ * Unit tests for the `parseScratchpadOpenItems` helper.
  *
- * Uses the `Object.create(ExecutionService.prototype)` harness pattern
- * from scratchpad-canonical.test.ts / build-scratchpad.test.ts so we can
- * exercise the pure method without booting Nest DI.
+ * Phase 4c (#232): the parser lives on ScratchpadService. Uses the
+ * `Object.create(ScratchpadService.prototype)` harness pattern so we
+ * can exercise the pure method without booting Nest DI.
  */
 
 interface Harness {
@@ -16,10 +16,10 @@ interface Harness {
 }
 
 function makeHarness(): Harness {
-  return Object.create(ExecutionService.prototype) as Harness;
+  return Object.create(ScratchpadService.prototype) as Harness;
 }
 
-describe("ExecutionService.parseScratchpadOpenItems", () => {
+describe("ScratchpadService.parseScratchpadOpenItems", () => {
   it("parses items from both sections when both are populated", () => {
     const h = makeHarness();
     const content = [
