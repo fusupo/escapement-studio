@@ -115,9 +115,9 @@ This runs the server TypeScript check plus the production frontend build.
 35. Refresh the page and confirm recent transcript state plus the latest active proposal/memory change/GitHub sync results, recent specialist runs, recent execution runs, and reconciliation reports are restored.
 36. Verify the graph view still loads data from `/api/graph`.
 37. Select a node to edit it in the sidebar.
-38. Create a new work item in the sidebar and confirm it appears in the graph.
-39. Create an edge between two nodes and confirm it appears in the graph and edge list.
-40. Delete an edge from the sidebar.
+38. Expand the collapsed **Create work item** section, create a new work item from the sidebar, and confirm it appears in the graph.
+39. Expand the collapsed **Edges** section, create an edge between two nodes, and confirm it appears in the graph and edge list.
+40. Collapse and re-expand the **Edges** section, then delete an edge from the sidebar.
 41. Change repo/state/track/phase filters and confirm the rendered graph updates.
 
 ## API smoke checks
