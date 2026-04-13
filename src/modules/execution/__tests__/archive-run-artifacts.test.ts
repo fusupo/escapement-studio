@@ -3,17 +3,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
-import { ExecutionService } from "../execution.service.js";
+import { RunDispositionService } from "../run-disposition.service.js";
 import { archiveDir, runsRoot } from "../../../lib/context-layout.js";
 import type { ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
 import type { WorkItemRecord } from "../../graph/types.js";
 
 /**
- * Issue #86: tests for the thin `ExecutionService.archiveRunArtifacts`
- * wrapper. Uses the same prototype-harness pattern as
- * `disposition.test.ts` \u2014 real filesystem root via `mkdtempSync`, mocked
- * `workItemsService`, stubbed `listRecentRuns`, and the service instance
- * built via `Object.create(ExecutionService.prototype)`.
+ * Issue #86 / Phase 3 (#223): tests for the `archiveRunArtifacts` wrapper,
+ * now owned by `RunDispositionService`. Uses the same prototype-harness
+ * pattern as `disposition.test.ts` \u2014 real filesystem root via `mkdtempSync`,
+ * mocked `workItemsService`, stubbed in-memory run buffer via a fake
+ * `executionService.listRecentRuns`, and the service instance built via
+ * `Object.create(RunDispositionService.prototype)`.
  */
 
 interface HarnessService {
@@ -23,8 +24,10 @@ interface HarnessService {
     get: (id: string) => WorkItemRecord;
     update: (id: string, patch: Partial<WorkItemRecord>) => WorkItemRecord;
   };
-  listRecentRuns: () => ExecutionRunRecord[];
-  archiveRunArtifacts: ExecutionService["archiveRunArtifacts"];
+  executionService: {
+    listRecentRuns: () => ExecutionRunRecord[];
+  };
+  archiveRunArtifacts: RunDispositionService["archiveRunArtifacts"];
   assertNoActiveRunForWorkItem: (id: string) => void;
   getErrorMessage: (err: unknown) => string;
 }
@@ -84,7 +87,7 @@ function makeService(params: {
   workItem?: WorkItemRecord;
   runs?: ExecutionRunRecord[];
 }): HarnessService {
-  const service = Object.create(ExecutionService.prototype) as HarnessService;
+  const service = Object.create(RunDispositionService.prototype) as HarnessService;
   const workItem = params.workItem ?? makeWorkItem();
 
   service.artifactRoot = params.artifactRoot;
@@ -96,11 +99,13 @@ function makeService(params: {
     },
     update: (_id, _patch) => workItem,
   };
-  service.listRecentRuns = () => params.runs ?? [];
+  service.executionService = {
+    listRecentRuns: () => params.runs ?? [],
+  };
   return service;
 }
 
-describe("ExecutionService.archiveRunArtifacts", () => {
+describe("RunDispositionService.archiveRunArtifacts", () => {
   let tmpRoot: string;
 
   beforeEach(() => {

@@ -2,12 +2,15 @@ import { Body, Controller, Get, Inject, Param, Post, Query, Sse } from "@nestjs/
 import type { MessageEvent } from "@nestjs/common";
 import { CommandBus } from "@nestjs/cqrs";
 import { Observable } from "rxjs";
+import { ArchiveAndCloseMergedPullRequestCommand } from "./application/commands/archive-and-close-merged-pull-request.command.js";
 import { CancelWorkItemCommand } from "./application/commands/cancel-work-item.command.js";
+import { CloseMergedPullRequestCommand } from "./application/commands/close-merged-pull-request.command.js";
 import { DeleteWorkItemCommand } from "./application/commands/delete-work-item.command.js";
 import { TransitionInProgressToDraftingCommand } from "./application/commands/transition-in-progress-to-drafting.command.js";
 import { TransitionInProgressToReadyCommand } from "./application/commands/transition-in-progress-to-ready.command.js";
 import { ExecutionService } from "./execution.service.js";
 import type {
+  ArchiveAndCloseMergedPullRequestResult,
   CancelWorkItemDto,
   CancelWorkItemResult,
   CleanupWorktreeDto,
@@ -111,12 +114,19 @@ export class ExecutionController {
 
   @Post("close-merged")
   closeMergedPullRequest(@Body() body: TransitionWorkItemDto): Promise<CloseMergedPullRequestResult> {
-    return this.executionService.closeMergedPullRequest(body.work_item_id);
+    return this.commandBus.execute<CloseMergedPullRequestCommand, CloseMergedPullRequestResult>(
+      new CloseMergedPullRequestCommand(body.work_item_id),
+    );
   }
 
   @Post("archive-and-close-merged")
-  archiveAndCloseMergedPullRequest(@Body() body: TransitionWorkItemDto) {
-    return this.executionService.archiveAndCloseMergedPullRequest(body.work_item_id);
+  archiveAndCloseMergedPullRequest(
+    @Body() body: TransitionWorkItemDto,
+  ): Promise<ArchiveAndCloseMergedPullRequestResult> {
+    return this.commandBus.execute<
+      ArchiveAndCloseMergedPullRequestCommand,
+      ArchiveAndCloseMergedPullRequestResult
+    >(new ArchiveAndCloseMergedPullRequestCommand(body.work_item_id));
   }
 
   @Post("cancel-work-item")

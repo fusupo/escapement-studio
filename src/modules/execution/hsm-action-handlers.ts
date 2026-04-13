@@ -1,12 +1,7 @@
 import { BadRequestException, Inject, Injectable, OnModuleInit } from "@nestjs/common";
-import { archiveRunArtifactsForWorkItem } from "./run-archiver.js";
-import { ExecutionService } from "./execution.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
-import type {
-  ArchiveRunArtifactsResult,
-  StudioArchiveMeta,
-} from "./types.js";
+import { RunDispositionService } from "./run-disposition.service.js";
 import type {
   HsmActionHandlerContext,
   WorkItemHsmEvent,
@@ -45,7 +40,7 @@ export class HsmActionHandlers implements OnModuleInit {
   constructor(
     @Inject(WorkItemHsmService) private readonly hsm: WorkItemHsmService,
     @Inject(GitHubService) private readonly github: GitHubService,
-    @Inject(ExecutionService) private readonly execution: ExecutionService,
+    @Inject(RunDispositionService) private readonly disposition: RunDispositionService,
   ) {}
 
   onModuleInit(): void {
@@ -88,46 +83,10 @@ export class HsmActionHandlers implements OnModuleInit {
 
   async runArchiver(
     workItem: WorkItemRecord,
-    _event: WorkItemHsmEvent,
+    event: WorkItemHsmEvent,
     ctx: HsmActionHandlerContext,
   ): Promise<void> {
-    const runSnapshot = this.execution.captureRunSnapshotForWorkItem(workItem.id);
-    const moveResult = this.execution.movePlanDirToArchives(workItem.id);
-
-    let archiveResult: ArchiveRunArtifactsResult;
-    try {
-      archiveResult = archiveRunArtifactsForWorkItem(
-        this.execution.getArtifactRoot(),
-        workItem,
-        {
-          runs: runSnapshot,
-          onWarn: (message) => this.execution.logWarn(message),
-        },
-      );
-    } catch (error) {
-      const message = this.getErrorMessage(error);
-      if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
-        throw new BadRequestException(message);
-      }
-      throw error;
-    }
-
-    const archivePath =
-      archiveResult.archive_path ?? moveResult.archive_path ?? workItem.archive_path;
-    const studioArchive: StudioArchiveMeta = {
-      archived_at: new Date().toISOString(),
-      readme_path: archiveResult.readme_path,
-      archived_run_ids: archiveResult.archived_run_ids,
-      skipped_run_ids: archiveResult.skipped_run_ids,
-    };
-    ctx.meta.studio_archive = studioArchive;
-    ctx.patch_overrides.archive_path = archivePath;
-    ctx.handler_data.archive_result = {
-      archive_path: archivePath,
-      readme_path: archiveResult.readme_path,
-      archived_run_ids: archiveResult.archived_run_ids,
-      skipped_run_ids: archiveResult.skipped_run_ids,
-    };
+    await this.disposition.archiveRunArtifactsAction(workItem, event, ctx);
   }
 
   private getErrorMessage(error: unknown): string {

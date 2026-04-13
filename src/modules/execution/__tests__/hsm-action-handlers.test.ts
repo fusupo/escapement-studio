@@ -7,14 +7,6 @@ import type {
   WorkItemRecord,
 } from "../../graph/types.js";
 
-vi.mock("../run-archiver.js", () => ({
-  archiveRunArtifactsForWorkItem: vi.fn(),
-}));
-
-import { archiveRunArtifactsForWorkItem } from "../run-archiver.js";
-
-const archiveMock = vi.mocked(archiveRunArtifactsForWorkItem);
-
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
   return {
     id: "studio-221",
@@ -130,85 +122,43 @@ describe("HsmActionHandlers (execution module)", () => {
   });
 
   describe("runArchiver", () => {
-    function makeExecutionMock() {
-      return {
-        captureRunSnapshotForWorkItem: vi.fn(() => []),
-        movePlanDirToArchives: vi.fn(() => ({
-          moved: true,
-          archive_path: "/tmp/studio-archive/studio-221",
-        })),
-        getArtifactRoot: vi.fn(() => "/tmp/studio-artifact-root"),
-        logWarn: vi.fn(),
-      };
-    }
+    // Phase 3 collapsed runArchiver to a one-line delegation to
+    // RunDispositionService.archiveRunArtifactsAction. The orchestration
+    // (capture / move / archive / ctx mutation / error translation) moved
+    // to run-disposition.service.ts and is covered by the disposition
+    // test file. These tests only verify the delegation contract.
 
-    it("snapshots runs, moves the plan dir, archives, and stamps studio_archive meta", async () => {
-      const execution = makeExecutionMock();
-      archiveMock.mockReturnValue({
-        work_item_id: "studio-221",
-        archive_path: "/tmp/studio-archive/studio-221",
-        readme_path: "/tmp/studio-archive/studio-221/README.md",
-        archived_run_ids: ["exec_42"],
-        skipped_run_ids: [],
-      });
+    it("delegates to RunDispositionService.archiveRunArtifactsAction", async () => {
+      const archiveRunArtifactsAction = vi.fn().mockResolvedValue(undefined);
+      const disposition = { archiveRunArtifactsAction } as never;
       const handlers = new HsmActionHandlers(
         {} as never,
         {} as never,
-        execution as never,
+        disposition,
       );
+      const workItem = makeWorkItem({ state: "merged_pr" });
       const ctx = makeContext();
 
-      await handlers.runArchiver(
-        makeWorkItem({ state: "merged_pr" }),
-        archiveEvent,
-        ctx,
-      );
+      await handlers.runArchiver(workItem, archiveEvent, ctx);
 
-      expect(execution.captureRunSnapshotForWorkItem).toHaveBeenCalledWith("studio-221");
-      expect(execution.movePlanDirToArchives).toHaveBeenCalledWith("studio-221");
-      expect(archiveMock).toHaveBeenCalledTimes(1);
-      expect(ctx.meta.studio_archive).toMatchObject({
-        readme_path: "/tmp/studio-archive/studio-221/README.md",
-        archived_run_ids: ["exec_42"],
-        skipped_run_ids: [],
-      });
-      expect(ctx.patch_overrides.archive_path).toBe("/tmp/studio-archive/studio-221");
-      expect(ctx.handler_data.archive_result).toMatchObject({
-        archive_path: "/tmp/studio-archive/studio-221",
-        archived_run_ids: ["exec_42"],
-      });
+      expect(archiveRunArtifactsAction).toHaveBeenCalledTimes(1);
+      expect(archiveRunArtifactsAction).toHaveBeenCalledWith(workItem, archiveEvent, ctx);
     });
 
-    it("translates archive_run_active errors into BadRequestException", async () => {
-      const execution = makeExecutionMock();
-      archiveMock.mockImplementation(() => {
-        throw new Error("archive_run_active: run exec_99 still active");
-      });
+    it("propagates errors from RunDispositionService unchanged", async () => {
+      const archiveRunArtifactsAction = vi
+        .fn()
+        .mockRejectedValue(new BadRequestException("archive_run_active: exec_99"));
+      const disposition = { archiveRunArtifactsAction } as never;
       const handlers = new HsmActionHandlers(
         {} as never,
         {} as never,
-        execution as never,
+        disposition,
       );
 
       await expect(
         handlers.runArchiver(makeWorkItem(), archiveEvent, makeContext()),
       ).rejects.toThrow(BadRequestException);
-    });
-
-    it("propagates unrelated errors unchanged", async () => {
-      const execution = makeExecutionMock();
-      archiveMock.mockImplementation(() => {
-        throw new Error("disk full");
-      });
-      const handlers = new HsmActionHandlers(
-        {} as never,
-        {} as never,
-        execution as never,
-      );
-
-      await expect(
-        handlers.runArchiver(makeWorkItem(), archiveEvent, makeContext()),
-      ).rejects.toThrow(/^disk full$/);
     });
   });
 });

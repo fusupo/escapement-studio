@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
-import { ExecutionService } from "../execution.service.js";
+import { RunDispositionService } from "../run-disposition.service.js";
 import {
   archiveDir,
   canonicalScratchpadPath,
@@ -14,12 +14,20 @@ import type { CancelWorkItemResult, DeleteWorkItemResult, ExecutionDispatchPrevi
 import type { DispatchResult, WorkItemRecord, WorkItemState } from "../../graph/types.js";
 
 /**
- * ADR 014 step 7: disposition flow for `merged_pr → done` and plan dir
- * archival on done/cancelled.
+ * ADR 014 step 7 / Phase 3 (#223): disposition flow for `merged_pr → done`
+ * and plan dir archival on done/cancelled. All nine methods under test now
+ * live on `RunDispositionService`; the harness stubs the fields of the
+ * extracted sub-service directly via `Object.create`.
+ *
+ * Run buffer state (`recentRuns`) is now owned by `ExecutionService`. The
+ * harness stubs it through a fake `executionService` field that provides
+ * `listRecentRuns`, `disposeRunsForWorkItemInBuffer`, and
+ * `emitRunExecutionResult`. `removeRunsForWorkItem`'s in-memory walk
+ * happens inside the fake now; the on-disk portion still runs inside the
+ * real `RunDispositionService` method body.
  *
  * Tests use real `mkdtempSync` context roots so `planDir` / `archiveDir` /
- * `renameSync` exercise actual filesystem semantics. Harness pattern matches
- * scratchpad-canonical.test.ts / scratchpad-commit-guards.test.ts.
+ * `renameSync` exercise actual filesystem semantics.
  */
 
 interface HarnessService {
@@ -31,7 +39,6 @@ interface HarnessService {
     getConnectedEdges: (id: string) => Array<{ id: number; from_id: string; rel: string; to_id: string }>;
     deleteWithConnectedEdges: (id: string, edgeIds: number[]) => { deleted: true; id: string; removed_edge_ids: number[] };
   };
-  listRecentRuns: () => ExecutionRunRecord[];
 
   // studio-196 HSM dispatch
   hsmService: {
@@ -50,16 +57,33 @@ interface HarnessService {
     invalidate: ReturnType<typeof vi.fn>;
     invalidateAll: ReturnType<typeof vi.fn>;
   };
+  plansService: {
+    deletePlanArtifacts: ReturnType<typeof vi.fn>;
+  };
+
+  // Phase 3: the run buffer now lives on ExecutionService. The fake exposes
+  // the three public seams RunDispositionService uses to mutate / emit it.
+  executionService: {
+    listRecentRuns: () => ExecutionRunRecord[];
+    disposeRunsForWorkItemInBuffer: (
+      workItemId: string,
+      disposedAt: string,
+    ) => { newlyDisposed: ExecutionRunRecord[]; alreadyDisposedIds: string[] };
+    emitRunExecutionResult: (run: ExecutionRunRecord) => void;
+    getPreview: (repo?: string) => ExecutionDispatchPreview;
+  };
+
+  // Test fixtures (mirror the fields we wire onto the harness so tests can
+  // continue to poke the same arrays they did against the old service).
   recentRuns: ExecutionRunRecord[];
-  writeStatus: ReturnType<typeof vi.fn>;
   emitRun: ReturnType<typeof vi.fn>;
-  getPreview: (repo?: string) => ExecutionDispatchPreview;
+  writeStatus: ReturnType<typeof vi.fn>;
 
   // Methods under test (prototype — available via Object.create)
-  closeMergedPullRequest: ExecutionService["closeMergedPullRequest"];
-  archiveAndCloseMergedPullRequest: ExecutionService["archiveAndCloseMergedPullRequest"];
-  cancelWorkItem: ExecutionService["cancelWorkItem"];
-  deleteWorkItem: ExecutionService["deleteWorkItem"];
+  closeMergedPullRequest: RunDispositionService["closeMergedPullRequest"];
+  archiveAndCloseMergedPullRequest: RunDispositionService["archiveAndCloseMergedPullRequest"];
+  cancelWorkItem: RunDispositionService["cancelWorkItem"];
+  deleteWorkItem: RunDispositionService["deleteWorkItem"];
   // Private helpers exposed via prototype for direct testing
   assertWorkItemInMergedPr: (id: string) => WorkItemRecord;
   assertNoActiveRunForWorkItem: (id: string) => void;
@@ -145,7 +169,7 @@ function makeService(params: {
   updateImpl?: (id: string, patch: Partial<WorkItemRecord>) => WorkItemRecord;
   hsmDispatch?: ReturnType<typeof vi.fn>;
 }): HarnessService {
-  const service = Object.create(ExecutionService.prototype) as HarnessService;
+  const service = Object.create(RunDispositionService.prototype) as HarnessService;
   let currentWorkItem = params.workItem ?? makeWorkItem();
 
   service.artifactRoot = params.artifactRoot;
@@ -178,10 +202,11 @@ function makeService(params: {
     })) as HarnessService["workItemsService"]["deleteWithConnectedEdges"],
   };
 
-  // studio-87 close-flow deps. recentRuns is the real in-memory buffer
-  // (private field on ExecutionService) so we test the actual splice.
+  // Phase 3: `recentRuns` is no longer a field on the service under test.
+  // It lives on ExecutionService in production; the harness models it as
+  // a shared fixture array that the fake executionService seams walk and
+  // splice on behalf of RunDispositionService.removeRunsForWorkItem.
   service.recentRuns = [...(params.runs ?? [])];
-  service.listRecentRuns = () => [...service.recentRuns];
   service.githubService = {
     closeIssue: params.githubCloseIssue ??
       vi.fn(async (repo: string, issueNumber: number, _comment?: string | null) => ({
@@ -197,11 +222,60 @@ function makeService(params: {
       })),
     deleteIssue: params.githubDeleteIssue ?? vi.fn(async (repo: string, issueNumber: number) => ({ repo, number: issueNumber, deleted: true })),
   };
-  // Stub filesystem + event emission so we don't need real artifact dirs
-  // or a live Subject. The real method delegates to node:fs / rxjs.
-  service.writeStatus = vi.fn();
-  service.emitRun = vi.fn();
-  service.getPreview = vi.fn(() => makeDispatchPreviewStub()) as HarnessService["getPreview"];
+  // Filesystem + event emission spies. The fake executionService below
+  // calls these on behalf of RunDispositionService so the legacy
+  // assertions (`writeStatus` / `emitRun` call counts) keep working
+  // without having to reach into ExecutionService internals.
+  const writeStatus = vi.fn();
+  const emitRun = vi.fn();
+  service.emitRun = emitRun;
+  service.executionService = {
+    listRecentRuns: () => [...service.recentRuns],
+    disposeRunsForWorkItemInBuffer: vi.fn((workItemId: string, disposedAt: string) => {
+      const newlyDisposed: ExecutionRunRecord[] = [];
+      const alreadyDisposedIds: string[] = [];
+      for (let i = service.recentRuns.length - 1; i >= 0; i--) {
+        const run = service.recentRuns[i];
+        if (run.work_item_id !== workItemId) continue;
+        if (run.disposed_at) {
+          service.recentRuns.splice(i, 1);
+          alreadyDisposedIds.push(run.run_id);
+          continue;
+        }
+        const next: ExecutionRunRecord = {
+          ...run,
+          disposed_at: disposedAt,
+          updated_at: disposedAt,
+        };
+        // Production's disposeRunsForWorkItemInBuffer swallows ENOENT
+        // from writeStatus (the disk file may be missing after a partial
+        // failure / restart) but still treats the run as disposed. Mirror
+        // that contract here so the ENOENT idempotency test passes.
+        try {
+          writeStatus(next);
+        } catch (error) {
+          const isMissing =
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            (error as { code?: unknown }).code === "ENOENT";
+          if (!isMissing) {
+            throw error;
+          }
+        }
+        service.recentRuns.splice(i, 1);
+        newlyDisposed.push(next);
+      }
+      return { newlyDisposed, alreadyDisposedIds };
+    }),
+    emitRunExecutionResult: vi.fn((run: ExecutionRunRecord) => {
+      emitRun("execution_result", run);
+    }),
+    getPreview: vi.fn(() => makeDispatchPreviewStub()),
+  };
+  // Legacy field used by tests that assert on writeStatus calls directly.
+  // Bound to the same spy the fake executionService seam calls.
+  service.writeStatus = writeStatus;
 
   // studio-196: default HSM dispatch mock — transitions to done for user.finalize.
   // The mock updates currentWorkItem's state so workItemsService.get returns
