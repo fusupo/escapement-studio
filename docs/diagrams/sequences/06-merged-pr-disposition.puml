@@ -1,0 +1,172 @@
+@startuml merged-pr-disposition
+title Merged-PR Disposition — Close vs Archive-and-Close (ADR 014 step 7 / studio-87 / studio-88)
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+actor Operator
+participant "ExecutionDispatchPanel\n(DISPOSITION card)" as UI
+participant "ExecutionController\n/api/execution/*" as Ctrl
+participant "ExecutionService" as Exec
+participant "WorkItemHsmService" as HSM
+participant "HSM registered handlers\n(inline in ExecutionService)" as Handlers
+participant "GraphWriterService" as Writer
+participant "GitHubService" as Gh
+participant "GitHubBatchCache" as Cache
+participant "runArchiver helper\n(run-archiver.ts)" as Archiver
+database "SQLite" as DB
+participant "FS:\nplans/ runs/ archives/" as FS
+queue "SSE /api/execution/stream" as SSE
+
+== Precondition ==
+note over Operator, Cache
+  Work item state is "merged_pr" and the linked
+  GitHub issue is still open. This state is
+  typically reached either by syncMergedPullRequest
+  after a manual merge, or automatically by the
+  GitHub cache scheduler dispatching gh.pr_merged.
+end note
+
+== Path A: Close (no archive) ==
+Operator -> UI : click "Close"
+UI -> Ctrl : POST /api/execution/close-merged\n  {work_item_id}
+activate Ctrl
+Ctrl -> Exec : closeMergedPullRequest(id)
+activate Exec
+
+Exec -> Exec : assertNoActiveRunForWorkItem(id)
+note right : refuses with BadRequestException\nif any run for this work item is\nqueued / preparing / disambiguating /\nrunning in recentRuns
+
+Exec -> HSM : dispatch(id, {type: "user.finalize"})
+activate HSM
+HSM -> Exec : (HSM reads work item)
+HSM -> HSM : selectTransition(merged_pr, user.finalize)\n→ target: done\n→ actions: [closeGhIssue]
+HSM -> Handlers : runtime.actions.includes("closeGhIssue") →\ninvoke inline handler
+activate Handlers
+Handlers -> Gh : closeIssue(repo, issue_number)
+activate Gh
+Gh -> "gh CLI" as GhCli : gh issue close N --repo ...
+Gh -> Gh : readIssue(refresh) + reconcileIssueTruth
+Gh --> Handlers : closed issue details
+deactivate Gh
+Handlers -> Handlers : handler_data.closed_issue = {...}
+deactivate Handlers
+HSM -> Writer : apply({state: "done", meta})
+Writer -> DB : transaction
+HSM -> HSM : emit work_item_state_changed
+HSM --> Exec : DispatchResult\n(handler_data.closed_issue)
+deactivate HSM
+
+Exec -> Cache : upsertIssue(closed)\n(write-through so next reconcile\nsees closed state)
+
+== Dispose matching recent runs ==
+Exec -> Exec : removeRunsForWorkItem(id)
+note right
+  Walks recentRuns back-to-front
+  and also scans disk for runs
+  outside the in-memory cap.
+  For each matching run:
+  - stamp disposed_at on status.json
+  - splice out of recentRuns
+  - emit execution_result
+  Idempotent on already-disposed runs.
+end note
+Exec -> FS : write disposed status.json
+Exec -> SSE : emit execution_result\n(per run)
+
+Exec -> "getPreview()" as Preview : refresh dispatch preview
+
+Exec --> Ctrl : CloseMergedPullRequestResult\n{work_item, closed_issue, removed_run_ids,\n dispatch_preview}
+deactivate Exec
+Ctrl --> UI : 200
+deactivate Ctrl
+
+note over UI
+  Plan dir at plans/<slug>/ is
+  UNTOUCHED. No archive bundle is
+  written.
+end note
+
+== Path B: Archive and close ==
+Operator -> UI : click "Archive and close"
+UI -> Ctrl : POST /api/execution/archive-and-close-merged\n  {work_item_id}
+activate Ctrl
+Ctrl -> Exec : archiveAndCloseMergedPullRequest(id)
+activate Exec
+
+Exec -> Exec : assertNoActiveRunForWorkItem(id)
+Exec -> Exec : captureRunSnapshotForWorkItem(id)
+note right : merge recentRuns + disk scan,\ndedupe by run_id — the snapshot\nsurvives downstream disposal\nstamping.
+
+Exec -> HSM : dispatch(id, {type: "user.archive_and_finalize"})
+activate HSM
+HSM -> HSM : selectTransition(merged_pr,\n  user.archive_and_finalize)\n→ target: archived\n→ actions: [closeGhIssue, runArchiver]
+HSM -> Handlers : closeGhIssue(ctx)
+Handlers -> Gh : closeIssue(repo, number)
+Gh -> GhCli : gh issue close N
+Gh --> Handlers : closed details
+Handlers -> Handlers : handler_data.closed_issue = {...}
+
+HSM -> Handlers : runArchiver(ctx)
+activate Handlers
+Handlers -> Exec : movePlanDirToArchives(id)
+Exec -> FS : renameSync plans/<slug>/ → archives/<slug>/
+alt destination exists
+  Exec --> Handlers : throw archive_already_exists
+  note right : downstream state write aborts
+end
+
+Handlers -> Archiver : archiveRunArtifactsForWorkItem(\n  artifactRoot, workItem,\n  {runs: snapshot})
+activate Archiver
+Archiver -> Archiver : guard: refuse if any run active
+Archiver -> FS : mkdir archives/<slug>/runs/
+loop per terminal run
+  Archiver -> FS : renameSync runs/<id>/ →\n  archives/<slug>/runs/<id>/
+  alt source missing
+    Archiver -> Archiver : record skipped source_missing
+  else destination collision
+    Archiver --> Handlers : throw archive_already_exists_run
+  end
+end
+Archiver -> Archiver : renderArchiveReadme()
+Archiver -> FS : write archives/<slug>/README.md
+Archiver --> Handlers : ArchiveRunArtifactsResult
+deactivate Archiver
+
+Handlers -> Handlers : ctx.meta.studio_archive = {...}\nctx.patch_overrides.archive_path = path\nctx.handler_data.archive_result = {...}
+deactivate Handlers
+
+HSM -> Writer : apply({\n  state: "archived",\n  archive_path,\n  meta: {...studio_archive}\n})
+Writer -> DB : transaction
+HSM --> Exec : DispatchResult\n(handler_data.{closed_issue, archive_result})
+deactivate HSM
+
+Exec -> Cache : upsertIssue(closed)
+Exec -> Exec : removeRunsForWorkItem(id)
+Exec -> FS : stamp disposed_at on surviving\nrunning/completed runs
+Exec -> SSE : emit execution_result (per run)
+Exec -> Preview : refresh dispatch preview
+
+Exec --> Ctrl : ArchiveAndCloseMergedPullRequestResult\n{work_item, closed_issue, removed_run_ids,\n archive: {archive_path, readme_path,\n  archived_run_ids, skipped_run_ids},\n dispatch_preview}
+deactivate Exec
+Ctrl --> UI : 200
+deactivate Ctrl
+
+note over UI, FS
+  Retry safety:
+  Each filesystem step is a rename, which is
+  idempotent on retry (a missing source is a
+  warn-no-op, and a missing plan dir on the
+  second attempt just returns {moved: false}).
+  The HSM write runs last, so a failure after
+  a partial move can be retried to completion.
+end note
+
+@enduml

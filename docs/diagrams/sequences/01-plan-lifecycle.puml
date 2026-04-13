@@ -1,0 +1,138 @@
+@startuml plan-lifecycle
+title Plan Lifecycle — Prepare → Approve → Reopen (ADR 014)
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+actor Operator
+participant "App.svelte\n+ Sidebar" as UI
+participant "PlansController\n/api/plans/*" as Ctrl
+participant "PlansService" as Plans
+participant "PlanDrafterService" as Drafter
+participant "pi AgentSession\n(+ setup-work skill)" as Pi
+participant "fetchIssueBody\n(gh CLI)" as Gh
+participant "WorkItemsService" as WI
+participant "WorkItemHsmService" as HSM
+participant "GraphWriterService" as Writer
+database "SQLite\nmanifest.db" as DB
+participant "ensurePlanDir +\ncanonical scratchpad" as FS
+
+== Prepare plan (planned → drafting) ==
+Operator -> UI : click "Prepare plan"
+UI -> Ctrl : POST /api/plans/studio-42/prepare
+activate Ctrl
+Ctrl -> Plans : prepare("studio-42")
+activate Plans
+
+Plans -> WI : get("studio-42")
+WI --> Plans : WorkItemRecord{state: "planned"}
+Plans -> Plans : assertPreparable(workItem)
+
+Plans -> Gh : fetchIssueBody(repo, issue_number)
+Gh --> Plans : "<issue body>"
+
+Plans -> Drafter : draft(workItem, issueBody)
+activate Drafter
+Drafter -> Drafter : loadSkillBody()\n(escapement/skills/setup-work/SKILL.md)
+Drafter -> Drafter : buildDraftPrompt(skill + context)
+Drafter -> Pi : createAgentSession(cwd,\n  tools: [Read, Grep, Bash])
+Drafter -> Pi : session.prompt(draftPrompt)
+Pi --> Drafter : assistant text\n(JSON envelope)
+Drafter -> Drafter : parseEnvelope(text)\n(brace-balanced extraction)
+Drafter -> Pi : session.dispose()
+Drafter --> Plans : PlanDraftEnvelope\n{summary, tasks, affected_files,\n questions, assumptions, notes}
+deactivate Drafter
+
+Plans -> Plans : persistDraftEnvelope(...)
+Plans -> WI : update("studio-42",\n  {predicted_files: draft.affected_files})
+WI -> Writer : apply([update_work_item])
+Writer -> DB : transaction
+Writer -> DB : UPDATE work_items, bump graph_version
+Writer --> WI : {status: applied}
+
+Plans -> HSM : dispatch("studio-42", {type: "user.start_draft"})
+activate HSM
+HSM -> WI : get("studio-42")
+HSM -> HSM : selectTransition(planned, user.start_draft)\n→ target: drafting
+HSM -> Writer : apply([update_work_item\n{state: "pre_pr.drafting"}])
+Writer -> DB : transaction
+Writer --> HSM : applied
+HSM -> HSM : emit work_item_state_changed\n(SSE /api/graph/stream)
+HSM --> Plans : DispatchResult
+deactivate HSM
+
+Plans -> FS : ensurePlanDir(artifactRoot, "studio-42")
+note right : creates plans/studio_42/\nwith metadata.json
+
+Plans -> Plans : renderPlanScratchpad(\n  workItem, issueBody, templates, draft)
+Plans -> FS : write SCRATCHPAD_studio_42.md
+
+Plans -> Plans : updatePlanMetadata(\n  state: "drafting",\n  scratchpad_path: ...)
+Plans --> Ctrl : PlanResponse\n{metadata, scratchpad_content}
+deactivate Plans
+Ctrl --> UI : 200 + PlanResponse
+deactivate Ctrl
+UI -> UI : refresh graph,\nreload plan status
+
+== Approve plan (drafting → ready) ==
+Operator -> UI : click "Review plan"
+UI -> Ctrl : GET /api/plans/studio-42
+Ctrl -> Plans : get("studio-42")
+Plans --> Ctrl : PlanResponse
+Ctrl --> UI : {scratchpad_content}
+UI -> UI : render modal
+
+Operator -> UI : click "Approve plan"
+UI -> Ctrl : POST /api/plans/studio-42/approve\n  {approved_by: "local"}
+activate Ctrl
+Ctrl -> Plans : approve("studio-42", dto)
+activate Plans
+Plans -> WI : get("studio-42")
+Plans -> FS : read SCRATCHPAD_studio_42.md
+Plans -> Plans : extractAffectedFiles(content)
+Plans -> Plans : diffPredictedFiles(current, extracted)
+
+alt extracted files non-empty
+  Plans -> WI : update({predicted_files: extracted})
+  WI -> Writer : apply(...)
+  Writer -> DB : transaction
+end
+
+Plans -> HSM : dispatch("studio-42", {type: "draft.completed"})
+HSM -> Writer : apply({state: "pre_pr.ready"})
+Writer -> DB : transaction
+HSM -> HSM : emit work_item_state_changed
+
+Plans -> Plans : updatePlanMetadata(\n  state: "ready",\n  approved_at, approved_by)
+Plans -> FS : write plans/studio_42/metadata.json
+Plans --> Ctrl : PlanResponse\n+ predicted_files_diff\n  {added, removed, unchanged}
+deactivate Plans
+Ctrl --> UI : 200 + response
+deactivate Ctrl
+UI -> UI : show diff + status pill
+
+== Reopen (ready → drafting) ==
+Operator -> UI : click "Prepare plan" on ready item
+UI -> Ctrl : POST /api/plans/studio-42/reopen
+Ctrl -> Plans : reopen("studio-42")
+Plans -> HSM : dispatch({type: "user.start_draft"})
+HSM -> Writer : apply({state: "pre_pr.drafting"})
+Plans -> Plans : updatePlanMetadata(\n  state: "drafting",\n  approved_at: null,\n  approved_by: null)
+Plans --> Ctrl : PlanResponse
+Ctrl --> UI : 200
+
+note over UI, FS
+  Subsequent re-prepares always invoke the drafter again
+  (the "always re-draft" policy from issue #167). If the
+  operator wants to preserve manual edits, they should
+  approve first, then reopen later for revisions.
+end note
+
+@enduml

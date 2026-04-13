@@ -1,0 +1,138 @@
+@startuml filesystem-layout
+title Escapement Studio — Persistent State Layout
+
+skinparam componentStyle rectangle
+skinparam roundcorner 6
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam folderBackgroundColor #F8FAFC
+skinparam folderBorderColor #334155
+skinparam databaseBackgroundColor #EFF6FF
+skinparam databaseBorderColor #2563EB
+skinparam fileBackgroundColor #FFFFFF
+skinparam fileBorderColor #64748B
+skinparam ArrowColor #475569
+
+folder "Project checkout\n(process.cwd())" as repo {
+  file ".env\nPORT, STUDIO_API_URL" as env
+  folder ".manifest/" as manifest_dir {
+    database "manifest.db\n(better-sqlite3)" as db
+    file "manifest.db-wal" as wal
+    file "manifest.db-shm" as shm
+  }
+  folder ".studio/" as studio_dir {
+    folder "planning/sessions/" as pi_sessions_dir {
+      file "session-*.jsonl\n(pi AgentSession history)" as pi_jsonl
+    }
+  }
+  file "PLANNING_MEMORY.md" as memory
+  file "STUDIO_OVERVIEW.md" as overview
+  file "STUDIO_ARCHITECTURE.md" as arch
+  folder ".github/ISSUE_TEMPLATE/" as templates_dir {
+    file "bug_report.md\nfeature_request.md\ntask.md" as templates
+  }
+}
+
+folder "Context root\n(ARTIFACT_ROOT env\ndefault: /home/marc/\nescapement-studio-ctx/)" as ctxroot {
+  folder "plans/" as plans {
+    folder "<slug>/\n(e.g. studio_1234/)" as plan_slug {
+      file "SCRATCHPAD_<slug>.md\n(canonical scratchpad)" as scratchpad
+      file "metadata.json\n(PlanMetadata)" as plan_meta
+    }
+  }
+  folder "runs/" as runs {
+    folder "<run_id>/\n(e.g. exec_<ts>/\nor sub_<ts>/)" as run_dir {
+      file "metadata.json\n(stable identity)" as run_meta
+      file "status.json\n(live ExecutionRunRecord)" as status
+      file "events.jsonl\n(append-only)" as events
+      file "summary.md" as summary
+      folder "outputs/" as outputs {
+        file "response.json" as resp
+        file "pull-request.json" as pr_json
+      }
+    }
+  }
+  folder "worktrees/" as worktrees {
+    folder "<branch>/\n(isolated git worktree)" as wt {
+      file "SCRATCHPAD_<slug>.md\n(copy of canonical,\nsynced at phase boundaries)" as wt_scratchpad
+      folder "src/ web/ ..." as wt_repo
+    }
+  }
+  folder "archives/" as archives {
+    folder "<slug>/\n(terminal disposition)" as archive_slug {
+      file "README.md\n(rendered by runArchiver)" as archive_readme
+      file "SCRATCHPAD_<slug>.md\n(carried from plan dir)" as archive_scratchpad
+      file "metadata.json\n(carried from plan dir)" as archive_meta
+      folder "runs/<run_id>/\n(renamed from ../runs/)" as archive_runs
+    }
+  }
+}
+
+database "SQLite tables" as tables #EFF6FF {
+  rectangle "work_items" as work_items
+  rectangle "edges" as edges
+  rectangle "studio_metadata\n- graph_version\n- studio_settings" as studio_meta
+}
+
+db --> tables : schema
+db --> work_items
+db --> edges
+db --> studio_meta
+
+repo .down.> ctxroot : ARTIFACT_ROOT
+
+note right of manifest_dir
+  Path controlled by MANIFEST_PATH
+  (default: .manifest). Table schema
+  extended from escapement-pi core
+  by SQLiteService.migrateWorkItemStates
+  to accept the ADR 014 + ADR 015 state
+  vocabulary including dotted pre_pr.*
+  forms.
+end note
+
+note right of plan_slug
+  Slug derived by workItemSlug():
+  - replace non-alphanumeric with _
+  - collapse runs of _
+  - trim leading/trailing _
+  - refuse empty results
+
+  Created idempotently by
+  ensurePlanDir() which also writes
+  the PlanMetadata marker (work_item_id,
+  state, scratchpad_path, run_ids, ...).
+end note
+
+note right of run_dir
+  status.json is the restart-recovery
+  source of truth for execution runs.
+  Orphaned runs (non-terminal on boot)
+  are rewritten to status=error with
+  an "orphaned_by_restart" activity
+  entry by detectAndMarkOrphans().
+
+  Disposed runs carry disposed_at and
+  are filtered out of recentRuns
+  hydration.
+end note
+
+note right of archive_slug
+  Produced by two paths:
+  1) user.finalize on merged_pr →
+     Close: only work item state moves,
+     no archive bundle is written unless
+     plan dir already existed
+  2) user.archive_and_finalize on
+     merged_pr or closed:
+     - movePlanDirToArchives renames
+       plans/<slug>/ → archives/<slug>/
+     - archiveRunArtifactsForWorkItem
+       renames each terminal run dir
+       into archives/<slug>/runs/<run_id>/
+     - renders README.md
+  Also produced by user.cancel with
+  the same plan-dir-only rename.
+end note
+
+@enduml

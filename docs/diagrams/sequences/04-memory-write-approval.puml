@@ -1,0 +1,101 @@
+@startuml memory-write-approval
+title Planning Memory Change — Propose → Approve → Apply
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+actor Operator
+participant "PlannerChatAdapter\n(approval overlay)" as UI
+participant "PlanningController" as Ctrl
+participant "PlanningService" as Planner
+participant "pi root session" as Pi
+participant "MemoryService" as Mem
+database "PLANNING_MEMORY.md" as MemFile
+queue "SSE /api/agent/stream" as SSE
+
+== Planner proposes a memory change ==
+Operator -> UI : ask planner to update memory
+UI -> Ctrl : POST /api/agent/message
+Ctrl -> Planner : sendMessage(...)
+Planner -> Pi : session.prompt(prompt)
+
+Pi -> Planner : tool call: memory_read {}
+activate Planner
+Planner -> Mem : read()
+Mem -> MemFile : readFileSync
+Mem --> Planner : PlanningMemoryDocument\n{content, content_hash}
+Planner --> Pi : tool result (content)
+deactivate Planner
+
+Pi -> Planner : tool call: memory_write {\n  summary, edits: [\n    {kind: "replace_text", old_text, new_text},\n    {kind: "insert_after_heading",\n     target_heading, new_text},\n    ...\n  ]}
+activate Planner
+Planner -> Planner : normalizeMemoryChange(input)\n(assign edit ids, stamp hash)
+Planner -> Planner : memoryChanges.set(change_id, change)\nactiveMemoryChangeId = change_id
+Planner -> SSE : emit memory_change_proposal\n{change}
+Planner --> Pi : tool result\n"Staged planning memory change ..."
+deactivate Planner
+
+Pi -> SSE : message_end, turn_end
+SSE --> UI : memory_change_proposal event
+UI -> UI : render overlay\nselectedMemoryEditIds = all
+
+== Operator approves a subset ==
+Operator -> UI : deselect unwanted edits
+Operator -> UI : click "Approve N memory edit(s)"
+UI -> Ctrl : POST /api/agent/memory/approve\n  {change_id, approved_edit_ids}
+activate Ctrl
+Ctrl -> Planner : approveMemoryChange(dto)
+activate Planner
+Planner -> Mem : applyChange(change, approved_edit_ids)
+activate Mem
+Mem -> Mem : read current document
+alt current content_hash != change.based_on_content_hash
+  Mem --> Planner : {result: {status: "stale",\n  previous/current_content_hash}}
+  Planner -> SSE : emit memory_write_result (stale)
+  Planner --> Ctrl : {result, active_memory_change}
+  Ctrl --> UI : 200 (shown as stale banner)
+end
+
+Mem -> Mem : validateEdits(content, selectedEdits)
+note right
+  replace_text: old_text must match exactly once
+  delete_text: old_text must match exactly once
+  insert_after_heading: target heading must exist
+end note
+alt any validation error
+  Mem --> Planner : {status: "validation_failed", errors}
+  Planner --> Ctrl : envelope
+  Ctrl --> UI : 200 (error shown)
+end
+
+Mem -> Mem : applyEdits(content, edits)
+Mem -> MemFile : writeFileSync(next content)
+Mem -> Mem : re-read + compute new content_hash
+Mem --> Planner : {\n  result: {status: "applied",\n    previous/new_content_hash,\n    applied_edit_ids},\n  memory: new document\n}
+deactivate Mem
+
+Planner -> Planner : updateActiveMemoryChangeAfterApply(\n  change, approved_edit_ids)
+Planner -> SSE : emit memory_write_result
+Planner --> Ctrl : PlanningMemoryWriteResult
+deactivate Planner
+Ctrl --> UI : 200
+deactivate Ctrl
+
+UI -> UI : show success banner\n(hash before → hash after)
+
+note over MemFile
+  Writes to PLANNING_MEMORY.md only happen
+  after explicit subset approval. The planner
+  cannot mutate memory without routing through
+  this flow (memory_write tool is reserved for
+  staging proposals, not writing).
+end note
+
+@enduml

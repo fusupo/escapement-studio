@@ -1,0 +1,136 @@
+@startuml graph-mutation-approval
+title Graph Mutation Proposal & Approval
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+actor Operator
+participant "PlannerChatAdapter\n+ approval overlay" as UI
+participant "PlanningController\n/api/agent/*" as Ctrl
+participant "PlanningService" as Planner
+participant "Pi root session\n(+ custom tools)" as Pi
+participant "GraphService\n(graph_query)" as GraphR
+participant "ContextService" as CtxSvc
+participant "GraphWriterService" as Writer
+database "SQLite" as DB
+queue "SSE\n/api/agent/stream" as SSE
+queue "SSE\n/api/graph/stream" as GraphSSE
+
+== Operator sends planning message ==
+Operator -> UI : type message, press Enter
+UI -> Ctrl : POST /api/agent/message\n  {message, context: {graph_mode, repo, track}}
+activate Ctrl
+Ctrl -> Planner : sendMessage(dto)
+activate Planner
+Planner -> CtxSvc : assemble({graph_mode, repo, track, session, user_message})
+CtxSvc -> GraphR : getGraph / frontier triples
+CtxSvc -> CtxSvc : readDocument overview / architecture / memory\n  + issue templates if relevant
+CtxSvc --> Planner : PlanningContext (docs + triples + convo window)
+Planner -> Planner : formatForPrompt(ctx, message)
+Planner -> Pi : session.prompt(prompt)
+Planner --> Ctrl : {accepted: true}
+deactivate Planner
+Ctrl --> UI : 202
+deactivate Ctrl
+
+== Agent runs the turn ==
+activate Pi
+Pi -> SSE : agent_start, turn_start
+Pi -> SSE : message_update (streaming)
+
+alt planner inspects graph first
+  Pi -> Planner : tool call: graph_query {query: "frontier"}
+  Planner -> GraphR : getFrontier(repo)
+  GraphR --> Planner : FrontierItem[]
+  Planner --> Pi : tool result
+  Pi -> SSE : tool_execution_start/end\n(graph_query)
+end
+
+== Planner stages a proposal ==
+Pi -> Planner : tool call: propose_mutations(envelope)
+activate Planner
+Planner -> GraphR : getGraph().graph_version\n(fallback if context omits)
+Planner -> Planner : normalizeProposal(input)\n(assign mutation ids, stamp source)
+Planner -> Planner : proposals.set(proposal_id, proposal)\nactiveProposalId = proposal_id
+Planner -> SSE : emit mutation_proposal {proposal}
+Planner --> Pi : tool result\n"Staged proposal ... with N mutations"
+deactivate Planner
+Pi -> SSE : message_end, turn_end, agent_end
+deactivate Pi
+
+SSE --> UI : mutation_proposal event
+UI -> UI : render approval overlay\nselectedMutationIds = all ids
+
+== Operator reviews and approves ==
+Operator -> UI : deselect unwanted mutations
+Operator -> UI : click "Approve N selected"
+UI -> Ctrl : POST /api/agent/proposals/approve\n  {proposal_id, approved_mutation_ids}
+activate Ctrl
+Ctrl -> Planner : approveProposal(dto)
+activate Planner
+Planner -> Planner : lookup proposal + selected mutations
+Planner -> Writer : apply({\n  proposal_id,\n  based_on_graph_version,\n  mutations: selected.map(toGraphMutation)\n})
+activate Writer
+Writer -> Writer : currentGraphVersion = SQLite.getGraphVersion()
+alt based_on_graph_version mismatches
+  Writer --> Planner : {status: "stale", current_graph_version}
+  Planner -> SSE : emit graph_commit_result\n(status: stale)
+  Planner --> Ctrl : stale envelope
+  Ctrl --> UI : 200 (stale shown inline)
+end
+
+Writer -> Writer : loadSnapshot() + validateMutations
+alt any validation error
+  Writer --> Planner : {status: "validation_failed", errors}
+  Planner --> Ctrl : envelope with errors
+  Ctrl --> UI : 200
+end
+
+Writer -> DB : transaction\n  apply each mutation in normalized order
+note right
+  Order:
+  1. create_work_item
+  2. update_work_item
+  3. create_edge
+  4. update_edge
+  5. delete_edge
+  6. delete_work_item
+end note
+Writer -> DB : incrementGraphVersion()
+Writer --> Planner : {status: "applied",\n  previous/new_graph_version,\n  applied_mutation_ids}
+deactivate Writer
+
+Planner -> Planner : updateActiveProposalAfterApply(\n  proposal, approvedIds)
+note right : remaining mutations stay\non activeProposalId so the\nreviewer can iterate
+
+Planner -> SSE : emit graph_commit_result
+Planner --> Ctrl : PlanningGraphCommitResult
+deactivate Planner
+Ctrl --> UI : 200
+deactivate Ctrl
+
+note over UI : overlay shows\n"Applied N mutation(s)"\nbanner
+
+UI -> UI : dispatch "graphChanged"
+
+note over DB, GraphSSE
+  Note: work_item state transitions happen only
+  through the HSM. The GraphWriterController rejects
+  update_work_item patches that include a state field.
+  So SSE /api/graph/stream work_item_state_changed
+  events come from HSM dispatches, NOT from graph
+  mutation commits.
+end note
+
+UI -> "App.svelte" as App : refresh()
+App -> "GET /api/graph" as GAPI : getGraph(filters)
+GAPI --> App : fresh graph + graph_version
+
+@enduml

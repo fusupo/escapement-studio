@@ -1,0 +1,149 @@
+@startuml frontend-structure
+title Escapement Studio — Frontend Structure
+
+skinparam componentStyle rectangle
+skinparam roundcorner 8
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam packageBackgroundColor #F8FAFC
+skinparam packageBorderColor #334155
+skinparam componentBackgroundColor #FFFFFF
+skinparam ArrowColor #475569
+
+package "web/src/main.js" {
+  [mount(App)] as mount
+}
+
+package "web/src/App.svelte" as app_pkg {
+  component "App.svelte\n- activeTab state\n- filters + selectedId\n- launchEligibility cache\n- planState cache\n- cancel/delete dialogs\n- plan review modal" as app
+}
+
+package "Tabs" as tabs {
+  [Planning tab\n(3-col resizable)] as planning_tab
+  [Execute tab] as exec_tab
+  [Reconcile tab] as recon_tab
+  [Settings tab] as set_tab
+}
+
+package "web/src/components/" as components {
+  package "Planning tab components" {
+    [PlannerChatAdapter.svelte\n- chat transcript\n- tools subtab\n- approval overlay\n  (graph / memory /\n   github sync)] as planner
+    [GraphView.svelte\n- D3 + dagre-d3-es\n- renderGraph()\n- zoom/pan + tooltip] as graph_view
+    [GraphNodeContextMenu.svelte] as ctx_menu
+    [Sidebar.svelte\n- Selected node\n- Issue details\n- Plan + Execution card\n- Create + edge forms] as sidebar
+    [FiltersToolbar.svelte] as filters
+  }
+
+  package "Execute tab components" {
+    [ExecutionDispatchPanel.svelte\n(main)] as exec_panel
+    [ExecutionDispatchList.svelte] as disp_list
+    [ExecutionDispatchListItem.svelte] as disp_item
+    [ExecutionDetailPane.svelte] as detail
+    [ExecutionChecklist.svelte] as checklist
+    [ExecutionArchivedList.svelte] as archived
+    [ExecutionRunList.svelte\n(unused in App, legacy)] as run_list
+    [ExecutionRunListItem.svelte] as run_item
+    [ExecutionContextSidebar.svelte\n(unused in App, legacy)] as exec_sidebar
+  }
+
+  [ReconciliationPanel.svelte] as recon_panel
+  [SettingsPanel.svelte] as set_panel
+  [WorkspaceTabs.svelte\n(unused in App, legacy)] as ws_tabs
+}
+
+package "web/src/lib/" as lib {
+  [api.js\n(REST client)] as api
+  [planner-chat.js\n(SSE client +\n extractMessageText)] as planner_sse
+  [graph.js\n(D3 render + tooltip)] as graph_js
+  [graph-node-actions.js\n(pure logic, tested)] as gna
+  [markdown.js\n(marked wrapper)] as md
+}
+
+package "Server endpoints" as server_eps #EFF6FF {
+  [/api/agent/*] as agent_api
+  [/api/execution/*] as exec_api
+  [/api/graph/* /api/work-items/*\n/api/edges/*] as graph_api
+  [/api/plans/*] as plans_api
+  [/api/reconciliation/*] as recon_api
+  [/api/settings/*] as set_api
+  [/api/github/*] as gh_api
+  [/health] as health_api
+}
+
+package "Server SSE streams" as sse_streams #FDF4FF {
+  [/api/agent/stream] as agent_sse
+  [/api/execution/stream] as exec_sse
+  [/api/graph/stream] as graph_sse
+}
+
+mount --> app : mount(App)
+app --> planning_tab
+app --> exec_tab
+app --> recon_tab
+app --> set_tab
+
+planning_tab --> planner
+planning_tab --> graph_view
+planning_tab --> sidebar
+planning_tab --> filters
+planning_tab --> ctx_menu
+exec_tab --> exec_panel
+recon_tab --> recon_panel
+set_tab --> set_panel
+
+planner --> planner_sse
+planner --> api
+planner --> md : renderMarkdown
+
+graph_view --> graph_js
+graph_js --> graph_view : render()
+
+sidebar --> api : getPlan, refreshPlanStatus
+ctx_menu --> gna : buildGraphNodeContextMenu
+app --> gna : buildGraphNodeContextMenu (reactive)
+
+exec_panel --> disp_list
+exec_panel --> detail
+exec_panel --> checklist
+exec_panel --> archived
+exec_panel --> api
+exec_panel --> md : renderMarkdown
+
+disp_list --> disp_item
+archived --> api : getArchivedExecutionRunBundle
+
+recon_panel --> api : getReconciliationReports
+set_panel --> api : getSettings, getAvailableModels
+
+api --> agent_api
+api --> exec_api
+api --> graph_api
+api --> plans_api
+api --> recon_api
+api --> set_api
+api --> gh_api
+api --> health_api
+
+planner_sse --> agent_sse : EventSource
+exec_panel --> exec_sse : EventSource (inline)
+app --> graph_sse : EventSource (inline,\nschedules graph refresh)
+
+note right of gna
+  The only frontend module
+  unit-tested by Vitest
+  (src/__tests__/graph-node-actions.test.ts)
+  Imported into the Node test
+  env directly.
+end note
+
+note right of run_list
+  ExecutionRunList /
+  ExecutionRunListItem /
+  ExecutionContextSidebar /
+  WorkspaceTabs are present
+  in the tree but not used
+  by App.svelte anymore —
+  legacy from a prior layout.
+end note
+
+@enduml

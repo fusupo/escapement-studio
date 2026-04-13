@@ -1,0 +1,128 @@
+@startuml backend-modules
+title Escapement Studio — NestJS Module Graph
+
+skinparam componentStyle rectangle
+skinparam roundcorner 8
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam packageBackgroundColor #F8FAFC
+skinparam packageBorderColor #334155
+skinparam ArrowColor #475569
+
+note as legend
+  Arrows: A → B means "A imports B"
+  Dashed arrow = forwardRef()
+    (resolves a declared circular dependency)
+  GitModule is **defined** (src/modules/git/)
+  but is NOT imported by AppModule — it is
+  vestigial as of the current codebase.
+end note
+
+package "AppModule\nsrc/app.module.ts" as app {
+}
+
+package "ScheduleModule\n@nestjs/schedule" as schedule {
+}
+
+package "GraphModule" as graph {
+  [SQLiteService]
+  [WorkItemsService]
+  [EdgesService]
+  [GraphService]
+  [GraphWriterService]
+  [GraphEventsService]
+  [WorkItemHsmService]
+  [HsmActionHandlers]
+  [HsmGuardHandlers]
+  [WorkItemsController]
+  [EdgesController]
+  [GraphController]
+}
+
+package "ExecutionModule" as execution {
+  [ExecutionService]
+  [GitHubBatchCache]
+  [GitHubCacheScheduler]
+  [WorkItemReconcilerService]
+  [ExecutionController]
+  [GitHubCacheController]
+  [WorkItemReconcilerController]
+}
+
+package "PlanningModule" as planning {
+  [PlanningService]
+  [ContextService]
+  [MemoryService]
+  [SubAgentService]
+  [PlanningController]
+}
+
+package "PlansModule" as plans {
+  [PlansService]
+  [PlanDrafterService]
+  [PlansController]
+}
+
+package "GitHubModule" as github {
+  [GitHubService]
+  [StudioIssueTemplateService]
+  [GitHubController]
+}
+
+package "ReconciliationModule" as recon {
+  [ReconciliationService]
+  [ReconciliationController]
+}
+
+package "SettingsModule" as settings {
+  [SettingsService]
+  [ModelRegistryService]
+  [SettingsController]
+}
+
+package "HealthModule" as health {
+  [HealthService]
+  [HealthController]
+}
+
+package "(GitModule — not imported)" as git_module_unused #FFF7ED {
+  [GitService]
+}
+
+' --- AppModule imports ---
+app --> schedule
+app --> execution
+app --> graph
+app --> health
+app --> github
+app --> planning
+app --> plans
+app --> recon
+app --> settings
+
+' --- forwardRef circular deps ---
+graph .left.> execution : forwardRef
+graph .left.> github : forwardRef
+graph .left.> plans : forwardRef
+
+execution .right.> graph : forwardRef
+execution .right.> github : forwardRef
+execution .right.> plans : forwardRef
+execution .right.> settings : forwardRef
+
+plans ..> graph : forwardRef
+plans ..> github : forwardRef
+plans ..> settings : forwardRef
+
+' --- Straight imports ---
+github --> graph
+planning --> graph
+planning --> github
+planning --> recon
+planning --> settings
+recon --> graph
+recon --> execution
+health --> graph
+settings ..> graph : forwardRef
+
+@enduml

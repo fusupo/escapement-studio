@@ -1,0 +1,137 @@
+@startuml startup-reconcile
+title Server Startup — Reconcile, Rehydrate, Register HSM Handlers (issue #176)
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+participant "bootstrap()\nsrc/main.ts" as Boot
+participant "NestFactory\n+ AppModule" as Nest
+participant "ExecutionService\nonModuleInit()" as Exec
+participant "WorkItemReconcilerService" as Reconciler
+participant "run-disk-store.ts" as Disk
+participant "FS:\nruns/<id>/status.json" as FS
+participant "WorkItemsService" as WI
+participant "GitHubBatchCache" as Cache
+participant "GitHubService" as Gh
+participant "WorkItemHsmService\nregisterActionHandler" as HSM
+database "SQLite" as DB
+
+Boot -> Nest : NestFactory.create(AppModule)
+activate Nest
+Nest -> Nest : instantiate module graph\n(resolves forwardRef cycles)
+Nest -> Exec : onModuleInit()
+activate Exec
+
+== Orphan detection + reconcile pass ==
+Exec -> Reconciler : runStartupReconcile()
+activate Reconciler
+
+Reconciler -> Reconciler : detectOrphans()
+Reconciler -> Disk : detectAndMarkOrphans(runsDir)
+activate Disk
+Disk -> FS : readdirSync(runsDir)
+loop per run dir with status.json
+  Disk -> FS : readFileSync + JSON.parse
+  Disk -> Disk : coerceRecord(raw)
+  alt not a valid record
+    Disk -> Disk : warn + skip
+  else terminal status
+    Disk -> Disk : leave untouched
+  else non-terminal\n(queued/preparing/disambiguating/running)
+    Disk -> Disk : build orphan rewrite\n{status: "error",\n  activity_log += orphan entry,\n  errors += orphaned_by_restart}
+    Disk -> FS : atomicWriteJson(status.json)\n(write to .tmp → rename)
+  end
+end
+Disk --> Reconciler : OrphanDetectionResult[]
+deactivate Disk
+
+Reconciler -> Reconciler : reconcile()
+Reconciler -> WI : list({}) filtered to\nRECONCILABLE_STATES\n(in_progress, run_errored,\n open_pr, merged_pr, closed, ...)
+Reconciler -> Disk : loadRunRecordsFromDisk(runsDir)\n(skip disposed by default)
+Disk --> Reconciler : ExecutionRunRecord[]
+
+loop per reconcilable work item
+  Reconciler -> Reconciler : pickLatestRun(byWorkItem)
+  Reconciler -> Reconciler : probeWorktree(workItem, latestRun)
+  note right : pathExists, git rev-list,\ngit status --porcelain
+  Reconciler -> Reconciler : probePullRequest(...)
+  alt stored PR on latest run
+    Reconciler -> Reconciler : reuse stored snapshot\n(no gh call)
+  else need network
+    Reconciler -> Cache : findPullRequestForBranch(repo, branch)
+    Cache -> Gh : (first call) listPullRequests
+    Gh -> Gh : gh pr list
+  end
+  alt PR is merged
+    Reconciler -> Cache : listIssues(repo)
+    Reconciler -> Reconciler : derive github_issue_state
+  end
+  Reconciler -> HSM : getEnabledEvents(workItem.id)
+  HSM --> Reconciler : user.* event list
+  Reconciler -> Reconciler : decideNextAction(inputs)\n(pure decision table)
+end
+
+Reconciler -> Reconciler : buildSummary(reconciled, orphans)
+Reconciler -> Reconciler : logger.log summary
+Reconciler --> Exec : {reconciled, orphans, summary}
+deactivate Reconciler
+
+== Rehydrate recentRuns ==
+Exec -> Exec : hydrateRecentRunsFromDisk()
+Exec -> Disk : loadRunRecordsForArtifactRoot(artifactRoot)
+Disk -> FS : read all non-disposed status.json
+Disk --> Exec : ExecutionRunRecord[]
+loop per loaded run
+  Exec -> Exec : dedupe by run_id\n(in-memory wins)
+  Exec -> Exec : push into recentRuns
+end
+Exec -> Exec : sort by updated_at desc,\ncap at recentRunLimit (16)
+
+== Register HSM action handlers ==
+Exec -> HSM : registerActionHandler("closeGhIssue", inlineHandler)
+note right
+  Handler reads workItem.repo + issue_number,
+  calls GitHubService.closeIssue (idempotent),
+  writes handler_data.closed_issue,
+  stamps the cache via upsertIssue.
+  Throws on failure → HSM aborts state write.
+end note
+
+Exec -> HSM : registerActionHandler("runArchiver", inlineHandler)
+note right
+  Handler captures a run snapshot,
+  calls movePlanDirToArchives,
+  calls archiveRunArtifactsForWorkItem,
+  sets ctx.patch_overrides.archive_path,
+  stamps ctx.meta.studio_archive,
+  surfaces archive_result via handler_data.
+end note
+
+Exec --> Nest : onModuleInit complete
+deactivate Exec
+
+== App.listen ==
+Nest --> Boot : app
+Boot -> Nest : app.listen(port)
+deactivate Nest
+Boot -> Boot : log "listening on ..."
+
+note over Exec, DB
+  All steps tolerate IO errors:
+  - detect/reconcile failures are caught and logged
+  - hydrate failures are caught and logged
+  - handler registration failures would throw, but
+    both handlers are defined inline so this only
+    breaks if the service itself is broken
+  The server is always reachable, even with a
+  corrupted runs directory.
+end note
+
+@enduml

@@ -1,0 +1,109 @@
+@startuml github-cache-sweep
+title GitHub Cache Sweep — Scheduler → HSM Advance
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+participant "@nestjs/schedule\n(Cron)" as Cron
+participant "GitHubCacheScheduler" as Sched
+participant "GitHubBatchCache" as Cache
+participant "GitHubService\n(gh CLI wrapper)" as Gh
+participant "gh CLI" as GhCli
+participant "WorkItemsService" as WI
+participant "WorkItemHsmService" as HSM
+participant "GraphWriterService" as Writer
+database "SQLite" as DB
+queue "SSE /api/graph/stream" as SSE
+
+note over Cron
+  Triggered every minute by
+  @Cron(CronExpression.EVERY_MINUTE)
+  in handleTick(). Also reachable
+  on demand via POST /api/github-cache/refresh.
+end note
+
+Cron -> Sched : handleTick()
+activate Sched
+
+Sched -> Sched : sweep()
+note right : no repo arg → discoverTrackedRepos()\nreads WorkItemsService.list({}) and\ncollects distinct non-null repos
+
+loop per repo
+  Sched -> Cache : invalidate(repo)
+  Sched -> Cache : listPullRequests(repo)
+  activate Cache
+  Cache -> Gh : listPullRequests(repo)
+  Gh -> GhCli : gh pr list --state all\n--limit 300 --json ...
+  GhCli --> Gh : RawPullRequestResponse[]
+  Gh --> Cache : GitHubListedPullRequest[]
+  Cache -> Cache : entry.data = toPullRequestMap(...)
+  Cache --> Sched : Map<number, CachedPullRequest>
+  deactivate Cache
+
+  Sched -> Cache : listIssues(repo)
+  activate Cache
+  Cache -> Gh : listIssues(repo)
+  Gh -> GhCli : gh issue list --state all\n--limit 500 --json ...
+  GhCli --> Gh : RawIssueListResponse[]
+  Gh --> Cache : GitHubListedIssue[]
+  Cache --> Sched : Map<number, CachedIssue>
+  deactivate Cache
+
+  Sched -> WI : list({}) filtered to\nDISPATCH_SOURCE_STATES\n(in_progress, pre_pr.in_progress,\n open_pr, merged_pr)
+
+  loop per work item
+    Sched -> Sched : detectStateAdvances(item, prs, issues)
+    note right
+      in_progress + PR on branch → gh.pr_opened
+      open_pr + PR state MERGED → gh.pr_merged
+      merged_pr + linked issue closed → gh.issue_closed
+    end note
+    alt events to dispatch
+      loop per event
+        Sched -> HSM : dispatch(workItem.id, event)
+        activate HSM
+        HSM -> HSM : selectTransition(...)\nrun inline actions\n(stampMeta:..., etc.)
+        HSM -> Writer : apply({state: next, meta})
+        Writer -> DB : transaction
+        HSM -> SSE : emit work_item_state_changed
+        HSM --> Sched : DispatchResult
+        deactivate HSM
+        alt mutation_applied
+          Sched -> Sched : dispatched++
+          Sched -> Sched : logger.log("Sweep dispatched ...")
+        end
+      end
+    end
+  end
+
+  Sched -> Sched : push SweepResult\n{repo, prs, issues, dispatched}
+end
+
+Sched --> Cron : SweepResult[]
+deactivate Sched
+
+note over Cron, SSE
+  Per-repo errors (gh rate limiting,
+  network flakes, HSM rejection) are
+  caught inside sweepRepo and logged
+  without stopping other repos. The
+  sweep is best-effort and eventually
+  consistent.
+
+  Write-through updates from
+  ExecutionService.createPullRequest
+  and closeMergedPullRequest pre-
+  populate cache entries so the next
+  reconcile sees them immediately
+  instead of waiting for the next
+  tick.
+end note
+
+@enduml

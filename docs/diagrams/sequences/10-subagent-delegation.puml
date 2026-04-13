@@ -1,0 +1,122 @@
+@startuml subagent-delegation
+title Sub-agent Delegation — code-crawler / scope-predictor / reconciliation-analyst
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+actor Operator
+participant "PlannerChatAdapter\n(Tools subtab)" as UI
+participant "PlanningController" as Ctrl
+participant "PlanningService" as Planner
+participant "pi root session" as RootPi
+participant "SubAgentService" as Sub
+participant "pi ephemeral session\n(Read+Grep+Bash)" as SubPi
+participant "FS:\nruns/sub_<ts>/" as FS
+queue "SSE /api/agent/stream" as SSE
+
+== Operator asks planner to delegate ==
+Operator -> UI : "use delegate_subagent with\n  agent_type: code-crawler to ..."
+UI -> Ctrl : POST /api/agent/message
+Ctrl -> Planner : sendMessage(...)
+Planner -> RootPi : session.prompt(...)
+
+== Root agent calls delegate_subagent tool ==
+RootPi -> Planner : tool call: delegate_subagent {\n  agent_type, task,\n  repo, focus_paths, work_item_ids, notes\n}
+activate Planner
+Planner -> Sub : runDelegation(input, {\n  onStatus: (run) => emit subagent_status,\n  onResult: (run) => emit subagent_result\n})
+activate Sub
+
+Sub -> Sub : runId = "sub_" + Date.now()
+Sub -> FS : mkdir runs/sub_<ts>/outputs/
+Sub -> Sub : build SubAgentRunRecord (status: "queued")
+Sub -> FS : write metadata.json +\nstatus.json\nappend run_created to events.jsonl
+Sub -> Planner : onStatus(run)
+Planner -> SSE : emit subagent_status
+Planner --> UI : (reactive; UI shows "queued")
+
+== Create ephemeral pi session ==
+Sub -> SubPi : createAgentSession({\n  cwd: process.cwd(),\n  sessionManager: inMemory,\n  model: settings.getSelectedModel(),\n  tools: [Read, Grep, Bash]\n})
+SubPi --> Sub : AgentSession
+
+Sub -> Sub : updateRun(status: "running",\n  started_at, session_id,\n  progress_message: "Sub-agent session started")
+Sub -> FS : status.json + events.jsonl
+Sub -> Planner : onStatus(run)
+Planner -> SSE : emit subagent_status
+
+Sub -> SubPi : session.subscribe(handleSessionEvent)
+Sub -> SubPi : session.prompt(buildPrompt(run))
+activate SubPi
+
+note right
+  Prompt embeds:
+  - role-specific instructions
+    (code-crawler / scope-predictor /
+     reconciliation-analyst)
+  - Strict boundaries (no file writes,
+    bounded evidence)
+  - JSON envelope schema
+  - Task + repo + focus paths +
+    work item ids + notes
+end note
+
+loop agent turns
+  SubPi -> SubPi : Read/Grep/Bash
+  SubPi -> Sub : tool_execution_start/end events
+  Sub -> Sub : updateRun(progress_message)
+  Sub -> FS : append events.jsonl
+  Sub -> Planner : onStatus(run)
+  Planner -> SSE : emit subagent_status
+end
+SubPi --> Sub : prompt resolves
+deactivate SubPi
+
+Sub -> SubPi : getLastAssistantText()
+Sub -> SubPi : dispose()
+Sub -> FS : write runs/sub_<ts>/outputs/response.json
+Sub -> Sub : parseResult(run, text)
+note right
+  ensureJsonText strips markdown fences,
+  JSON.parse, validate shape:
+  {status, summary, confidence,
+   findings[], open_questions[], errors[]}
+  Returns an error envelope on parse failure.
+end note
+
+alt parsed status === "completed"
+  Sub -> Sub : updateRun(status: "completed",\n  completed_at, result)
+else parsed status === "error"
+  Sub -> Sub : updateRun(status: "error", result)
+end
+
+Sub -> FS : write summary.md +\nstatus.json +\nevents.jsonl(run_completed)
+
+Sub -> Planner : onStatus(run) + onResult(run)
+Planner -> SSE : emit subagent_status + subagent_result
+Sub --> Planner : SubAgentRunRecord
+deactivate Sub
+
+Planner --> RootPi : tool result\n(JSON envelope stringified)
+deactivate Planner
+
+RootPi -> SSE : message_update / message_end\n(root agent interprets result)
+
+== Browser renders the run ==
+UI -> UI : subagent_status event\n→ recentSubagentRuns state update
+UI -> UI : subagent_result event\n→ render finding list
+
+note over UI, FS
+  Sub-agent runs share the same
+  runs/<run_id>/ artifact contract
+  as execution runs (metadata,
+  status, events, summary, outputs)
+  but never touch a worktree.
+end note
+
+@enduml

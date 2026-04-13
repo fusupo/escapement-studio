@@ -1,0 +1,295 @@
+@startuml backend-services
+title Escapement Studio — Service Collaborations
+
+skinparam classBackgroundColor #F8FAFC
+skinparam classBorderColor #334155
+skinparam packageBackgroundColor #FFFFFF
+skinparam packageBorderColor #94A3B8
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam ArrowColor #475569
+skinparam stereotypeCBackgroundColor #DBEAFE
+
+' ------------------ Graph core ------------------
+package "Graph core" {
+  class SQLiteService {
+    - manifestPath
+    + getDb() : Database
+    + getGraphVersion() : string
+    + incrementGraphVersion() : string
+    - migrateWorkItemStates()
+  }
+
+  class GraphWriterService {
+    + apply(dto) : ApplyGraphMutationsResult
+    + deleteWorkItemWithEdges(id, edgeIds)
+    - validateMutations(mutations, snapshot)
+    - applyMutation(mutation)
+    - loadSnapshot()
+  }
+
+  class WorkItemsService {
+    + list(filters)
+    + get(id)
+    + create(dto)
+    + update(id, patch)
+    + delete(id)
+    + unsafeSetState(id, state, reason)
+    + listByRepoBranch / ...IssueNumber / ...PullRequestNumber
+  }
+
+  class EdgesService {
+    + list / get / create / update / delete
+  }
+
+  class GraphService {
+    + getGraph(filters)
+    + getFrontier(repo)
+    + getPlan(repo) : DispatchPlan
+  }
+
+  class GraphEventsService {
+    + stream() : Observable<MessageEvent>
+    + emitWorkItemStateChanged(payload)
+  }
+
+  class WorkItemHsmService {
+    - chart : ParsedChart  (parsed from work-item.scxml)
+    - actionHandlers : Map<name, HsmActionHandler>
+    + dispatch(id, event) : DispatchResult
+    + getEnabledEvents(id) : string[]
+    + registerActionHandler(name, handler)
+  }
+}
+
+' ------------------ Execution ------------------
+package "Execution" {
+  class ExecutionService {
+    + onModuleInit()  // reconcile + rehydrate + register handlers
+    + getPreview(repo) : ExecutionDispatchPreview
+    + launch(dto) : LaunchExecutionRunResult
+    + createPullRequest(dto)
+    + syncMergedPullRequest(dto)
+    + closeMergedPullRequest(id)
+    + archiveAndCloseMergedPullRequest(id)
+    + cancelWorkItem(dto)
+    + deleteWorkItem(dto)
+    + resolveDisambiguation(dto)
+    + sendFollowUp(dto)
+    + listRecentRuns() / listArchivedRunBundles()
+    + hydrateRecentRunsFromDisk()
+    - executeRun(run, node, disambiguate)
+  }
+
+  class GitHubBatchCache {
+    + listPullRequests(repo) : Map
+    + listIssues(repo) : Map
+    + findPullRequestForBranch(repo, branch)
+    + upsertPullRequest / upsertIssue
+    + invalidate(repo)
+  }
+
+  class GitHubCacheScheduler {
+    + @Cron(EVERY_MINUTE) handleTick()
+    + sweep(repo?) : SweepResult[]
+    - sweepRepo(repo)
+    - detectStateAdvances(workItem, prs, issues)
+  }
+
+  class WorkItemReconcilerService {
+    + detectOrphans() : OrphanDetectionResult[]
+    + reconcile(options) : ReconciledWorkItem[]
+    + runStartupReconcile()
+  }
+
+  class "run-disk-store.ts" as disk_store {
+    + loadRunRecordsFromDisk()
+    + detectAndMarkOrphans()
+    + coerceRecord()
+  }
+
+  class "run-archiver.ts" as archiver {
+    + archiveRunArtifactsForWorkItem()
+    + renderArchiveReadme()
+  }
+}
+
+' ------------------ Planning ------------------
+package "Planning (root agent)" {
+  class PlanningService {
+    - session : AgentSession (pi)
+    - proposals / memoryChanges / githubSyncs : Map
+    + stream() : Observable<MessageEvent>
+    + getSessionSnapshot()
+    + sendMessage(dto)
+    + approveProposal / approveMemoryChange / approveGitHubSync
+    + dismissAllProposals()
+    -- pi custom tools --
+    - createGraphQueryTool()
+    - createProposeMutationsTool()
+    - createMemoryRead/WriteTool()
+    - createDelegateSubAgentTool()
+    - createGitHubRead/Create/SyncTool()
+    - createReconciliationQueryTool()
+  }
+
+  class ContextService {
+    + assemble(input) : PlanningContext
+    + formatForPrompt(context, userMessage)
+    - buildDefaultSlice / buildFocusedSlice
+    - serializeTriples(items, edges)
+    - readDocument(kind, path)
+  }
+
+  class MemoryService {
+    + read() : PlanningMemoryDocument
+    + applyChange(change, approvedEditIds)
+    - validateEdits / applyEdits
+  }
+
+  class SubAgentService {
+    + listRecentRuns()
+    + runDelegation(input, hooks) : SubAgentRunRecord
+    - buildPrompt(run)
+    - parseResult(run, text)
+  }
+}
+
+' ------------------ Plans ------------------
+package "Plans (ADR 014)" {
+  class PlansService {
+    + prepare(id) : PlanResponse
+    + approve(id, dto)
+    + reopen(id)
+    + get(id)
+    + deletePlanArtifacts(id)
+    + persistDraftEnvelope(id, draft, issueBody)
+    + renderPlanScratchpad(workItem, issueBody, templates, draft?)
+    + extractAffectedFiles(content)
+    + diffPredictedFiles(current, next)
+  }
+
+  class PlanDrafterService {
+    + draft(workItem, issueBody) : PlanDraftEnvelope
+    + startDraft(workItem, issueBody) : PlanDraftHandle
+    + parseEnvelope(text)
+    + loadSkillBody()
+    - runDraftAttempt()
+  }
+}
+
+' ------------------ GitHub ------------------
+package "GitHub" {
+  class GitHubService {
+    + createIssue / closeIssue / deleteIssue / readIssue
+    + listIssues(repo)
+    + readPullRequest(repo, n)
+    + listPullRequests(repo)
+    + findPullRequestForBranch(repo, branch)
+    + stageManagedBlockSync(workItemId)
+    + applySyncProposal(proposal, approvedOperationIds)
+    + registerPullRequestTruthRefresher(fn)
+    - runGh / runGhJson (execFileSync gh)
+  }
+
+  class StudioIssueTemplateService {
+    + listTemplates()
+    + getPlanningDocument(userMessage?)
+  }
+}
+
+' ------------------ Misc ------------------
+class ReconciliationService {
+  + listReports(id?)
+  + getReport(id)
+}
+
+class SettingsService {
+  + getSettings / updateSettings
+  + getSelectedModel() : Model
+}
+
+class HsmActionHandlers {
+  // reference vocabulary used by tests
+  // Live action handlers are registered inline
+  // in ExecutionService.onModuleInit()
+  + createRunRecord(ctx)
+  + closeGhIssue(ctx)
+  + runArchiver(ctx)
+  + kickOffPlanDrafter(ctx)
+  + stampMeta(name)
+}
+
+' -------- Relationships (collaborations) --------
+WorkItemsService --> GraphWriterService : every write
+EdgesService --> GraphWriterService : every write
+GraphService --> SQLiteService
+GraphWriterService --> SQLiteService : db + version
+WorkItemHsmService --> WorkItemsService : read
+WorkItemHsmService --> GraphWriterService : apply 1 update
+WorkItemHsmService --> GraphEventsService : emit state change
+
+ExecutionService --> WorkItemsService
+ExecutionService --> WorkItemHsmService : dispatch user.*, run.*
+ExecutionService --> GraphService : getPlan for dispatch preview
+ExecutionService --> GitHubService : read / close / register refresher
+ExecutionService --> GitHubBatchCache : write-through
+ExecutionService --> WorkItemReconcilerService : startup
+ExecutionService --> SettingsService : selected model
+ExecutionService --> PlansService : delete plan artifacts (forwardRef)
+
+GitHubCacheScheduler --> GitHubBatchCache
+GitHubCacheScheduler --> WorkItemsService
+GitHubCacheScheduler --> WorkItemHsmService : dispatch gh.*
+
+GitHubBatchCache --> GitHubService
+
+WorkItemReconcilerService --> WorkItemsService
+WorkItemReconcilerService --> GitHubBatchCache
+WorkItemReconcilerService --> WorkItemHsmService : getEnabledEvents
+WorkItemReconcilerService --> disk_store
+
+ExecutionService --> disk_store : load + orphan detect
+ExecutionService --> archiver : runArchiver action
+
+PlanningService --> ContextService
+PlanningService --> MemoryService
+PlanningService --> SubAgentService
+PlanningService --> GraphService : read
+PlanningService --> GraphWriterService : approveProposal
+PlanningService --> GitHubService : read / create / sync
+PlanningService --> ReconciliationService : reconciliation_query
+PlanningService --> SettingsService : selected model
+
+ContextService --> WorkItemsService
+ContextService --> EdgesService
+ContextService --> SQLiteService
+ContextService --> MemoryService
+ContextService --> StudioIssueTemplateService
+
+PlansService --> WorkItemsService
+PlansService --> WorkItemHsmService : dispatch
+PlansService --> PlanDrafterService
+PlansService --> StudioIssueTemplateService
+
+PlanDrafterService --> SettingsService
+
+GitHubService --> WorkItemsService : reconcile meta
+GitHubService --> SQLiteService : listRelatedIds for managed block
+
+ReconciliationService --> WorkItemsService
+ReconciliationService --> ExecutionService : listRecentRuns
+
+note right of HsmActionHandlers
+  Referenced by the SCXML chart,
+  exercised by tests. The current
+  runtime wiring registers the
+  **closeGhIssue** and **runArchiver**
+  handlers **inline from
+  ExecutionService.onModuleInit()**
+  rather than from this class.
+  Treat this as the shared
+  vocabulary, not the live path.
+end note
+
+@enduml

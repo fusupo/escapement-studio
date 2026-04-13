@@ -1,0 +1,117 @@
+@startuml github-sync-approval
+title GitHub Sync — Stage Managed Block → Approve → Apply
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+actor Operator
+participant "PlannerChatAdapter\n(approval overlay)" as UI
+participant "PlanningController" as Ctrl
+participant "PlanningService" as Planner
+participant "pi root session" as Pi
+participant "GitHubService" as Gh
+participant "WorkItemsService" as WI
+participant "gh CLI" as GhCli
+queue "SSE /api/agent/stream" as SSE
+
+note over Gh, GhCli
+  Prerequisite: the target issue's body
+  already contains a machine-managed
+  block bounded by
+  <!-- studio-sync:start -->
+  ...
+  <!-- studio-sync:end -->
+  Missing or duplicate markers cause
+  the flow to fail safely.
+end note
+
+== Planner stages a sync ==
+Operator -> UI : "Sync studio-sync block\nfor studio-42"
+UI -> Ctrl : POST /api/agent/message
+Ctrl -> Planner : sendMessage(...)
+Planner -> Pi : session.prompt(...)
+
+Pi -> Planner : tool call: github_sync\n  {summary, work_item_id: "studio-42"}
+activate Planner
+Planner -> Gh : stageManagedBlockSync("studio-42")
+activate Gh
+Gh -> WI : get("studio-42")
+WI --> Gh : WorkItemRecord\n(with repo, issue_number)
+Gh -> GhCli : gh issue view N --repo ...\n  --json number,title,body,url,state,labels,assignees
+GhCli --> Gh : RawIssueResponse
+Gh -> Gh : extractManagedBlock(body)\nreconcileIssueTruth(issue)\n(write-back to work item meta)
+Gh -> Gh : renderManagedBlock(workItemId)\n- State\n- Scope hint\n- Predicted files\n- Depends on / Part of (via SQL)
+Gh -> Gh : replaceManagedBlock(body, next)
+Gh --> Planner : {\n  issue, work_item_id,\n  based_on_body_hash,\n  operations: [{\n    kind: update_managed_body_block,\n    preview: {before, after}\n  }]\n}
+deactivate Gh
+
+Planner -> Planner : normalizeGitHubSync(...)\ngithubSyncs.set(sync_id, ...)\nactiveGitHubSyncId = sync_id
+Planner -> SSE : emit github_sync_proposal\n{sync}
+Planner --> Pi : tool result "Staged GitHub sync ..."
+deactivate Planner
+
+SSE --> UI : github_sync_proposal event
+UI -> UI : render overlay with\nbefore/after diff
+
+== Operator approves a subset of operations ==
+Operator -> UI : click "Approve N operation(s)"
+UI -> Ctrl : POST /api/agent/github/approve\n  {sync_id, approved_operation_ids}
+activate Ctrl
+Ctrl -> Planner : approveGitHubSync(dto)
+activate Planner
+Planner -> Gh : applySyncProposal(proposal, ops)
+activate Gh
+Gh -> GhCli : gh issue view N --json body
+GhCli --> Gh : current issue body
+alt body_hash != proposal.based_on_body_hash
+  Gh --> Planner : {\n  result: {status: "stale",\n    previous/current_body_hash},\n  issue\n}
+  Planner -> SSE : emit github_sync_result (stale)
+  Planner --> Ctrl : envelope
+  Ctrl --> UI : 200 (stale banner)
+end
+
+loop per approved op (only update_managed_body_block in V1)
+  Gh -> Gh : replaceManagedBlock(nextBody, op.preview.after)
+  alt replacement fails (missing/duplicate markers)
+    Gh -> Gh : collect error
+  end
+end
+
+alt any op failed
+  Gh --> Planner : {status: "validation_failed", errors}
+  Planner --> Ctrl : envelope
+  Ctrl --> UI : 200 (errors)
+end
+
+Gh -> GhCli : gh issue edit N --body-file -\n  < nextBody
+GhCli --> Gh : ok
+Gh -> GhCli : gh issue view N (refresh)
+GhCli --> Gh : updated issue
+Gh -> WI : reconcileIssueTruth(issue)\n(persists new body_hash +\nmanaged_block into work item meta)
+Gh --> Planner : {\n  result: {status: "applied",\n    previous/new_body_hash,\n    applied_operation_ids},\n  issue: updated\n}
+deactivate Gh
+
+Planner -> Planner : updateActiveGitHubSyncAfterApply(...)
+Planner -> SSE : emit github_sync_result
+Planner --> Ctrl : GitHubSyncResult
+deactivate Planner
+Ctrl --> UI : 200
+deactivate Ctrl
+
+note over UI, GhCli
+  Safety rules (ADR 012):
+  - one-way, Studio → GitHub
+  - approval-gated
+  - only updates the studio-sync managed block
+  - never touches arbitrary human content
+  - fails safely if markers are absent or duplicated
+end note
+
+@enduml

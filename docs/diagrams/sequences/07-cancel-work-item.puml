@@ -1,0 +1,116 @@
+@startuml cancel-work-item
+title Cancel Work Item — Pre-PR Abandonment (studio-136)
+
+skinparam defaultFontName sans-serif
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #475569
+  LifeLineBorderColor #334155
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ActorBackgroundColor #F8FAFC
+}
+
+actor Operator
+participant "App.svelte\n(cancel dialog)" as UI
+participant "WorkItemsController\n/api/work-items/*" as WiCtrl
+participant "WorkItemHsmService" as HSM
+participant "ExecutionService" as Exec
+participant "GitHubService" as Gh
+participant "gh CLI" as GhCli
+participant "WorkItemsService" as WI
+participant "GraphWriterService" as Writer
+participant "FS:\nplans/ archives/" as FS
+database "SQLite" as DB
+queue "SSE /api/graph/stream" as SSE
+
+== Operator triggers cancel from sidebar or context menu ==
+Operator -> UI : click "Cancel work item"
+UI -> UI : open dialog\n(confirm_cancel checkbox + note textarea)
+Operator -> UI : check, type note, click "Cancel work item"
+UI -> WiCtrl : POST /api/work-items/studio-42/transition\n  {event: "user.cancel",\n   confirm_cancel: true,\n   cancel_note: "..."}
+activate WiCtrl
+
+== Controller validates + delegates ==
+WiCtrl -> WiCtrl : event ∈ SUPPORTED_TRANSITION_EVENTS
+WiCtrl -> WI : get("studio-42")
+WiCtrl -> HSM : getEnabledEvents("studio-42")
+HSM --> WiCtrl : ["user.start_draft", "user.defer", "user.cancel", ...]
+WiCtrl -> WiCtrl : confirm "user.cancel" is enabled\n(reject otherwise with BadRequestException)
+
+WiCtrl -> Exec : cancelWorkItem({\n  work_item_id,\n  confirm_cancel: true,\n  cancel_note\n})
+activate Exec
+
+== Eligibility guards ==
+Exec -> WI : get("studio-42")
+Exec -> Exec : assertCancelEligible(workItem)
+note right
+  Requires kind === "issue", repo + issue_number set,
+  and leafState in {planned, drafting, ready,
+  in_progress, deferred}. Rejects otherwise with
+  cancel_work_item_ineligible_state.
+end note
+Exec -> Exec : assertNoActiveRunForWorkItem(id)
+note right : refuses while any run in\n  queued/preparing/disambiguating/running
+
+== Close GitHub issue ==
+Exec -> Gh : closeIssue(repo, issue_number, cancel_note)
+activate Gh
+alt cancel_note is non-empty
+  Gh -> GhCli : gh issue comment N --body "..."
+end
+Gh -> GhCli : gh issue close N --repo ...
+Gh -> Gh : readIssue(repo, N) + reconcileIssueTruth
+Gh --> Exec : closed issue details
+deactivate Gh
+
+== Move plan dir to archives ==
+Exec -> Exec : movePlanDirToArchives(id)
+alt plans/<slug>/ exists
+  alt archives/<slug>/ exists
+    Exec --> WiCtrl : BadRequestException archive_already_exists
+    note right : operator resolves\nmanually before retry
+  end
+  Exec -> FS : renameSync plans/<slug>/ →\n  archives/<slug>/
+else plan dir missing
+  Exec -> Exec : warn "plan dir missing"\nreturn {moved: false, archive_path: null}
+end
+
+== HSM transition ==
+Exec -> HSM : dispatch(id, {type: "user.cancel"})
+activate HSM
+HSM -> HSM : selectTransition from current pre_pr substate\n→ target: cancelled (shared transition on pre_pr)
+HSM -> Writer : apply({state: "cancelled"})
+Writer -> DB : transaction
+HSM -> SSE : emit work_item_state_changed
+HSM --> Exec : DispatchResult
+deactivate HSM
+
+alt moveResult.archive_path
+  Exec -> WI : update({archive_path})
+  WI -> Writer : apply(...)
+  Writer -> DB : transaction
+end
+
+Exec -> WI : get("studio-42")
+Exec --> WiCtrl : CancelWorkItemResult\n{cancelled: true,\n work_item, closed_issue, warnings}
+deactivate Exec
+WiCtrl --> UI : 200
+deactivate WiCtrl
+
+UI -> UI : close dialog\nshow success notice\nreload graph
+
+note over UI, DB
+  Order of operations:
+  1. guards (state + active run)
+  2. close GitHub issue
+  3. move plan dir to archives
+  4. HSM user.cancel → state = cancelled
+  5. write archive_path on work item
+  If step 3 succeeds but step 4 fails, the next
+  retry sees an empty plans/<slug>/ and skips
+  the rename, then still completes the state
+  write. If step 2 fails, nothing else runs.
+end note
+
+@enduml
