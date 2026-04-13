@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { ScheduleModule } from "@nestjs/schedule";
+import { PlatformModule } from "./platform/platform.module.js";
 import { ExecutionModule } from "./modules/execution/execution.module.js";
 import { GitHubModule } from "./modules/github/github.module.js";
 import { GraphModule } from "./modules/graph/graph.module.js";
@@ -10,6 +11,17 @@ import { ReconciliationModule } from "./modules/reconciliation/reconciliation.mo
 import { SettingsModule } from "./modules/settings/settings.module.js";
 
 @Module({
-  imports: [ScheduleModule.forRoot(), ExecutionModule, GraphModule, HealthModule, GitHubModule, PlanningModule, PlansModule, ReconciliationModule, SettingsModule],
+  imports: [
+    PlatformModule,
+    ScheduleModule.forRoot(),
+    ExecutionModule,
+    GraphModule,
+    HealthModule,
+    GitHubModule,
+    PlanningModule,
+    PlansModule,
+    ReconciliationModule,
+    SettingsModule,
+  ],
 })
 export class AppModule {}
