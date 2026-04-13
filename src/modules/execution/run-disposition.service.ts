@@ -447,12 +447,18 @@ export class RunDispositionService {
 
     // (a) In-memory recentRuns — ExecutionService owns the buffer. The
     // Phase 3 seam walks the buffer back-to-front, splices matches,
-    // stamps disposed_at on the disk status file, and returns the
-    // disposed records so we can emit execution_result events here.
-    const disposed = this.executionService.disposeRunsForWorkItemInBuffer(workItemId, timestamp);
-    for (const run of disposed) {
+    // stamps disposed_at on the disk status file, and returns both
+    // newly-disposed records (for which we emit events) and
+    // already-disposed run ids (which are still "removed" from the
+    // caller's perspective but should not re-emit execution_result).
+    const { newlyDisposed, alreadyDisposedIds } =
+      this.executionService.disposeRunsForWorkItemInBuffer(workItemId, timestamp);
+    for (const run of newlyDisposed) {
       removedIds.add(run.run_id);
       this.executionService.emitRunExecutionResult(run);
+    }
+    for (const runId of alreadyDisposedIds) {
+      removedIds.add(runId);
     }
 
     // (b) On-disk runs that were not in recentRuns (hydration gap / cap

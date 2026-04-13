@@ -1,16 +1,13 @@
-import { BadRequestException, Inject, Injectable, Logger, MessageEvent, NotFoundException, OnModuleInit, forwardRef } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, MessageEvent, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import {
-  archiveDir,
-  archivesRoot,
   canonicalScratchpadPath,
   ensurePlanDir,
-  planDir,
   readPlanMetadata,
   runDir,
   workItemSlug,
@@ -19,8 +16,7 @@ import {
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
-import { loadRunRecordsForArtifactRoot, loadRunRecordsFromDisk } from "./run-disk-store.js";
-import { archiveRunArtifactsForWorkItem } from "./run-archiver.js";
+import { loadRunRecordsForArtifactRoot } from "./run-disk-store.js";
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
@@ -28,20 +24,13 @@ import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
-import { PlansService } from "../plans/plans.service.js";
 import { SettingsService } from "../settings/settings.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
   ArchivedRunBundle,
-  ArchiveAndCloseMergedPullRequestResult,
-  ArchiveRunArtifactsResult,
-  CancelWorkItemDto,
-  CancelWorkItemResult,
   ChecklistItem,
-  ClosedGitHubIssueSummary,
-  CloseMergedPullRequestResult,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
   ExecutionChecklistSnapshot,
@@ -59,8 +48,6 @@ import type {
   LaunchExecutionRunResult,
   CleanupWorktreeDto,
   CleanupWorktreeResult,
-  DeleteWorkItemDto,
-  DeleteWorkItemResult,
   ResolveDisambiguationDto,
   ResolveDisambiguationResult,
   RunChatHistory,
@@ -96,7 +83,6 @@ export class ExecutionService implements OnModuleInit {
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
-    @Inject(forwardRef(() => PlansService)) private readonly plansService: PlansService,
   ) {
     this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
   }
@@ -2372,346 +2358,33 @@ export class ExecutionService implements OnModuleInit {
     return this.workItemsService.get(workItemId);
   }
 
-  /**
-   * ADR 014 step 7: disposition flow for `merged_pr → done`.
-   *
-   * Close variant — transitions the work item to `done` without creating an
-   * archive. Plan dir is left in place at `plans/<slug>/`. Used when the user
-   * decides the plan and scratchpad are still useful for reference and doesn't
-   * want them swept into `archives/`.
-   *
-   * Guards (checked in order):
-   *   1. Work item must exist and be in `merged_pr` state
-   *   2. No run for this work item may be active (`queued | preparing |
-   *      disambiguating | running`)
-   *
-   * Both guards throw `BadRequestException` on failure. The state guard
-   * prevents bypassing the state machine (the prior raw-PUT path from the
-   * frontend "Close issue" button is the side channel this endpoint replaces).
-   * The active-run guard prevents disposing work items that still have live
-   * runs — see `assertNoActiveRunForWorkItem` for the session-scope caveat.
-   */
-  /**
-   * studio-87: Full `merged_pr → done` close orchestration.
-   *
-   * Steps (ordered so every prefix is retry-safe):
-   *   1. assertWorkItemInMergedPr — guard the source state. Short-circuits
-   *      when the work item is already `done` so a retry after a partial
-   *      failure still performs the remaining finalizer steps (gh close
-   *      is idempotent, run removal can run twice safely).
-   *   2. assertNoActiveRunForWorkItem — refuse while a run is live.
-   *   3. `gh issue close` — skipped when the work item is not issue-backed
-   *      (kind != 'issue' or missing issue_number). On failure the
-   *      exception propagates and nothing else is mutated.
-   *   4. workItemsService.update({ state: 'done' }) — skipped when the
-   *      retry entered via an already-done short-circuit.
-   *   5. removeRunsForWorkItem — best-effort finalizer that splices
-   *      matching runs out of `recentRuns`, stamps `disposed_at` on each
-   *      `status.json`, and emits an `execution_result` event per run.
-   *
-   * Returns a full `CloseMergedPullRequestResult` envelope so the UI can
-   * reflect the combined outcome (state transition + gh close + run
-   * removal) in one round trip. Mirrors the shape of
-   * `syncMergedPullRequest` including a post-close `dispatch_preview`.
-   */
-  async closeMergedPullRequest(workItemId: string): Promise<CloseMergedPullRequestResult> {
-    // Pre-dispatch guard: refuse while a run is live (HSM doesn't know about runs).
-    this.assertNoActiveRunForWorkItem(workItemId);
-
-    const result = await this.hsmService.dispatch(workItemId, { type: "user.finalize" });
-
-    if (result.rejected) {
-      throw new BadRequestException(
-        `cannot_dispose: HSM rejected user.finalize from state ${result.prev_state}`,
-      );
-    }
-
-    // studio-197: write-through closed issue to batch cache.
-    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
-    if (closedIssue) {
-      const wi = this.workItemsService.get(workItemId);
-      if (wi.repo) {
-        this.githubBatchCache.upsertIssue(wi.repo, {
-          number: closedIssue.number,
-          state: "closed",
-          closed_at: new Date().toISOString(),
-          url: closedIssue.url,
-          title: closedIssue.title,
-        });
-      }
-    }
-
-    // Post-dispatch finalizer: dispose matching runs.
-    const removedRunIds = this.removeRunsForWorkItem(workItemId);
-
-    // Build the response envelope.
-    const updatedWorkItem = this.workItemsService.get(workItemId);
-
-    return {
-      work_item: {
-        id: updatedWorkItem.id,
-        state: updatedWorkItem.state,
-        branch: updatedWorkItem.branch,
-        archive_path: updatedWorkItem.archive_path,
-        actual_files: updatedWorkItem.actual_files,
-        meta: updatedWorkItem.meta,
-        updated_at: updatedWorkItem.updated_at,
-      },
-      closed_issue: closedIssue,
-      removed_run_ids: removedRunIds,
-      dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
-    };
-  }
-
-  /**
-   * studio-87: best-effort finalizer for `closeMergedPullRequest`.
-   *
-   * Removes every run matching `workItemId` from the in-memory
-   * `recentRuns` buffer AND stamps `disposed_at` on each matching
-   * `status.json` on disk so hydration after a server restart will
-   * not resurrect them (see `loadRunRecordsFromDisk`'s
-   * `includeDisposed` filter).
-   *
-   * Handles three cases:
-   *   (a) run is currently in `recentRuns` — update status.json, splice,
-   *       emit `execution_result` so SSE clients see the removal.
-   *   (b) run exists on disk but was evicted from `recentRuns` by the
-   *       16-entry cap — update status.json directly.
-   *   (c) run already has `disposed_at` — skipped (idempotent replay).
-   *
-   * Failures are logged and swallowed; this is a finalizer and the caller
-   * has already completed the state transition. Returns the set of run
-   * ids that were updated or spliced.
-   */
-  private removeRunsForWorkItem(workItemId: string): string[] {
-    const timestamp = this.now();
-    const removedIds = new Set<string>();
-
-    // (a) In-memory recentRuns — walk back-to-front so splice is safe.
-    for (let i = this.recentRuns.length - 1; i >= 0; i--) {
-      const run = this.recentRuns[i];
-      if (run.work_item_id !== workItemId) continue;
-      if (run.disposed_at) {
-        // Already disposed; drop from the buffer but don't re-write.
-        this.recentRuns.splice(i, 1);
-        removedIds.add(run.run_id);
-        continue;
-      }
-      const disposed: ExecutionRunRecord = {
-        ...run,
-        disposed_at: timestamp,
-        updated_at: timestamp,
-      };
-      try {
-        this.writeStatus(disposed);
-      } catch (error) {
-        if (!this.isMissingFileError(error)) {
-          this.logger.warn(
-            `removeRunsForWorkItem: failed to stamp disposed_at for run ${run.run_id}: ${this.getErrorMessage(error)}`,
-          );
-        }
-      }
-      this.recentRuns.splice(i, 1);
-      removedIds.add(run.run_id);
-      try {
-        this.emitRun("execution_result", disposed);
-      } catch (error) {
-        this.logger.warn(
-          `removeRunsForWorkItem: failed to emit execution_result for run ${run.run_id}: ${this.getErrorMessage(error)}`,
-        );
-      }
-    }
-
-    // (b) On-disk runs that were not in recentRuns (hydration gap / cap
-    //     eviction). Pass includeDisposed so we can see already-disposed
-    //     records for idempotent replay, but skip them when writing.
-    try {
-      const runsDir = join(this.artifactRoot, "runs");
-      const diskRuns = loadRunRecordsFromDisk(runsDir, { includeDisposed: true });
-      for (const run of diskRuns) {
-        if (run.work_item_id !== workItemId) continue;
-        if (removedIds.has(run.run_id)) continue;
-        if (run.disposed_at) continue;
-        const disposed: ExecutionRunRecord = {
-          ...run,
-          disposed_at: timestamp,
-          updated_at: timestamp,
-        };
-        try {
-          writeFileSync(
-            join(run.artifact_dir, "status.json"),
-            JSON.stringify(disposed, null, 2),
-            "utf8",
-          );
-          removedIds.add(run.run_id);
-        } catch (error) {
-          if (!this.isMissingFileError(error)) {
-            this.logger.warn(
-              `removeRunsForWorkItem: failed to stamp disposed_at for on-disk run ${run.run_id}: ${this.getErrorMessage(error)}`,
-            );
-          }
-        }
-      }
-    } catch (error) {
-      this.logger.warn(
-        `removeRunsForWorkItem: failed to scan runs dir: ${this.getErrorMessage(error)}`,
-      );
-    }
-
-    return Array.from(removedIds);
-  }
-
-  /**
-   * studio-88: Full `merged_pr → done` archive-and-close orchestration.
-   *
-   * Mirrors `closeMergedPullRequest` beat-for-beat but adds the archival
-   * steps (plan-dir move + run-artifact move + README) between gh-close
-   * and the work item state update. Every prefix is designed to be
-   * retry-safe — a failure at any step leaves a consistent state that a
-   * subsequent retry can complete.
-   *
-   * Steps (ordered for retry safety):
-   *   1. Idempotent short-circuit — if the work item is already `done`
-   *      the previous attempt finished past the state transition but
-   *      may have failed in the finalizer. Skip guards + state update
-   *      but still run gh close (idempotent) and the run-removal
-   *      finalizer so leftover runs get disposed.
-   *   2. assertWorkItemInMergedPr — guard the source state.
-   *   3. assertNoActiveRunForWorkItem — refuse while a run is live.
-   *   4. Capture an authoritative run snapshot BEFORE any mutation. This
-   *      merges the in-memory `recentRuns` with the on-disk
-   *      `loadRunRecordsForArtifactRoot` scan, filtered to this work
-   *      item. The snapshot is handed to the archiver later via its
-   *      `runs` option so the archiver sees the runs even after the
-   *      finalizer stamps `disposed_at` on them (default disk scans skip
-   *      disposed records).
-   *   5. `gh issue close` — issue-backed work items only. Idempotent per
-   *      the gh CLI contract. On failure we throw
-   *      `close_merged_failed_github_close` before any filesystem
-   *      mutation so the retry can re-attempt the entire flow.
-   *   6. `movePlanDirToArchives` — no-op when the plan dir is already
-   *      gone (prior partial archive). Throws
-   *      `archive_already_exists` on a collision so operators can
-   *      resolve manually.
-   *   7. `archiveRunArtifactsForWorkItem` — bypasses the thin
-   *      `archiveRunArtifacts` wrapper because we already captured the
-   *      snapshot and re-ran the guards upstream. Writes runs into
-   *      `archives/<slug>/runs/<run_id>/` and renders `README.md`. A
-   *      source-missing run on retry is a warning, not a failure.
-   *   8. `workItemsService.update` to `done` with `archive_path` set and
-   *      `meta.studio_archive` recorded. Shallow-merges over any
-   *      existing `studio_post_merge_sync` block so neither clobbers
-   *      the other.
-   *   9. `removeRunsForWorkItem` — best-effort finalizer. Splices
-   *      matching runs out of `recentRuns` and stamps `disposed_at` on
-   *      each `status.json`.
-   *
-   * Returns a full `ArchiveAndCloseMergedPullRequestResult` envelope so
-   * the UI can reflect the combined outcome in one round trip.
-   */
-  async archiveAndCloseMergedPullRequest(
-    workItemId: string,
-  ): Promise<ArchiveAndCloseMergedPullRequestResult> {
-    // Pre-dispatch guard.
-    this.assertNoActiveRunForWorkItem(workItemId);
-
-    const result = await this.hsmService.dispatch(workItemId, {
-      type: "user.archive_and_finalize",
-    });
-
-    if (result.rejected) {
-      throw new BadRequestException(
-        `cannot_dispose: HSM rejected user.archive_and_finalize from state ${result.prev_state}`,
-      );
-    }
-
-    // studio-197: write-through closed issue to batch cache.
-    const closedIssue = (result.handler_data?.closed_issue as ClosedGitHubIssueSummary) ?? null;
-    if (closedIssue) {
-      const wi = this.workItemsService.get(workItemId);
-      if (wi.repo) {
-        this.githubBatchCache.upsertIssue(wi.repo, {
-          number: closedIssue.number,
-          state: "closed",
-          closed_at: new Date().toISOString(),
-          url: closedIssue.url,
-          title: closedIssue.title,
-        });
-      }
-    }
-
-    // Post-dispatch finalizer.
-    const removedRunIds = this.removeRunsForWorkItem(workItemId);
-
-    const updatedWorkItem = this.workItemsService.get(workItemId);
-    const archiveData = result.handler_data?.archive_result as {
-      archive_path: string;
-      readme_path: string | null;
-      archived_run_ids: string[];
-      skipped_run_ids: Array<{ run_id: string; reason: string }>;
-    } | undefined;
-
-    return {
-      work_item: {
-        id: updatedWorkItem.id,
-        state: updatedWorkItem.state,
-        branch: updatedWorkItem.branch,
-        archive_path: updatedWorkItem.archive_path,
-        actual_files: updatedWorkItem.actual_files,
-        meta: updatedWorkItem.meta,
-        updated_at: updatedWorkItem.updated_at,
-      },
-      closed_issue: closedIssue,
-      removed_run_ids: removedRunIds,
-      archive: archiveData ?? {
-        archive_path: updatedWorkItem.archive_path ?? "",
-        readme_path: null,
-        archived_run_ids: [],
-        skipped_run_ids: [],
-      },
-      dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
-    };
-  }
-
-  /**
-   * studio-88 helper: capture an authoritative run snapshot for a work
-   * item by merging the in-memory `recentRuns` buffer with the on-disk
-   * scan, deduped by `run_id` (in-memory wins). Used by
-   * `archiveAndCloseMergedPullRequest` to hand the archiver a list that
-   * survives the downstream `removeRunsForWorkItem` finalizer stamping
-   * `disposed_at` on each record.
-   */
-  // TODO(phase-3): delete once RunDispositionService owns the disposition path.
-  // Temporary seam exposed to the Phase 1 HsmActionHandlers so it can read
-  // the configured artifact root without referencing private state.
-  getArtifactRoot(): string {
-    return this.artifactRoot;
-  }
-
-  // TODO(phase-3): delete once RunDispositionService owns the disposition path.
-  // Temporary seam exposed to the Phase 1 HsmActionHandlers so it can route
-  // warnings through the same logger as the rest of ExecutionService.
-  logWarn(message: string): void {
-    this.logger.warn(message);
-  }
-
   // TODO(phase-4): delete once RunStore owns the in-memory run buffer.
   // Phase 3 seam: RunDispositionService.removeRunsForWorkItem calls this to
   // splice every buffered run for a work item out of recentRuns, stamp
   // disposed_at on each via writeStatus, and return the disposed copies so
   // the caller can emit execution_result events. Matches the back-to-front
   // walk of the original private method.
+  //
+  // Returns two slots: `newlyDisposed` are the records that just had
+  // disposed_at stamped (and for which the caller should emit an
+  // execution_result event), and `alreadyDisposedIds` are runs that were
+  // spliced out of the buffer but did not need their disposed_at updated
+  // (idempotent replay — the disposition flow still counts these as
+  // "removed" for the purposes of the caller's returned run-id list but
+  // does NOT re-emit events for them).
   disposeRunsForWorkItemInBuffer(
     workItemId: string,
     disposedAt: string,
-  ): ExecutionRunRecord[] {
-    const disposed: ExecutionRunRecord[] = [];
+  ): { newlyDisposed: ExecutionRunRecord[]; alreadyDisposedIds: string[] } {
+    const newlyDisposed: ExecutionRunRecord[] = [];
+    const alreadyDisposedIds: string[] = [];
     for (let i = this.recentRuns.length - 1; i >= 0; i--) {
       const run = this.recentRuns[i];
       if (run.work_item_id !== workItemId) continue;
       if (run.disposed_at) {
         // Already disposed; drop from the buffer but don't re-write.
         this.recentRuns.splice(i, 1);
+        alreadyDisposedIds.push(run.run_id);
         continue;
       }
       const next: ExecutionRunRecord = {
@@ -2729,9 +2402,9 @@ export class ExecutionService implements OnModuleInit {
         }
       }
       this.recentRuns.splice(i, 1);
-      disposed.push(next);
+      newlyDisposed.push(next);
     }
-    return disposed;
+    return { newlyDisposed, alreadyDisposedIds };
   }
 
   // TODO(phase-4): delete once RunStore owns the SSE event stream.
@@ -2745,342 +2418,6 @@ export class ExecutionService implements OnModuleInit {
         `emitRunExecutionResult: failed to emit execution_result for run ${run.run_id}: ${this.getErrorMessage(error)}`,
       );
     }
-  }
-
-  // TODO(phase-3): move to RunDispositionService once Phase 3 lands.
-  // Public so the moved HsmActionHandlers (Phase 1) can reach it without
-  // referencing private state.
-  captureRunSnapshotForWorkItem(workItemId: string): ExecutionRunRecord[] {
-    const seen = new Set<string>();
-    const merged: ExecutionRunRecord[] = [];
-    for (const run of this.listRecentRuns()) {
-      if (run.work_item_id !== workItemId) continue;
-      if (seen.has(run.run_id)) continue;
-      merged.push(run);
-      seen.add(run.run_id);
-    }
-    try {
-      const diskRuns = loadRunRecordsForArtifactRoot(this.artifactRoot);
-      for (const run of diskRuns) {
-        if (run.work_item_id !== workItemId) continue;
-        if (seen.has(run.run_id)) continue;
-        merged.push(run);
-        seen.add(run.run_id);
-      }
-    } catch (error) {
-      this.logger.warn(
-        `captureRunSnapshotForWorkItem: failed to scan disk for ${workItemId}: ${this.getErrorMessage(error)}`,
-      );
-    }
-    return merged;
-  }
-
-  /**
-   * ADR 014 step 7: cancellation path with plan dir archival.
-   *
-   * Handles the HSM-owned `user.cancel` workflow. Moves the plan dir into
-   * `archives/<slug>/` before updating state (same order-of-operations as
-   * archive-and-close). Called by `WorkItemsController.transition` after it
-   * verifies the event is enabled for the current state.
-   */
-  async cancelWorkItem(input: CancelWorkItemDto): Promise<CancelWorkItemResult> {
-    const workItemId = input.work_item_id?.trim();
-    if (!workItemId) {
-      throw new BadRequestException("work_item_id is required");
-    }
-    if (input.confirm_cancel !== true) {
-      throw new BadRequestException("confirm_cancel must be true");
-    }
-
-    const workItem = this.workItemsService.get(workItemId);
-    this.assertCancelEligible(workItem);
-    this.assertNoActiveRunForWorkItem(workItemId);
-
-    const closedIssue = await this.githubService.closeIssue(
-      workItem.repo ?? "",
-      Number(workItem.issue_number),
-      input.cancel_note,
-    );
-
-    const moveResult = this.movePlanDirToArchives(workItemId);
-    const result = await this.hsmService.dispatch(workItemId, { type: "user.cancel" });
-    if (result.rejected) {
-      throw new BadRequestException(
-        `cancel_work_item_transition_failed_after_github_close: HSM rejected user.cancel from state ${result.prev_state}`,
-      );
-    }
-
-    const nextArchivePath = moveResult.archive_path ?? this.workItemsService.get(workItemId).archive_path;
-    if (nextArchivePath) {
-      this.workItemsService.update(workItemId, { archive_path: nextArchivePath });
-    }
-
-    const updatedWorkItem = this.workItemsService.get(workItemId);
-    return {
-      cancelled: true,
-      work_item: {
-        id: updatedWorkItem.id,
-        state: updatedWorkItem.state,
-        archive_path: updatedWorkItem.archive_path,
-        updated_at: updatedWorkItem.updated_at,
-      },
-      closed_issue: {
-        repo: closedIssue.repo,
-        number: closedIssue.number,
-        url: closedIssue.url,
-        title: closedIssue.title,
-        state: closedIssue.state,
-      },
-      warnings: [],
-    };
-  }
-
-  async deleteWorkItem(input: DeleteWorkItemDto): Promise<DeleteWorkItemResult> {
-    const workItemId = input.work_item_id?.trim();
-    if (!workItemId) {
-      throw new BadRequestException("work_item_id is required");
-    }
-    if (input.confirm_delete !== true) {
-      throw new BadRequestException("confirm_delete must be true");
-    }
-
-    const workItem = this.workItemsService.get(workItemId);
-    this.assertDeleteEligible(workItem);
-    this.assertNoActiveRunForWorkItem(workItemId);
-
-    const connectedEdges = this.workItemsService.getConnectedEdges(workItemId);
-    if (connectedEdges.length > 0 && input.acknowledge_connected_edges !== true) {
-      throw new BadRequestException(
-        `delete_work_item_requires_connected_edge_acknowledgement: ${workItemId}`,
-      );
-    }
-
-    const warnings: string[] = [];
-    let githubIssue: DeleteWorkItemResult["github_issue"] = {
-      attempted: false,
-      deleted: false,
-      fallback_used: false,
-      message: null,
-    };
-
-    try {
-      githubIssue = {
-        attempted: true,
-        deleted: true,
-        fallback_used: false,
-        message: null,
-      };
-      await this.githubService.deleteIssue(workItem.repo ?? "", Number(workItem.issue_number));
-    } catch (error) {
-      const message = this.getErrorMessage(error);
-      if (input.allow_graph_delete_without_github !== true) {
-        throw new BadRequestException(`github_issue_delete_failed: ${message}`);
-      }
-      githubIssue = {
-        attempted: true,
-        deleted: false,
-        fallback_used: true,
-        message,
-      };
-      warnings.push(`GitHub issue was not deleted: ${message}`);
-    }
-
-    const planCleanup = this.plansService.deletePlanArtifacts(workItemId);
-    const graphResult = this.workItemsService.deleteWithConnectedEdges(workItemId, connectedEdges.map((edge) => edge.id));
-
-    return {
-      deleted: true,
-      work_item: {
-        id: workItem.id,
-        name: workItem.name,
-        state: workItem.state,
-        repo: workItem.repo,
-        issue_number: workItem.issue_number,
-        issue_url: workItem.issue_url,
-      },
-      graph: graphResult,
-      github_issue: githubIssue,
-      plan_cleanup: planCleanup,
-      warnings,
-    };
-  }
-
-  private leafState(state: string): string {
-    return state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
-  }
-
-  private assertCancelEligible(workItem: WorkItemRecord): void {
-    const leafState = this.leafState(workItem.state);
-    const eligibleStates = new Set(["planned", "drafting", "ready", "in_progress", "deferred"]);
-
-    if (workItem.kind !== "issue" || !workItem.repo || !workItem.issue_number) {
-      throw new BadRequestException(`cancel_work_item_not_issue_backed: ${workItem.id}`);
-    }
-    if (!eligibleStates.has(leafState)) {
-      throw new BadRequestException(
-        `cancel_work_item_ineligible_state: ${workItem.id} is ${workItem.state}; cancel is limited to pre-PR issue-backed work items`,
-      );
-    }
-  }
-
-  private assertDeleteEligible(workItem: WorkItemRecord): void {
-    const leafState = this.leafState(workItem.state);
-    const eligibleStates = new Set(["planned", "drafting", "ready"]);
-
-    if (workItem.kind !== "issue" || !workItem.repo || !workItem.issue_number) {
-      throw new BadRequestException(`delete_work_item_not_issue_backed: ${workItem.id}`);
-    }
-    if (!eligibleStates.has(leafState)) {
-      throw new BadRequestException(
-        `delete_work_item_ineligible_state: ${workItem.id} is ${workItem.state}; destructive delete is limited to planned, drafting, or ready items`,
-      );
-    }
-  }
-
-  /**
-   * Guard: refuse disposition unless the work item is in `merged_pr`.
-   *
-   * `workItemsService.get` throws `NotFoundException` if the work item doesn't
-   * exist — we let that propagate.
-   */
-  private assertWorkItemInMergedPr(workItemId: string): WorkItemRecord {
-    const workItem = this.workItemsService.get(workItemId);
-    if (workItem.state !== "merged_pr") {
-      throw new BadRequestException(
-        `work_item_not_in_merged_pr: cannot dispose ${workItemId} (state is ${workItem.state}, requires merged_pr)`,
-      );
-    }
-    return workItem;
-  }
-
-  /**
-   * Guard: refuse plan dir moves and disposition transitions if any run for
-   * this work item is currently active.
-   *
-   * Active set: `queued | preparing | disambiguating | running`. These are
-   * the statuses in `ExecutionRunStatus` that indicate the run has not yet
-   * finished (successfully or otherwise).
-   *
-   * Limitation: `listRecentRuns` reads from the in-memory `recentRuns` array
-   * capped at 16 entries. On server restart this array is empty, so a
-   * previously-active run is undetectable by this guard. This is acceptable
-   * for ADR 014 V1 because disposition requires `merged_pr`, which requires
-   * the run to have reached `open_pr` successfully — meaning any run this
-   * guard would flag is effectively "stuck but shouldn't be blocking
-   * disposition anyway". If a run is genuinely in progress when the server
-   * restarts and the operator immediately calls disposition, they'll get
-   * a silent pass. Document the restart gap and move on.
-   */
-  private assertNoActiveRunForWorkItem(workItemId: string): void {
-    const activeStatuses = ["queued", "preparing", "disambiguating", "running"] as const;
-    const activeRun = this.listRecentRuns().find(
-      (run) =>
-        run.work_item_id === workItemId &&
-        (activeStatuses as readonly string[]).includes(run.status),
-    );
-    if (activeRun) {
-      throw new BadRequestException(
-        `cannot_dispose_work_item_active_run: run ${activeRun.run_id} is ${activeRun.status} for work item ${workItemId}. ` +
-          `Wait for the run to finish or clean it up first.`,
-      );
-    }
-  }
-
-  /**
-   * Move the plan dir for a work item into `archives/<slug>/`.
-   *
-   * Returns `{ moved: true, archive_path }` on a successful move,
-   * `{ moved: false, archive_path: null }` if the plan dir didn't exist
-   * (warning logged).
-   *
-   * Throws `BadRequestException("archive_already_exists")` if the
-   * destination already exists — we refuse to clobber an existing archive.
-   *
-   * Called by `archiveAndCloseMergedPullRequest` and (eventually) the
-   * `cancelled` disposition path.
-   */
-  /**
-   * Issue #86: archive execution run artifacts + a generated README for a
-   * completed work item.
-   *
-   * Thin wrapper around `archiveRunArtifactsForWorkItem` — loads the work
-   * item, re-uses `assertNoActiveRunForWorkItem` as the pre-archive guard
-   * (which provides a `BadRequestException` for a consistent HTTP surface),
-   * hands the disk-scanned run list to the helper so the archiver and the
-   * active-run guard share the same source of truth, and returns the
-   * helper's `ArchiveRunArtifactsResult` unchanged.
-   *
-   * Deliberately NOT yet called from `archiveAndCloseMergedPullRequest` —
-   * that wiring belongs to issue #88's disposition flow so #86 can land
-   * and be reviewed as a self-contained backend slice.
-   */
-  archiveRunArtifacts(workItemId: string): ArchiveRunArtifactsResult {
-    const normalized = workItemId?.trim();
-    if (!normalized) {
-      throw new BadRequestException("work_item_id is required");
-    }
-    const workItem = this.workItemsService.get(normalized);
-    this.assertNoActiveRunForWorkItem(normalized);
-
-    // Merge in-memory `recentRuns` with the disk scan so the archiver sees
-    // runs that exist only on disk (post-restart) and in-memory runs that
-    // haven't been flushed. Dedupe by run_id — in-memory wins because it
-    // carries the freshest activity log.
-    const diskRuns = loadRunRecordsForArtifactRoot(this.artifactRoot);
-    const seen = new Set<string>();
-    const merged: ExecutionRunRecord[] = [];
-    for (const run of this.listRecentRuns()) {
-      if (run.work_item_id !== normalized) continue;
-      if (seen.has(run.run_id)) continue;
-      merged.push(run);
-      seen.add(run.run_id);
-    }
-    for (const run of diskRuns) {
-      if (run.work_item_id !== normalized) continue;
-      if (seen.has(run.run_id)) continue;
-      merged.push(run);
-      seen.add(run.run_id);
-    }
-
-    try {
-      return archiveRunArtifactsForWorkItem(this.artifactRoot, workItem, {
-        runs: merged,
-        onWarn: (message) => this.logger.warn(message),
-      });
-    } catch (error) {
-      const message = this.getErrorMessage(error);
-      // Translate the archiver's raw Error codes into BadRequestException
-      // so the HTTP surface matches the other disposition guards.
-      if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
-        throw new BadRequestException(message);
-      }
-      throw error;
-    }
-  }
-
-  // TODO(phase-3): move to RunDispositionService once Phase 3 lands.
-  // Public so the moved HsmActionHandlers (Phase 1) can reach it without
-  // referencing private state.
-  movePlanDirToArchives(workItemId: string): { moved: boolean; archive_path: string | null } {
-    const src = planDir(this.artifactRoot, workItemId);
-    const dest = archiveDir(this.artifactRoot, workItemId);
-
-    if (!existsSync(src)) {
-      this.logger.warn(
-        `movePlanDirToArchives: plan dir ${src} does not exist for work item ${workItemId}; archive step is a no-op`,
-      );
-      return { moved: false, archive_path: null };
-    }
-
-    if (existsSync(dest)) {
-      throw new BadRequestException(
-        `archive_already_exists: refusing to move plan dir for ${workItemId} — destination ${dest} already exists. Resolve the collision manually before retrying.`,
-      );
-    }
-
-    mkdirSync(archivesRoot(this.artifactRoot), { recursive: true });
-    renameSync(src, dest);
-    return { moved: true, archive_path: dest };
   }
 
   private async resolvePullRequestFromWorkItem(workItem: WorkItemRecord) {
