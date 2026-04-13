@@ -2749,7 +2749,24 @@ export class ExecutionService implements OnModuleInit {
    * survives the downstream `removeRunsForWorkItem` finalizer stamping
    * `disposed_at` on each record.
    */
-  private captureRunSnapshotForWorkItem(workItemId: string): ExecutionRunRecord[] {
+  // TODO(phase-3): delete once RunDispositionService owns the disposition path.
+  // Temporary seam exposed to the Phase 1 HsmActionHandlers so it can read
+  // the configured artifact root without referencing private state.
+  getArtifactRoot(): string {
+    return this.artifactRoot;
+  }
+
+  // TODO(phase-3): delete once RunDispositionService owns the disposition path.
+  // Temporary seam exposed to the Phase 1 HsmActionHandlers so it can route
+  // warnings through the same logger as the rest of ExecutionService.
+  logWarn(message: string): void {
+    this.logger.warn(message);
+  }
+
+  // TODO(phase-3): move to RunDispositionService once Phase 3 lands.
+  // Public so the moved HsmActionHandlers (Phase 1) can reach it without
+  // referencing private state.
+  captureRunSnapshotForWorkItem(workItemId: string): ExecutionRunRecord[] {
     const seen = new Set<string>();
     const merged: ExecutionRunRecord[] = [];
     for (const run of this.listRecentRuns()) {
@@ -3057,7 +3074,10 @@ export class ExecutionService implements OnModuleInit {
     }
   }
 
-  private movePlanDirToArchives(workItemId: string): { moved: boolean; archive_path: string | null } {
+  // TODO(phase-3): move to RunDispositionService once Phase 3 lands.
+  // Public so the moved HsmActionHandlers (Phase 1) can reach it without
+  // referencing private state.
+  movePlanDirToArchives(workItemId: string): { moved: boolean; archive_path: string | null } {
     const src = planDir(this.artifactRoot, workItemId);
     const dest = archiveDir(this.artifactRoot, workItemId);
 
