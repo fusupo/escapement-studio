@@ -216,6 +216,11 @@
   $: connectedEdges = selectedItem
     ? graph.edges.filter((edge) => edge.from_id === selectedItem.id || edge.to_id === selectedItem.id)
     : [];
+  $: edgeSummary = connectedEdges.length > 0
+    ? `${connectedEdges.length} connected ${connectedEdges.length === 1 ? "edge" : "edges"}`
+    : selectedItem
+      ? "No connected edges"
+      : "Select a node to review connections";
 
   function submitEdit() {
     onSaveItem({
@@ -467,99 +472,111 @@
   </section>
 
   <section>
-    <h2>Create work item</h2>
-    <div class="stack">
-      <label>
-        ID
-        <input bind:value={createForm.id} placeholder="studio-2" />
-      </label>
-      <label>
-        Name
-        <input bind:value={createForm.name} placeholder="Graph frontend" />
-      </label>
-      <label>
-        Kind
-        <select bind:value={createForm.kind}>
-          <option value="issue">issue</option>
-          <option value="capability">capability</option>
-          <option value="phase">phase</option>
-          <option value="track">track</option>
-        </select>
-      </label>
-      <label>
-        State
-        <select bind:value={createForm.state}>
-          <option value="planned">planned</option>
-          <option value="drafting">drafting</option>
-          <option value="ready">ready</option>
-          <option value="in_progress">in_progress</option>
-          <option value="open_pr">open_pr</option>
-          <option value="merged_pr">merged_pr</option>
-          <option value="done">done</option>
-          <option value="deferred">deferred</option>
-          <option value="cancelled">cancelled</option>
-        </select>
-      </label>
-      <label>
-        Repo
-        <input bind:value={createForm.repo} placeholder="fusupo/escapement-studio" />
-      </label>
-      <label>
-        Scope hint
-        <textarea bind:value={createForm.scope_hint} rows="3"></textarea>
-      </label>
-      <button on:click={submitCreate} disabled={saving}>{saving ? "Saving..." : "Create work item"}</button>
-    </div>
+    <details class="sidebar-disclosure">
+      <summary>
+        <span>Create work item</span>
+        <span class="sidebar-disclosure-meta">New node</span>
+      </summary>
+      <div class="sidebar-disclosure-body stack">
+        <label>
+          ID
+          <input bind:value={createForm.id} placeholder="studio-2" />
+        </label>
+        <label>
+          Name
+          <input bind:value={createForm.name} placeholder="Graph frontend" />
+        </label>
+        <label>
+          Kind
+          <select bind:value={createForm.kind}>
+            <option value="issue">issue</option>
+            <option value="capability">capability</option>
+            <option value="phase">phase</option>
+            <option value="track">track</option>
+          </select>
+        </label>
+        <label>
+          State
+          <select bind:value={createForm.state}>
+            <option value="planned">planned</option>
+            <option value="drafting">drafting</option>
+            <option value="ready">ready</option>
+            <option value="in_progress">in_progress</option>
+            <option value="open_pr">open_pr</option>
+            <option value="merged_pr">merged_pr</option>
+            <option value="done">done</option>
+            <option value="deferred">deferred</option>
+            <option value="cancelled">cancelled</option>
+          </select>
+        </label>
+        <label>
+          Repo
+          <input bind:value={createForm.repo} placeholder="fusupo/escapement-studio" />
+        </label>
+        <label>
+          Scope hint
+          <textarea bind:value={createForm.scope_hint} rows="3"></textarea>
+        </label>
+        <button on:click={submitCreate} disabled={saving}>{saving ? "Saving..." : "Create work item"}</button>
+      </div>
+    </details>
   </section>
 
   <section>
-    <h2>Edges</h2>
-    <div class="stack">
-      <label>
-        From
-        <select bind:value={edgeForm.from_id}>
-          <option value="">Select source</option>
-          {#each graph.items as item}
-            <option value={item.id}>{item.name} ({item.id})</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        Relation
-        <select bind:value={edgeForm.rel}>
-          <option value="depends_on">depends_on</option>
-          <option value="is_part_of">is_part_of</option>
-          <option value="implemented_by">implemented_by</option>
-        </select>
-      </label>
-      <label>
-        To
-        <select bind:value={edgeForm.to_id}>
-          <option value="">Select target</option>
-          {#each graph.items as item}
-            <option value={item.id}>{item.name} ({item.id})</option>
-          {/each}
-        </select>
-      </label>
-      <button on:click={submitEdge} disabled={edgeSaving}>{edgeSaving ? "Creating..." : "Create edge"}</button>
-    </div>
+    <details class="sidebar-disclosure">
+      <summary>
+        <span>Edges</span>
+        <span class="sidebar-disclosure-meta">{edgeSummary}</span>
+      </summary>
+      <div class="sidebar-disclosure-body">
+        <div class="stack">
+          <label>
+            From
+            <select bind:value={edgeForm.from_id}>
+              <option value="">Select source</option>
+              {#each graph.items as item}
+                <option value={item.id}>{item.name} ({item.id})</option>
+              {/each}
+            </select>
+          </label>
+          <label>
+            Relation
+            <select bind:value={edgeForm.rel}>
+              <option value="depends_on">depends_on</option>
+              <option value="is_part_of">is_part_of</option>
+              <option value="implemented_by">implemented_by</option>
+            </select>
+          </label>
+          <label>
+            To
+            <select bind:value={edgeForm.to_id}>
+              <option value="">Select target</option>
+              {#each graph.items as item}
+                <option value={item.id}>{item.name} ({item.id})</option>
+              {/each}
+            </select>
+          </label>
+          <button on:click={submitEdge} disabled={edgeSaving}>{edgeSaving ? "Creating..." : "Create edge"}</button>
+        </div>
 
-    {#if connectedEdges.length > 0}
-      {#if canDeleteWorkItem}
-        <p class="muted">Deleting this work item will also remove these connected edges after explicit acknowledgement.</p>
-      {/if}
-      <ul class="edge-list">
-        {#each connectedEdges as edge}
-          <li>
-            <code>{edge.from_id}</code>
-            <span>{edge.rel}</span>
-            <code>{edge.to_id}</code>
-            <button class="danger small" on:click={() => onDeleteEdge(edge.id)} disabled={edgeSaving}>Delete</button>
-          </li>
-        {/each}
-      </ul>
-    {:else if selectedItem}
-      <p class="muted">No edges connected to the selected node.</p>
-    {/if}
+        {#if connectedEdges.length > 0}
+          {#if canDeleteWorkItem}
+            <p class="muted">Deleting this work item will also remove these connected edges after explicit acknowledgement.</p>
+          {/if}
+          <ul class="edge-list">
+            {#each connectedEdges as edge}
+              <li>
+                <code>{edge.from_id}</code>
+                <span>{edge.rel}</span>
+                <code>{edge.to_id}</code>
+                <button class="danger small" on:click={() => onDeleteEdge(edge.id)} disabled={edgeSaving}>Delete</button>
+              </li>
+            {/each}
+          </ul>
+        {:else if selectedItem}
+          <p class="muted">No edges connected to the selected node.</p>
+        {/if}
+      </div>
+    </details>
   </section>
 </aside>
