@@ -32,7 +32,7 @@ export class ExecutionController {
   constructor(
     @Inject(ExecutionService) private readonly executionService: ExecutionService,
     @Inject(RunStore) private readonly runStore: RunStore,
-    private readonly commandBus: CommandBus,
+    @Inject(CommandBus) private readonly commandBus: CommandBus,
   ) {}
 
   @Get("preview")
