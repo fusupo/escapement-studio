@@ -1,7 +1,6 @@
-import { BadRequestException, Inject, Injectable, Logger, MessageEvent, NotFoundException, OnModuleInit } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
-import { Observable, Subject } from "rxjs";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -16,7 +15,6 @@ import {
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
-import { loadRunRecordsForArtifactRoot } from "./run-disk-store.js";
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { RunStore } from "./run-store.service.js";
@@ -42,7 +40,6 @@ import type {
   ExecutionPullRequestRecord,
   ExecutionRunRecord,
   ExecutionSafetyCheck,
-  ExecutionStatusEvent,
   FollowUpMessageDto,
   FollowUpMessageResult,
   LaunchExecutionRunDto,

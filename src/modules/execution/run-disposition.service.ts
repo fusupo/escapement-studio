@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { archiveDir, archivesRoot, planDir } from "../../lib/context-layout.js";
 import { GitHubService } from "../github/github.service.js";
@@ -25,7 +25,6 @@ import type {
   CloseMergedPullRequestResult,
   DeleteWorkItemDto,
   DeleteWorkItemResult,
-  ExecutionRunRecord,
   StudioArchiveMeta,
 } from "./types.js";
 
@@ -476,12 +475,5 @@ export class RunDispositionService {
 
   private getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
-  }
-
-  private isMissingFileError(error: unknown): boolean {
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: unknown }).code === "ENOENT";
   }
 }
