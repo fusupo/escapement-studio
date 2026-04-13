@@ -16,6 +16,7 @@ import { GitHubCacheScheduler } from "./github-cache-scheduler.service.js";
 import { ExecutionService } from "./execution.service.js";
 import { HsmActionHandlers } from "./hsm-action-handlers.js";
 import { RunDispositionService } from "./run-disposition.service.js";
+import { RunStore } from "./run-store.service.js";
 import { WorkItemReconcilerController } from "./work-item-reconciler.controller.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 
@@ -28,6 +29,7 @@ import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
     GitHubCacheScheduler,
     HsmActionHandlers,
     RunDispositionService,
+    RunStore,
     WorkItemReconcilerService,
     CancelWorkItemHandler,
     DeleteWorkItemHandler,
@@ -36,6 +38,6 @@ import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
     CloseMergedPullRequestHandler,
     ArchiveAndCloseMergedPullRequestHandler,
   ],
-  exports: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, RunDispositionService, WorkItemReconcilerService],
+  exports: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, RunDispositionService, RunStore, WorkItemReconcilerService],
 })
 export class ExecutionModule {}

@@ -9,6 +9,7 @@ import { DeleteWorkItemCommand } from "./application/commands/delete-work-item.c
 import { TransitionInProgressToDraftingCommand } from "./application/commands/transition-in-progress-to-drafting.command.js";
 import { TransitionInProgressToReadyCommand } from "./application/commands/transition-in-progress-to-ready.command.js";
 import { ExecutionService } from "./execution.service.js";
+import { RunStore } from "./run-store.service.js";
 import type {
   ArchiveAndCloseMergedPullRequestResult,
   CancelWorkItemDto,
@@ -30,6 +31,7 @@ import type { WorkItemRecord } from "../graph/types.js";
 export class ExecutionController {
   constructor(
     @Inject(ExecutionService) private readonly executionService: ExecutionService,
+    @Inject(RunStore) private readonly runStore: RunStore,
     private readonly commandBus: CommandBus,
   ) {}
 
@@ -40,7 +42,7 @@ export class ExecutionController {
 
   @Get("runs")
   getRecentRuns() {
-    return this.executionService.listRecentRuns();
+    return this.runStore.listRecentRuns();
   }
 
   @Get("archived-runs")
@@ -160,6 +162,6 @@ export class ExecutionController {
 
   @Sse("stream")
   stream(): Observable<MessageEvent> {
-    return this.executionService.stream();
+    return this.runStore.stream();
   }
 }

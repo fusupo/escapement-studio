@@ -39,9 +39,14 @@ function makeRun(overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecor
 }
 
 describe("ExecutionService.refreshPullRequestTruth", () => {
-  it("refreshes matching recent run snapshots and preserves created_at", () => {
-    const service = Object.create(ExecutionService.prototype) as ExecutionService;
-    const runs = [makeRun()];
+  /**
+   * Phase 4a (#230): listRecentRuns / updateRun / appendEvent /
+   * writeSummary all moved from ExecutionService to RunStore. The
+   * harness installs a fake `runStore` on the service with those
+   * methods so the refreshPullRequestTruth body (still on
+   * ExecutionService) can reach them via `this.runStore.X(...)`.
+   */
+  function makeRunStoreStub(runs: ExecutionRunRecord[]) {
     const updateRun = vi.fn((runId: string, patch: Partial<ExecutionRunRecord>) => {
       const index = runs.findIndex((run) => run.run_id === runId);
       if (index === -1) {
@@ -54,11 +59,19 @@ describe("ExecutionService.refreshPullRequestTruth", () => {
       };
       return runs[index];
     });
+    return {
+      listRecentRuns: () => runs,
+      updateRun,
+      appendEvent: vi.fn(),
+      writeSummary: vi.fn(),
+    };
+  }
 
-    (service as any).listRecentRuns = () => runs;
-    (service as any).updateRun = updateRun;
-    (service as any).appendEvent = vi.fn();
-    (service as any).writeSummary = vi.fn();
+  it("refreshes matching recent run snapshots and preserves created_at", () => {
+    const service = Object.create(ExecutionService.prototype) as ExecutionService;
+    const runs = [makeRun()];
+    const runStore = makeRunStoreStub(runs);
+    (service as any).runStore = runStore;
     (service as any).now = () => "2026-04-09T00:02:00Z";
 
     const result = service.refreshPullRequestTruth({
@@ -75,7 +88,7 @@ describe("ExecutionService.refreshPullRequestTruth", () => {
     }, { work_item_ids: ["studio-91"] });
 
     expect(result.updated_run_ids).toEqual(["exec_123"]);
-    expect(updateRun).toHaveBeenCalledWith("exec_123", {
+    expect(runStore.updateRun).toHaveBeenCalledWith("exec_123", {
       pull_request: expect.objectContaining({
         number: 70,
         state: "MERGED",
@@ -84,11 +97,11 @@ describe("ExecutionService.refreshPullRequestTruth", () => {
         created_at: "2026-04-09T00:00:00Z",
       }),
     });
-    expect((service as any).appendEvent).toHaveBeenCalledWith(
+    expect(runStore.appendEvent).toHaveBeenCalledWith(
       expect.objectContaining({ run_id: "exec_123" }),
       expect.objectContaining({ type: "pull_request_truth_refreshed" }),
     );
-    expect((service as any).writeSummary).toHaveBeenCalledWith(expect.objectContaining({ run_id: "exec_123" }));
+    expect(runStore.writeSummary).toHaveBeenCalledWith(expect.objectContaining({ run_id: "exec_123" }));
   });
 
   it("skips run updates when the stored truth already matches", () => {
@@ -108,11 +121,8 @@ describe("ExecutionService.refreshPullRequestTruth", () => {
         merge_commit_sha: "abc123",
       },
     })];
-
-    (service as any).listRecentRuns = () => runs;
-    (service as any).updateRun = vi.fn();
-    (service as any).appendEvent = vi.fn();
-    (service as any).writeSummary = vi.fn();
+    const runStore = makeRunStoreStub(runs);
+    (service as any).runStore = runStore;
     (service as any).now = () => "2026-04-09T00:02:00Z";
 
     const result = service.refreshPullRequestTruth({
@@ -129,8 +139,8 @@ describe("ExecutionService.refreshPullRequestTruth", () => {
     }, { work_item_ids: ["studio-91"] });
 
     expect(result.updated_run_ids).toEqual([]);
-    expect((service as any).updateRun).not.toHaveBeenCalled();
-    expect((service as any).appendEvent).not.toHaveBeenCalled();
-    expect((service as any).writeSummary).not.toHaveBeenCalled();
+    expect(runStore.updateRun).not.toHaveBeenCalled();
+    expect(runStore.appendEvent).not.toHaveBeenCalled();
+    expect(runStore.writeSummary).not.toHaveBeenCalled();
   });
 });

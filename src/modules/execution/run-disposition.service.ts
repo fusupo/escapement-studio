@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { archiveDir, archivesRoot, planDir } from "../../lib/context-layout.js";
 import { GitHubService } from "../github/github.service.js";
@@ -14,7 +14,7 @@ import { WorkItemsService } from "../graph/work-items.service.js";
 import { PlansService } from "../plans/plans.service.js";
 import { ExecutionService } from "./execution.service.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
-import { loadRunRecordsForArtifactRoot, loadRunRecordsFromDisk } from "./run-disk-store.js";
+import { RunStore } from "./run-store.service.js";
 import { archiveRunArtifactsForWorkItem } from "./run-archiver.js";
 import type {
   ArchiveAndCloseMergedPullRequestResult,
@@ -25,7 +25,6 @@ import type {
   CloseMergedPullRequestResult,
   DeleteWorkItemDto,
   DeleteWorkItemResult,
-  ExecutionRunRecord,
   StudioArchiveMeta,
 } from "./types.js";
 
@@ -69,7 +68,13 @@ export class RunDispositionService {
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(forwardRef(() => PlansService)) private readonly plansService: PlansService,
+    // Phase 4a (#230): forwardRef(ExecutionService) survives ONLY for
+    // `getPreview` used in the close/archive response envelopes. The
+    // buffer/stream/seam half of the Phase 3 dependency is now served
+    // by RunStore (injected below). Phase 9a (#240) will audit whether
+    // this residual can be unwrapped.
     @Inject(forwardRef(() => ExecutionService)) private readonly executionService: ExecutionService,
+    @Inject(RunStore) private readonly runStore: RunStore,
   ) {}
 
   async closeMergedPullRequest(workItemId: string): Promise<CloseMergedPullRequestResult> {
@@ -100,7 +105,7 @@ export class RunDispositionService {
     }
 
     // Post-dispatch finalizer: dispose matching runs.
-    const removedRunIds = this.removeRunsForWorkItem(workItemId);
+    const removedRunIds = this.runStore.disposeRunsForWorkItem(workItemId, () => this.now());
 
     // Build the response envelope.
     const updatedWorkItem = this.workItemsService.get(workItemId);
@@ -153,7 +158,7 @@ export class RunDispositionService {
     }
 
     // Post-dispatch finalizer.
-    const removedRunIds = this.removeRunsForWorkItem(workItemId);
+    const removedRunIds = this.runStore.disposeRunsForWorkItem(workItemId, () => this.now());
 
     const updatedWorkItem = this.workItemsService.get(workItemId);
     const archiveData = result.handler_data?.archive_result as {
@@ -315,25 +320,7 @@ export class RunDispositionService {
     const workItem = this.workItemsService.get(normalized);
     this.assertNoActiveRunForWorkItem(normalized);
 
-    // Merge in-memory `recentRuns` with the disk scan so the archiver sees
-    // runs that exist only on disk (post-restart) and in-memory runs that
-    // haven't been flushed. Dedupe by run_id — in-memory wins because it
-    // carries the freshest activity log.
-    const diskRuns = loadRunRecordsForArtifactRoot(this.artifactRoot);
-    const seen = new Set<string>();
-    const merged: ExecutionRunRecord[] = [];
-    for (const run of this.executionService.listRecentRuns()) {
-      if (run.work_item_id !== normalized) continue;
-      if (seen.has(run.run_id)) continue;
-      merged.push(run);
-      seen.add(run.run_id);
-    }
-    for (const run of diskRuns) {
-      if (run.work_item_id !== normalized) continue;
-      if (seen.has(run.run_id)) continue;
-      merged.push(run);
-      seen.add(run.run_id);
-    }
+    const merged = this.runStore.captureRunSnapshotForWorkItem(normalized);
 
     try {
       return archiveRunArtifactsForWorkItem(this.artifactRoot, workItem, {
@@ -365,7 +352,7 @@ export class RunDispositionService {
     _event: WorkItemHsmEvent,
     ctx: HsmActionHandlerContext,
   ): Promise<void> {
-    const runSnapshot = this.captureRunSnapshotForWorkItem(workItem.id);
+    const runSnapshot = this.runStore.captureRunSnapshotForWorkItem(workItem.id);
     const moveResult = this.movePlanDirToArchives(workItem.id);
 
     let archiveResult: ArchiveRunArtifactsResult;
@@ -398,106 +385,6 @@ export class RunDispositionService {
       archived_run_ids: archiveResult.archived_run_ids,
       skipped_run_ids: archiveResult.skipped_run_ids,
     };
-  }
-
-  /**
-   * studio-88 helper: capture an authoritative run snapshot for a work
-   * item by merging the in-memory `recentRuns` buffer with the on-disk
-   * scan, deduped by `run_id` (in-memory wins).
-   */
-  private captureRunSnapshotForWorkItem(workItemId: string): ExecutionRunRecord[] {
-    const seen = new Set<string>();
-    const merged: ExecutionRunRecord[] = [];
-    for (const run of this.executionService.listRecentRuns()) {
-      if (run.work_item_id !== workItemId) continue;
-      if (seen.has(run.run_id)) continue;
-      merged.push(run);
-      seen.add(run.run_id);
-    }
-    try {
-      const diskRuns = loadRunRecordsForArtifactRoot(this.artifactRoot);
-      for (const run of diskRuns) {
-        if (run.work_item_id !== workItemId) continue;
-        if (seen.has(run.run_id)) continue;
-        merged.push(run);
-        seen.add(run.run_id);
-      }
-    } catch (error) {
-      this.logger.warn(
-        `captureRunSnapshotForWorkItem: failed to scan disk for ${workItemId}: ${this.getErrorMessage(error)}`,
-      );
-    }
-    return merged;
-  }
-
-  /**
-   * studio-87: best-effort finalizer for `closeMergedPullRequest`.
-   *
-   * Splices every matching run out of the ExecutionService in-memory
-   * buffer (via the phase-3 seam) and stamps `disposed_at` on on-disk
-   * status files so hydration after a restart won't resurrect them.
-   *
-   * Failures are logged and swallowed; this is a finalizer and the
-   * caller has already completed the state transition. Returns the
-   * set of run ids that were updated or spliced.
-   */
-  private removeRunsForWorkItem(workItemId: string): string[] {
-    const timestamp = this.now();
-    const removedIds = new Set<string>();
-
-    // (a) In-memory recentRuns — ExecutionService owns the buffer. The
-    // Phase 3 seam walks the buffer back-to-front, splices matches,
-    // stamps disposed_at on the disk status file, and returns both
-    // newly-disposed records (for which we emit events) and
-    // already-disposed run ids (which are still "removed" from the
-    // caller's perspective but should not re-emit execution_result).
-    const { newlyDisposed, alreadyDisposedIds } =
-      this.executionService.disposeRunsForWorkItemInBuffer(workItemId, timestamp);
-    for (const run of newlyDisposed) {
-      removedIds.add(run.run_id);
-      this.executionService.emitRunExecutionResult(run);
-    }
-    for (const runId of alreadyDisposedIds) {
-      removedIds.add(runId);
-    }
-
-    // (b) On-disk runs that were not in recentRuns (hydration gap / cap
-    //     eviction). Pass includeDisposed so we can see already-disposed
-    //     records for idempotent replay, but skip them when writing.
-    try {
-      const runsDir = join(this.artifactRoot, "runs");
-      const diskRuns = loadRunRecordsFromDisk(runsDir, { includeDisposed: true });
-      for (const run of diskRuns) {
-        if (run.work_item_id !== workItemId) continue;
-        if (removedIds.has(run.run_id)) continue;
-        if (run.disposed_at) continue;
-        const nextRun: ExecutionRunRecord = {
-          ...run,
-          disposed_at: timestamp,
-          updated_at: timestamp,
-        };
-        try {
-          writeFileSync(
-            join(run.artifact_dir, "status.json"),
-            JSON.stringify(nextRun, null, 2),
-            "utf8",
-          );
-          removedIds.add(run.run_id);
-        } catch (error) {
-          if (!this.isMissingFileError(error)) {
-            this.logger.warn(
-              `removeRunsForWorkItem: failed to stamp disposed_at for on-disk run ${run.run_id}: ${this.getErrorMessage(error)}`,
-            );
-          }
-        }
-      }
-    } catch (error) {
-      this.logger.warn(
-        `removeRunsForWorkItem: failed to scan runs dir: ${this.getErrorMessage(error)}`,
-      );
-    }
-
-    return Array.from(removedIds);
   }
 
   private movePlanDirToArchives(workItemId: string): { moved: boolean; archive_path: string | null } {
@@ -566,7 +453,7 @@ export class RunDispositionService {
 
   private assertNoActiveRunForWorkItem(workItemId: string): void {
     const activeStatuses = ["queued", "preparing", "disambiguating", "running"] as const;
-    const activeRun = this.executionService.listRecentRuns().find(
+    const activeRun = this.runStore.listRecentRuns().find(
       (run) =>
         run.work_item_id === workItemId &&
         (activeStatuses as readonly string[]).includes(run.status),
@@ -588,12 +475,5 @@ export class RunDispositionService {
 
   private getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
-  }
-
-  private isMissingFileError(error: unknown): boolean {
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: unknown }).code === "ENOENT";
   }
 }

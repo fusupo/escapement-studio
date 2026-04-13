@@ -26,13 +26,16 @@ interface HarnessService {
   artifactRoot: string;
   logger: { log: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
   workItemsService: { get: (id: string) => WorkItemRecord; update: ReturnType<typeof vi.fn> };
-  appendEvent: ReturnType<typeof vi.fn>;
-  updateRun: ReturnType<typeof vi.fn>;
-  getRun: (runId: string) => ExecutionRunRecord | undefined;
+  // Phase 4a: appendEvent, updateRun, getRun, writeSummary moved to RunStore.
+  runStore: {
+    appendEvent: ReturnType<typeof vi.fn>;
+    updateRun: ReturnType<typeof vi.fn>;
+    getRun: (runId: string) => ExecutionRunRecord | null;
+    writeSummary: ReturnType<typeof vi.fn>;
+  };
   runGhIn: ReturnType<typeof vi.fn>;
   runGitIn: ReturnType<typeof vi.fn>;
   listChangedFiles: ReturnType<typeof vi.fn>;
-  writeSummary: ReturnType<typeof vi.fn>;
   buildPullRequestTitle: (workItem: WorkItemRecord) => string;
   buildPullRequestBody: (run: ExecutionRunRecord, workItem: WorkItemRecord, baseRef: string) => string;
 
@@ -101,12 +104,18 @@ function makeService(params: {
     get: (_id: string) => workItem,
     update: vi.fn((_id: string, patch: Partial<WorkItemRecord>) => ({ ...workItem, ...patch })),
   };
-  service.appendEvent = vi.fn();
-  service.updateRun = vi.fn((_runId: string, patch: Partial<ExecutionRunRecord>) => ({
-    ...(params.run ?? makeRun()),
-    ...patch,
-  }));
-  service.getRun = (runId: string) => (params.run && params.run.run_id === runId ? params.run : undefined);
+  // Phase 4a (#230): these methods moved to RunStore. Harness provides
+  // a runStore field with spies so assertions like
+  // `expect(service.runStore.appendEvent).toHaveBeenCalled(...)` work.
+  service.runStore = {
+    appendEvent: vi.fn(),
+    updateRun: vi.fn((_runId: string, patch: Partial<ExecutionRunRecord>) => ({
+      ...(params.run ?? makeRun()),
+      ...patch,
+    })),
+    getRun: (runId: string) => (params.run && params.run.run_id === runId ? params.run : null),
+    writeSummary: vi.fn(),
+  };
   service.runGhIn = vi.fn(() => {
     throw new Error("runGhIn should not be called when guard rejects");
   });
@@ -122,7 +131,6 @@ function makeService(params: {
     return "";
   });
   service.listChangedFiles = vi.fn(() => params.changedFiles ?? []);
-  service.writeSummary = vi.fn();
   service.buildPullRequestTitle = () => "title";
   service.buildPullRequestBody = () => "body";
   return service;
@@ -249,7 +257,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
         worktree,
         ["commit", "-m", `${workItem.name} (#${workItem.issue_number})`],
       );
-      expect(service.appendEvent).not.toHaveBeenCalled();
+      expect(service.runStore.appendEvent).not.toHaveBeenCalled();
     });
 
     it("is a no-op when the worktree is clean", () => {
@@ -266,7 +274,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
       expect(() => service.autoStageAndCommit(run, workItem)).not.toThrow();
       expect(service.runGitIn).toHaveBeenCalledTimes(1);
       expect(service.runGitIn).toHaveBeenCalledWith(worktree, ["status", "--porcelain"], { allowFailure: true });
-      expect(service.appendEvent).not.toHaveBeenCalled();
+      expect(service.runStore.appendEvent).not.toHaveBeenCalled();
     });
 
     it("throws and emits an event when a scratchpad is staged (does not create a commit)", () => {
@@ -284,7 +292,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
 
       expect(() => service.autoStageAndCommit(run, workItem)).toThrow(BadRequestException);
       expect(() => service.autoStageAndCommit(run, workItem)).toThrow(/auto_commit_blocked_by_scratchpad/);
-      expect(service.appendEvent).toHaveBeenCalledWith(run, {
+      expect(service.runStore.appendEvent).toHaveBeenCalledWith(run, {
         type: "scratchpad_commit_blocked",
         phase: "auto_commit",
         paths: ["SCRATCHPAD_studio_156.md"],
@@ -316,7 +324,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
         }),
       ).rejects.toThrow(/pull_request_blocked_by_scratchpad/);
 
-      expect(service.appendEvent).toHaveBeenCalledWith(run, {
+      expect(service.runStore.appendEvent).toHaveBeenCalledWith(run, {
         type: "scratchpad_commit_blocked",
         phase: "pull_request",
         paths: ["SCRATCHPAD_studio_156.md"],
@@ -348,7 +356,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
         }),
       ).rejects.toThrow(/pull_request_blocked_by_committed_scratchpad/);
 
-      expect(service.appendEvent).toHaveBeenCalledWith(run, {
+      expect(service.runStore.appendEvent).toHaveBeenCalledWith(run, {
         type: "scratchpad_commit_blocked",
         phase: "pull_request_history",
         paths: ["SCRATCHPAD_studio_156.md"],

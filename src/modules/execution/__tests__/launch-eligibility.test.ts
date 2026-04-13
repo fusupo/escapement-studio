@@ -180,8 +180,19 @@ function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: bool
     safety_checks: safetyChecks,
     errors,
   }));
-  (service as any).persistRun = vi.fn();
-  (service as any).emitRun = vi.fn();
+  // Phase 4a: persistRun / emitRun moved to RunStore. The harness
+  // provides a minimal runStore field with both methods stubbed.
+  (service as any).runStore = {
+    persistRun: vi.fn(),
+    emitRun: vi.fn(),
+    updateRun: vi.fn((_runId: string, _patch: unknown) => null),
+    getRun: vi.fn(() => null),
+    listRecentRuns: vi.fn(() => []),
+    appendEvent: vi.fn(),
+    writeStatus: vi.fn(),
+    writeMetadata: vi.fn(),
+    writeSummary: vi.fn(),
+  };
   (service as any).pushActivity = vi.fn((_runId: string, _kind: string, message: string) => {
     executionOrder.push(`activity:${message}`);
   });
