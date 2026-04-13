@@ -1,5 +1,4 @@
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
-import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -13,6 +12,7 @@ import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
+import { RunInteractionService } from "./run-interaction.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
@@ -21,11 +21,9 @@ import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
-import { SettingsService } from "../settings/settings.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ActivityLogEntry,
-  ActivityLogEntryKind,
   ArchivedRunBundle,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
@@ -46,7 +44,6 @@ import type {
   ResolveDisambiguationDto,
   ResolveDisambiguationResult,
   RunChatHistory,
-  RunChatMessage,
   SyncMergedExecutionDto,
   SyncMergedExecutionResult,
 } from "./types.js";
@@ -55,11 +52,6 @@ import type {
 export class ExecutionService implements OnModuleInit {
   private readonly logger = new Logger(ExecutionService.name);
   private readonly artifactRoot = resolve(getConfig().artifactRoot);
-  /** Active agent sessions keyed by run_id — kept alive while run is active */
-  private readonly activeSessions = new Map<string, import("@mariozechner/pi-coding-agent").AgentSession>();
-  // Chat history derived from activity_log (agent_message + user_message entries)
-  /** Disambiguation gate resolvers — calling the stored function unblocks the coding phase */
-  private readonly disambiguationGates = new Map<string, { resolve: (additionalContext?: string) => void }>();
 
   constructor(
     @Inject(GraphService) private readonly graphService: GraphService,
@@ -67,9 +59,9 @@ export class ExecutionService implements OnModuleInit {
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
-    @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
     @Inject(RunStore) private readonly runStore: RunStore,
+    @Inject(RunInteractionService) private readonly runInteractionService: RunInteractionService,
     @Inject(ScratchpadService) private readonly scratchpadService: ScratchpadService,
     @Inject(WorktreeService) private readonly worktreeService: WorktreeService,
   ) {
@@ -315,7 +307,7 @@ export class ExecutionService implements OnModuleInit {
     // ADR 014 step 5: record the run ID on the plan so the plan metadata
     // knows about every attempt (including blocked/failed ones). Non-fatal.
     this.appendRunIdToPlanMetadata(run.work_item_id, run.run_id);
-    this.pushActivity(
+    this.runInteractionService.pushActivity(
       run.run_id,
       "status_change",
       launchState.transitioned
@@ -323,7 +315,7 @@ export class ExecutionService implements OnModuleInit {
         : "Execution run queued.",
     );
     void this.executeRun(run, node, input.disambiguate !== false).catch((error) => {
-      this.pushActivity(run.run_id, "error", `Execution failed: ${this.getErrorMessage(error)}`);
+      this.runInteractionService.pushActivity(run.run_id, "error", `Execution failed: ${this.getErrorMessage(error)}`);
       const failedRun = this.runStore.updateRun(run.run_id, {
         status: "error",
         completed_at: this.now(),
@@ -607,37 +599,7 @@ export class ExecutionService implements OnModuleInit {
   }
 
   async resolveDisambiguation(input: ResolveDisambiguationDto): Promise<ResolveDisambiguationResult> {
-    const runId = input.run_id?.trim();
-    if (!runId) {
-      throw new BadRequestException("run_id is required");
-    }
-
-    const run = this.runStore.getRun(runId);
-    if (!run) {
-      throw new BadRequestException(`Unknown execution run: ${runId}`);
-    }
-
-    if (run.status !== "disambiguating") {
-      return {
-        resolved: false,
-        run_id: runId,
-        error: `Run is in "${run.status}" status; only runs in "disambiguating" status can be resolved.`,
-      };
-    }
-
-    const gate = this.disambiguationGates.get(runId);
-    if (!gate) {
-      return {
-        resolved: false,
-        run_id: runId,
-        error: "No active disambiguation gate found for this run.",
-      };
-    }
-
-    gate.resolve(input.additional_context?.trim() || undefined);
-    this.disambiguationGates.delete(runId);
-    this.pushActivity(runId, "status_change", "Disambiguation resolved — proceeding to coding.");
-    return { resolved: true, run_id: runId };
+    return this.runInteractionService.resolveDisambiguation(input);
   }
 
   /** Read AGENTS.md or CLAUDE.md from a directory if it exists. */
@@ -664,7 +626,7 @@ export class ExecutionService implements OnModuleInit {
 
     // --- Create worktree ---
     this.worktreeService.createWorktree(run.branch, run.base_ref, run.worktree_path);
-    this.pushActivity(run.run_id, "status_change", `Worktree created at ${run.worktree_path}`, `Branch: ${run.branch}, Base: ${run.base_ref}`);
+    this.runInteractionService.pushActivity(run.run_id, "status_change", `Worktree created at ${run.worktree_path}`, `Branch: ${run.branch}, Base: ${run.base_ref}`);
     this.runStore.appendEvent(run, { type: "worktree_created", worktree_path: run.worktree_path, branch: run.branch, base_ref: run.base_ref });
 
     // --- Install dependencies in worktree ---
@@ -672,14 +634,14 @@ export class ExecutionService implements OnModuleInit {
     this.runStore.emitRun("execution_status", run);
     const runIdForActivity = run.run_id;
     this.worktreeService.installDependencies(run.worktree_path, (kind, message) => {
-      this.pushActivity(runIdForActivity, kind, message);
+      this.runInteractionService.pushActivity(runIdForActivity, kind, message);
     });
 
     // --- Gather context ---
     const workItem = this.workItemsService.get(run.work_item_id);
     const issueBody = fetchIssueBody(workItem.repo, workItem.issue_number);
     const projectContext = this.readProjectContext(run.worktree_path);
-    this.pushActivity(run.run_id, "status_change", `Context gathered: issue body ${issueBody ? "found" : "not found"}, project conventions ${projectContext ? "found" : "not found"}`);
+    this.runInteractionService.pushActivity(run.run_id, "status_change", `Context gathered: issue body ${issueBody ? "found" : "not found"}, project conventions ${projectContext ? "found" : "not found"}`);
 
     // --- Write initial scratchpad ---
     // ADR 014 step 5: when the plan reached `ready` via PlansService.approve,
@@ -689,7 +651,7 @@ export class ExecutionService implements OnModuleInit {
     const scratchpadResult = this.scratchpadService.writeScratchpad(run, node);
     const scratchpadPath = scratchpadResult.path;
     const hasApprovedPlan = scratchpadResult.source === "canonical_ready";
-    this.pushActivity(
+    this.runInteractionService.pushActivity(
       run.run_id,
       "status_change",
       hasApprovedPlan
@@ -699,194 +661,33 @@ export class ExecutionService implements OnModuleInit {
     this.runStore.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.scratchpadService.emitChecklistIfChanged(run);
 
-    // --- Create agent session ---
-    const { session, modelFallbackMessage } = await createAgentSession({
-      cwd: run.worktree_path,
-      sessionManager: SessionManager.inMemory(run.worktree_path),
-      tools: createCodingTools(run.worktree_path),
-      model: this.settingsService.getSelectedModel(),
+    // --- Build prompts + delegate session lifecycle to RunInteractionService ---
+    // Phase 4d (#233): the full session lifecycle — create + subscribe +
+    // setup phase + do-work phase + dispose — now lives in
+    // RunInteractionService.runSession. ExecutionService.executeRun is the
+    // orchestrator that prepares the worktree, builds the prompts, and
+    // handles the post-session completion state. All inline phase bodies
+    // that used to live here moved into runSession.
+    const setupPrompt = hasApprovedPlan
+      ? ""
+      : this.buildSetupPrompt(run, node, workItem, issueBody, projectContext);
+    const doWorkPrompt = this.buildDoWorkPrompt(run, node, workItem, projectContext);
+
+    const { assistantText } = await this.runInteractionService.runSession(run, {
+      scratchpadPath,
+      hasApprovedPlan,
+      disambiguate,
+      setupPrompt,
+      doWorkPrompt,
     });
 
-    if (modelFallbackMessage) {
-      this.logger.warn(modelFallbackMessage);
-    }
-
-    run = this.runStore.updateRun(initialRun.run_id, {
-      status: "running",
-      started_at: this.now(),
-      session_id: session.sessionId,
-      progress_message: "Agent session started — setup phase.",
-    })!;
-    this.pushActivity(run.run_id, "status_change", "Agent session started.");
-    this.runStore.appendEvent(run, { type: "session_started", session_id: session.sessionId });
-    this.runStore.emitRun("execution_status", run);
-
-    this.activeSessions.set(run.run_id, session);
-    const runId = run.run_id;
-    const unsubscribe = session.subscribe((event) => {
-      this.handleSessionEvent(runId, event);
-    });
-
-    try {
-      // ============================================================
-      // PHASE 1: SETUP (like setup-work skill)
-      // Agent reads issue, analyzes codebase, writes implementation
-      // plan into the canonical scratchpad, surfaces questions.
-      //
-      // ADR 014 step 5: skip entirely when an approved plan was loaded
-      // from canonical — the approved scratchpad IS the executable contract.
-      // ============================================================
-      const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
-      const shouldRunSetupPhase = disambiguate && !hasApprovedPlan;
-      if (hasApprovedPlan) {
-        this.pushActivity(
-          runId,
-          "status_change",
-          "Approved plan loaded from canonical — skipping setup phase.",
-        );
-        this.runStore.appendEvent(run, { type: "setup_phase_skipped" });
-
-        // studio-170: if the approved scratchpad still has open
-        // clarifications or blockers, trigger the existing
-        // disambiguation gate before entering the coding phase so the
-        // user can review and resolve them. Honors the `disambiguate`
-        // opt-out flag the same way `shouldRunSetupPhase` does.
-        if (disambiguate) {
-          let openItems: { questions: string[]; blockers: string[] } = {
-            questions: [],
-            blockers: [],
-          };
-          try {
-            const scratchpadContent = readFileSync(scratchpadPath, "utf8");
-            openItems = this.scratchpadService.parseScratchpadOpenItems(scratchpadContent);
-          } catch (error) {
-            this.logger.warn(
-              `executeRun: failed to read approved scratchpad at ${scratchpadPath} ` +
-                `for disambiguation parse: ${this.getErrorMessage(error)}`,
-            );
-          }
-
-          const totalOpen = openItems.questions.length + openItems.blockers.length;
-          if (totalOpen > 0) {
-            const qLabel = `${openItems.questions.length} clarification${openItems.questions.length === 1 ? "" : "s"}`;
-            const bLabel = `${openItems.blockers.length} blocker${openItems.blockers.length === 1 ? "" : "s"}`;
-            const progressSummary = `${qLabel} and ${bLabel} open in approved plan — awaiting review.`;
-
-            this.pushActivity(
-              runId,
-              "info",
-              `Approved plan has open items (${qLabel}, ${bLabel}) — pausing for user review before coding.`,
-            );
-            this.runStore.appendEvent(run, { type: "setup_phase_started" });
-
-            run = this.runStore.updateRun(runId, {
-              status: "disambiguating",
-              progress_message: progressSummary,
-            })!;
-            this.runStore.appendEvent(run, { type: "setup_phase_complete" });
-            this.runStore.emitRun("execution_status", run);
-
-            // Block until the user resolves via
-            // POST /api/execution/resolve-disambiguation.
-            const additionalContext = await new Promise<string | undefined>((resolve) => {
-              this.disambiguationGates.set(runId, { resolve });
-            });
-            this.runStore.appendEvent(run, { type: "setup_approved" });
-
-            if (additionalContext) {
-              // The session has no prior orientation in the
-              // approved-plan codepath, so include a minimal prompt
-              // with the scratchpad filename and work item id.
-              await session.prompt(
-                `The approved plan for ${run.work_item_id} (${run.work_item_name}) had open items that the user just resolved with this additional context:\n\n${additionalContext}\n\nRead ${scratchpadName} in the current worktree, update the "### Clarifications Needed" and "## Blockers" sections to reflect the resolution, and make any other edits implied by the user's feedback. Then confirm you're ready to start coding.`,
-              );
-              this.scratchpadService.syncScratchpadToCanonical(run);
-              this.scratchpadService.emitChecklistIfChanged(run);
-            }
-
-            run = this.runStore.updateRun(runId, {
-              status: "running",
-              progress_message: "Plan approved — coding phase started.",
-            })!;
-            this.pushActivity(runId, "status_change", "Plan approved. Coding phase started.");
-            this.runStore.emitRun("execution_status", run);
-          }
-        }
-      }
-      if (shouldRunSetupPhase) {
-        run = this.runStore.updateRun(runId, {
-          status: "running",
-          progress_message: "Setup phase — agent is analyzing the issue and planning implementation.",
-        })!;
-        this.pushActivity(runId, "status_change", "Setup phase started — agent analyzing issue and codebase.");
-        this.runStore.appendEvent(run, { type: "setup_phase_started" });
-        this.runStore.emitRun("execution_status", run);
-
-        const setupPrompt = this.buildSetupPrompt(run, node, workItem, issueBody, projectContext);
-        await session.prompt(setupPrompt);
-
-        // Sync the agent's scratchpad edits back to the canonical plan file
-        // (end of setup phase, before the approval gate).
-        this.scratchpadService.syncScratchpadToCanonical(run);
-
-        // Setup prompt finished — now switch to disambiguating so the UI shows the approval gate
-        this.scratchpadService.emitChecklistIfChanged(run);
-        run = this.runStore.updateRun(runId, {
-          status: "disambiguating",
-          progress_message: "Setup complete. Review the implementation plan and approve to start coding.",
-        })!;
-        this.pushActivity(runId, "info", "Setup complete — implementation plan ready for review.");
-        this.runStore.appendEvent(run, { type: "setup_phase_complete" });
-        this.runStore.emitRun("execution_status", run);
-
-        // Block until the user approves — gate is now ready
-        const additionalContext = await new Promise<string | undefined>((resolve) => {
-          this.disambiguationGates.set(runId, { resolve });
-        });
-        this.runStore.appendEvent(run, { type: "setup_approved" });
-
-        if (additionalContext) {
-          await session.prompt(
-            `The user provided feedback on your plan:\n\n${additionalContext}\n\nUpdate the ${scratchpadName} implementation plan accordingly, then confirm you're ready to start coding.`
-          );
-          this.scratchpadService.syncScratchpadToCanonical(run);
-          this.scratchpadService.emitChecklistIfChanged(run);
-        }
-
-        run = this.runStore.updateRun(runId, {
-          status: "running",
-          progress_message: "Plan approved — coding phase started.",
-        })!;
-        this.pushActivity(runId, "status_change", "Plan approved. Coding phase started.");
-        this.runStore.emitRun("execution_status", run);
-      }
-
-      // ============================================================
-      // PHASE 2: DO-WORK (like do-work skill)
-      // Agent works through the scratchpad checklist task by task,
-      // committing after each, updating the scratchpad as it goes
-      // ============================================================
-      const doWorkPrompt = this.buildDoWorkPrompt(run, node, workItem, projectContext);
-      await session.prompt(doWorkPrompt);
-
-      // Sync the agent's final scratchpad state back to canonical
-      // (end of do-work phase).
-      this.scratchpadService.syncScratchpadToCanonical(run);
-
-      this.scratchpadService.emitChecklistIfChanged(run);
-    } finally {
-      unsubscribe();
-      this.disambiguationGates.delete(run.run_id);
-      this.activeSessions.delete(run.run_id);
-      session.dispose();
-    }
+    // Re-fetch the run record — runSession mutated status/progress_message
+    // multiple times during the phase bodies. The final state after
+    // runSession returns is "running" from the last setup-phase update;
+    // the completion-state write below flips it to "completed".
+    run = this.runStore.getRun(initialRun.run_id) ?? run;
 
     // --- Completion ---
-    const assistantText = session.getLastAssistantText()?.trim() ?? "Execution run completed.";
-    const reasoningSummary = this.extractReasoningSummary(assistantText);
-    if (reasoningSummary) {
-      this.pushActivity(run.run_id, "reasoning", reasoningSummary);
-    }
     const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
@@ -896,7 +697,7 @@ export class ExecutionService implements OnModuleInit {
     // post-run snapshot — synced above at each phase boundary. No separate
     // scratchpad-final.md is written under the run artifact dir anymore.
 
-    this.pushActivity(run.run_id, "status_change", `Execution completed. ${changedFiles.length} file(s) changed.`);
+    this.runInteractionService.pushActivity(run.run_id, "status_change", `Execution completed. ${changedFiles.length} file(s) changed.`);
     run = this.runStore.updateRun(initialRun.run_id, {
       status: "completed",
       completed_at: this.now(),
@@ -910,20 +711,11 @@ export class ExecutionService implements OnModuleInit {
   }
 
   getRunActivityLog(runId: string): ActivityLogEntry[] {
-    const run = this.runStore.getRun(runId);
-    return run?.activity_log ?? [];
+    return this.runInteractionService.getRunActivityLog(runId);
   }
 
   getRunChatHistory(runId: string): RunChatHistory {
-    const run = this.runStore.getRun(runId);
-    const messages: RunChatMessage[] = (run?.activity_log ?? [])
-      .filter((e) => e.kind === "agent_message" || e.kind === "user_message")
-      .map((e) => ({
-        timestamp: e.timestamp,
-        role: e.kind === "agent_message" ? "assistant" as const : "user" as const,
-        text: e.message,
-      }));
-    return { run_id: runId, messages };
+    return this.runInteractionService.getRunChatHistory(runId);
   }
 
   getRunChecklist(runId: string): ExecutionChecklistSnapshot {
@@ -968,182 +760,7 @@ export class ExecutionService implements OnModuleInit {
   }
 
   async sendFollowUp(input: FollowUpMessageDto): Promise<FollowUpMessageResult> {
-    const runId = input.run_id?.trim();
-    if (!runId) {
-      throw new BadRequestException("run_id is required");
-    }
-    const message = input.message?.trim();
-    if (!message) {
-      throw new BadRequestException("message is required");
-    }
-
-    const run = this.runStore.getRun(runId);
-    if (!run) {
-      throw new BadRequestException(`Unknown execution run: ${runId}`);
-    }
-
-    // Record the user message in the unified activity log
-    this.pushActivity(runId, "user_message", message);
-
-    const session = this.activeSessions.get(runId);
-
-    // Active session: steer or follow-up into the live run
-    if (session && (run.status === "running" || run.status === "preparing" || run.status === "disambiguating")) {
-      const delivery = input.delivery ?? "followUp";
-      try {
-        if (delivery === "steer") {
-          await session.steer(message);
-        } else {
-          await session.followUp(message);
-        }
-        this.runStore.appendEvent(run, { type: "follow_up_sent", delivery, message_length: message.length });
-        return { accepted: true, run_id: runId, delivery, message };
-      } catch (error) {
-        const errorMessage = this.getErrorMessage(error);
-        this.pushActivity(runId, "error", `Follow-up delivery failed: ${errorMessage}`);
-        return { accepted: false, run_id: runId, delivery, message, error: errorMessage };
-      }
-    }
-
-    // Completed run: spin up a new session in the worktree for a continuation turn
-    if (run.status === "completed" && existsSync(run.worktree_path)) {
-      try {
-        this.pushActivity(runId, "follow_up", `Starting follow-up turn: ${message.length > 120 ? message.slice(0, 117) + "..." : message}`);
-        const updatedRun = this.runStore.updateRun(runId, {
-          status: "running",
-          progress_message: "Follow-up turn running.",
-        });
-        if (!updatedRun) {
-          return { accepted: false, run_id: runId, delivery: "new_turn", message, error: "Failed to update run status" };
-        }
-
-        // Fire-and-forget the follow-up turn
-        void this.executeFollowUpTurn(updatedRun, message).catch((error) => {
-          this.pushActivity(runId, "error", `Follow-up turn failed: ${this.getErrorMessage(error)}`);
-          this.runStore.updateRun(runId, {
-            status: "completed",
-            progress_message: `Follow-up turn failed: ${this.getErrorMessage(error)}`,
-          });
-        });
-
-        return { accepted: true, run_id: runId, delivery: "new_turn", message };
-      } catch (error) {
-        return { accepted: false, run_id: runId, delivery: "new_turn", message, error: this.getErrorMessage(error) };
-      }
-    }
-
-    return {
-      accepted: false,
-      run_id: runId,
-      delivery: input.delivery ?? "followUp",
-      message,
-      error: `Cannot send follow-up to run in status "${run.status}". Only running or completed runs accept follow-up messages.`,
-    };
-  }
-
-  private async executeFollowUpTurn(run: ExecutionRunRecord, message: string) {
-    const { session, modelFallbackMessage } = await createAgentSession({
-      cwd: run.worktree_path,
-      sessionManager: SessionManager.inMemory(run.worktree_path),
-      tools: createCodingTools(run.worktree_path),
-      model: this.settingsService.getSelectedModel(),
-    });
-
-    if (modelFallbackMessage) {
-      this.logger.warn(modelFallbackMessage);
-    }
-
-    this.activeSessions.set(run.run_id, session);
-    const unsubscribe = session.subscribe((event) => {
-      this.handleSessionEvent(run.run_id, event);
-    });
-
-    try {
-      await session.prompt(message);
-      // ADR 014 step 5: sync the agent's scratchpad edits back to canonical
-      // at follow-up turn completion (phase boundary).
-      this.scratchpadService.syncScratchpadToCanonical(run);
-      this.scratchpadService.emitChecklistIfChanged(run);
-    } finally {
-      unsubscribe();
-      this.activeSessions.delete(run.run_id);
-      session.dispose();
-    }
-
-    const assistantText = session.getLastAssistantText()?.trim() ?? "Follow-up turn completed without a summary.";
-    this.pushActivity(run.run_id, "agent_message", assistantText);
-
-    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
-    const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
-
-    this.pushActivity(run.run_id, "follow_up", `Follow-up turn completed. ${changedFiles.length} file(s) changed.`);
-    const nextRun = this.runStore.updateRun(run.run_id, {
-      status: "completed",
-      completed_at: this.now(),
-      progress_message: "Follow-up turn completed.",
-      result_summary: assistantText,
-      changed_files: changedFiles,
-    });
-    if (nextRun) {
-      this.runStore.writeSummary(nextRun);
-      this.runStore.appendEvent(nextRun, { type: "follow_up_turn_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
-      this.runStore.emitRun("execution_result", nextRun);
-    }
-  }
-
-  // Chat messages are now stored as agent_message/user_message entries in the activity_log
-
-  private handleSessionEvent(runId: string, event: AgentSessionEvent) {
-    const run = this.runStore.getRun(runId);
-    if (!run) {
-      return;
-    }
-
-    const toolName = "toolName" in event ? event.toolName ?? null : null;
-    if (event.type === "tool_execution_start") {
-      this.runStore.appendEvent(run, { type: event.type, tool_name: toolName });
-      this.pushActivity(runId, "tool_start", `Tool started: ${toolName ?? "unknown"}`);
-      this.runStore.updateRun(runId, { progress_message: `${toolName ?? "tool"} running…` });
-      return;
-    }
-
-    if (event.type === "tool_execution_end") {
-      this.runStore.appendEvent(run, { type: event.type, tool_name: toolName });
-      this.pushActivity(runId, "tool_end", `Tool finished: ${toolName ?? "unknown"}`);
-      this.runStore.updateRun(runId, { progress_message: `${toolName ?? "tool"} finished.` });
-      this.scratchpadService.emitChecklistIfChanged(run);
-      return;
-    }
-
-    if (event.type === "message_end") {
-      const message = "message" in event ? event.message : null;
-      const text = this.extractTextFromMessage(message);
-      this.runStore.appendEvent(run, { type: event.type, text: text?.slice(0, 2000) ?? null });
-      if (text) {
-        this.pushActivity(runId, "agent_message", text);
-        this.runStore.emitRun("execution_status", run);
-      }
-      return;
-    }
-
-    if (event.type === "agent_start" || event.type === "turn_start") {
-      this.runStore.appendEvent(run, { type: event.type });
-      this.pushActivity(runId, "turn_start", "Execution turn started.");
-      this.runStore.updateRun(runId, { progress_message: "Execution turn started." });
-      return;
-    }
-
-    if (event.type === "agent_end" || event.type === "turn_end") {
-      this.runStore.appendEvent(run, { type: event.type });
-      this.pushActivity(runId, "turn_end", "Execution turn completed.");
-      this.runStore.updateRun(runId, { progress_message: "Execution turn completed." });
-    }
-  }
-
-  private pushActivity(runId: string, kind: ActivityLogEntryKind, message: string, detail?: string) {
-    const timestamp = this.now();
-    const entry: ActivityLogEntry = { timestamp, kind, message, ...(detail ? { detail } : {}) };
-    this.runStore.appendActivityLog(runId, entry);
+    return this.runInteractionService.sendFollowUp(input);
   }
 
   private resolveLaunchEligibility(
@@ -1491,22 +1108,6 @@ export class ExecutionService implements OnModuleInit {
     };
   }
 
-  private extractTextFromMessage(message: unknown): string | null {
-    if (!message || typeof message !== "object") return null;
-    const msg = message as Record<string, unknown>;
-    // AgentMessage has content: ContentBlock[] where text blocks have { type: "text", text: string }
-    const content = msg.content;
-    if (Array.isArray(content)) {
-      const texts = content
-        .filter((block: unknown) => typeof block === "object" && block !== null && (block as Record<string, unknown>).type === "text")
-        .map((block: unknown) => ((block as Record<string, unknown>).text as string) || "")
-        .filter(Boolean);
-      return texts.length > 0 ? texts.join("\n") : null;
-    }
-    if (typeof content === "string") return content || null;
-    return null;
-  }
-
   private readPullRequest(worktreePath: string, fallbackTitle: string, body: string): ExecutionPullRequestRecord {
     const raw = this.worktreeService.runGhIn(worktreePath, ["pr", "view", "--json", "number,url,title,body,baseRefName,headRefName,isDraft"]);
     const parsed = JSON.parse(raw) as {
@@ -1836,18 +1437,6 @@ export class ExecutionService implements OnModuleInit {
     return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
   }
 
-  private extractReasoningSummary(assistantText: string): string | null {
-    if (!assistantText || assistantText.length < 20) {
-      return null;
-    }
-    // Take the first meaningful paragraph (up to ~300 chars) as the reasoning summary
-    const lines = assistantText.split("\n").filter((l) => l.trim().length > 0);
-    const summary = lines.slice(0, 4).join(" ").trim();
-    if (summary.length <= 300) {
-      return summary;
-    }
-    return summary.slice(0, 297) + "...";
-  }
 
   private safeGetWorkItem(id: string): WorkItemRecord | null {
     try {

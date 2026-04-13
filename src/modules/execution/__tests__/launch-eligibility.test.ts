@@ -203,9 +203,14 @@ function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: bool
     writeMetadata: vi.fn(),
     writeSummary: vi.fn(),
   };
-  (service as any).pushActivity = vi.fn((_runId: string, _kind: string, message: string) => {
-    executionOrder.push(`activity:${message}`);
-  });
+  // Phase 4d (#233): pushActivity lives on RunInteractionService.
+  // The harness stubs a scratchpadService-style runInteractionService
+  // field that captures activity-log calls into executionOrder.
+  (service as any).runInteractionService = {
+    pushActivity: vi.fn((_runId: string, _kind: string, message: string) => {
+      executionOrder.push(`activity:${message}`);
+    }),
+  };
   (service as any).executeRun = vi.fn(async () => {
     executionOrder.push("executeRun");
   });
