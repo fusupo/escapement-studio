@@ -42,7 +42,6 @@ import type {
   ChecklistItem,
   ClosedGitHubIssueSummary,
   CloseMergedPullRequestResult,
-  StudioArchiveMeta,
   CreateExecutionPullRequestDto,
   CreateExecutionPullRequestResult,
   ExecutionChecklistSnapshot,
@@ -129,73 +128,6 @@ export class ExecutionService implements OnModuleInit {
         `Failed to hydrate recentRuns from disk: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-
-    // studio-196: register HSM action handlers for disposition flows.
-    this.hsmService.registerActionHandler("closeGhIssue", async (workItem, _event, ctx) => {
-      if (workItem.kind !== "issue" || !workItem.repo || !workItem.issue_number) {
-        return; // Not issue-backed; skip.
-      }
-      try {
-        const details = await this.githubService.closeIssue(workItem.repo, workItem.issue_number);
-        ctx.handler_data.closed_issue = {
-          repo: details.repo,
-          number: details.number,
-          url: details.url,
-          title: details.title,
-          state: details.state,
-        };
-      } catch (error) {
-        throw new BadRequestException(
-          `close_merged_failed_github_close: ${this.getErrorMessage(error)}`,
-        );
-      }
-    });
-
-    this.hsmService.registerActionHandler("runArchiver", async (workItem, _event, ctx) => {
-      // Pre-capture run snapshot before any mutation.
-      const runSnapshot = this.captureRunSnapshotForWorkItem(workItem.id);
-
-      // Move plan dir to archives.
-      const moveResult = this.movePlanDirToArchives(workItem.id);
-
-      // Archive run artifacts + README.
-      let archiveResult: ArchiveRunArtifactsResult;
-      try {
-        archiveResult = archiveRunArtifactsForWorkItem(this.artifactRoot, workItem, {
-          runs: runSnapshot,
-          onWarn: (message) => this.logger.warn(message),
-        });
-      } catch (error) {
-        const message = this.getErrorMessage(error);
-        if (/^archive_run_active|^archive_already_exists_run/.test(message)) {
-          throw new BadRequestException(message);
-        }
-        throw error;
-      }
-
-      // Stamp archive meta into the runtime context meta so the HSM
-      // persists it in the same mutation batch as the state transition.
-      const archivePath =
-        archiveResult.archive_path ?? moveResult.archive_path ?? workItem.archive_path;
-      const studioArchive: StudioArchiveMeta = {
-        archived_at: this.now(),
-        readme_path: archiveResult.readme_path,
-        archived_run_ids: archiveResult.archived_run_ids,
-        skipped_run_ids: archiveResult.skipped_run_ids,
-      };
-      ctx.meta.studio_archive = studioArchive;
-
-      // Set archive_path on the work item via patch_overrides.
-      ctx.patch_overrides.archive_path = archivePath;
-
-      // Surface archive results for the response envelope.
-      ctx.handler_data.archive_result = {
-        archive_path: archivePath,
-        readme_path: archiveResult.readme_path,
-        archived_run_ids: archiveResult.archived_run_ids,
-        skipped_run_ids: archiveResult.skipped_run_ids,
-      };
-    });
   }
 
   /**

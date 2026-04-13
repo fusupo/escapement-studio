@@ -8,13 +8,14 @@ import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { GitHubCacheController } from "./github-cache.controller.js";
 import { GitHubCacheScheduler } from "./github-cache-scheduler.service.js";
 import { ExecutionService } from "./execution.service.js";
+import { HsmActionHandlers } from "./hsm-action-handlers.js";
 import { WorkItemReconcilerController } from "./work-item-reconciler.controller.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 
 @Module({
   imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => PlansModule), forwardRef(() => SettingsModule)],
   controllers: [ExecutionController, GitHubCacheController, WorkItemReconcilerController],
-  providers: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, WorkItemReconcilerService],
+  providers: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, HsmActionHandlers, WorkItemReconcilerService],
   exports: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, WorkItemReconcilerService],
 })
 export class ExecutionModule {}
