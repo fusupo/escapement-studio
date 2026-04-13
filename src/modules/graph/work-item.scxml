@@ -16,6 +16,11 @@
       machine through `run.*` events rather than modeled as nested run states.
     - This chart preserves the current Studio event/action contract used by
       `WorkItemHsmService` and its tests.
+    - Run record creation is owned by `ExecutionService.launch`, not by any
+      SCXML action. The chart no longer declares an `action="createRunRecord"`
+      hook on dispatch/retry transitions because no handler was ever registered
+      for that name; the runtime silently dropped it. See
+      docs/proposals/phase-1-hsm-action-handlers.md.
   -->
 
   <!-- Pre-PR lifecycle: planning, drafting, execution, and run recovery. -->
@@ -32,7 +37,7 @@
     <!-- `planned`: issue exists, but drafting has not started yet. -->
     <state id="planned">
       <transition event="user.start_draft" target="drafting" />
-      <transition event="user.dispatch" target="in_progress" action="createRunRecord" />
+      <transition event="user.dispatch" target="in_progress" />
     </state>
 
     <!-- `drafting`: the scratchpad/plan is being authored or revised. -->
@@ -43,7 +48,7 @@
 
     <state id="ready">
       <transition event="user.start_draft" target="drafting" />
-      <transition event="user.dispatch" target="in_progress" action="createRunRecord" />
+      <transition event="user.dispatch" target="in_progress" />
     </state>
 
     <state id="in_progress">
@@ -56,7 +61,7 @@
 
     <!-- `run_errored`: the latest run failed and needs human intervention. -->
     <state id="run_errored">
-      <transition event="user.retry" target="in_progress" action="createRunRecord" />
+      <transition event="user.retry" target="in_progress" />
       <transition event="user.investigate" target="ready" />
       <transition event="user.resolve_disambiguation" target="ready" />
     </state>
