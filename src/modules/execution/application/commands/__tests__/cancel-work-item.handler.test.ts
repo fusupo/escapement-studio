@@ -3,10 +3,10 @@ import { CancelWorkItemCommand } from "../cancel-work-item.command.js";
 import { CancelWorkItemHandler } from "../cancel-work-item.handler.js";
 
 describe("CancelWorkItemHandler", () => {
-  it("delegates to ExecutionService.cancelWorkItem with the dto", async () => {
+  it("delegates to RunDispositionService.cancelWorkItem with the dto", async () => {
     const cancelWorkItem = vi.fn().mockResolvedValue({ cancelled: true });
-    const execution = { cancelWorkItem } as never;
-    const handler = new CancelWorkItemHandler(execution);
+    const disposition = { cancelWorkItem } as never;
+    const handler = new CancelWorkItemHandler(disposition);
 
     const result = await handler.execute(
       new CancelWorkItemCommand({

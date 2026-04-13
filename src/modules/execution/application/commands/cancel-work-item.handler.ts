@@ -1,6 +1,6 @@
 import { Inject } from "@nestjs/common";
 import { CommandHandler, ICommandHandler } from "@nestjs/cqrs";
-import { ExecutionService } from "../../execution.service.js";
+import { RunDispositionService } from "../../run-disposition.service.js";
 import type { CancelWorkItemResult } from "../../types.js";
 import { CancelWorkItemCommand } from "./cancel-work-item.command.js";
 
@@ -9,10 +9,10 @@ export class CancelWorkItemHandler
   implements ICommandHandler<CancelWorkItemCommand, CancelWorkItemResult>
 {
   constructor(
-    @Inject(ExecutionService) private readonly execution: ExecutionService,
+    @Inject(RunDispositionService) private readonly disposition: RunDispositionService,
   ) {}
 
   async execute(command: CancelWorkItemCommand): Promise<CancelWorkItemResult> {
-    return await this.execution.cancelWorkItem(command.dto);
+    return await this.disposition.cancelWorkItem(command.dto);
   }
 }

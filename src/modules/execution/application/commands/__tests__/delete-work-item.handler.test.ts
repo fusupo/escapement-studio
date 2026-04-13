@@ -3,10 +3,10 @@ import { DeleteWorkItemCommand } from "../delete-work-item.command.js";
 import { DeleteWorkItemHandler } from "../delete-work-item.handler.js";
 
 describe("DeleteWorkItemHandler", () => {
-  it("delegates to ExecutionService.deleteWorkItem with the dto", async () => {
+  it("delegates to RunDispositionService.deleteWorkItem with the dto", async () => {
     const deleteWorkItem = vi.fn().mockResolvedValue({ deleted: true });
-    const execution = { deleteWorkItem } as never;
-    const handler = new DeleteWorkItemHandler(execution);
+    const disposition = { deleteWorkItem } as never;
+    const handler = new DeleteWorkItemHandler(disposition);
 
     const result = await handler.execute(
       new DeleteWorkItemCommand({
