@@ -33,7 +33,9 @@ interface HarnessService {
   appendRunIdToPlanMetadata: (workItemId: string, runId: string) => void;
   buildScratchpad: (run: ExecutionRunRecord, node: ExecutionDispatchNodePreview) => string;
   getErrorMessage: (error: unknown) => string;
-  getRun: (runId: string) => ExecutionRunRecord | undefined;
+  runStore: {
+    getRun: (runId: string) => ExecutionRunRecord | null;
+  };
 }
 
 function makeService(artifactRoot: string, run?: ExecutionRunRecord): HarnessService {
@@ -45,7 +47,12 @@ function makeService(artifactRoot: string, run?: ExecutionRunRecord): HarnessSer
       service.warnings.push(msg);
     },
   };
-  service.getRun = (runId: string) => (run && run.run_id === runId ? run : undefined);
+  // Phase 4a (#230): getRun lives on RunStore. The harness provides
+  // a minimal runStore field so ExecutionService methods (still on
+  // the prototype) can reach it via `this.runStore.getRun(runId)`.
+  service.runStore = {
+    getRun: (runId: string) => (run && run.run_id === runId ? run : null),
+  };
   // buildScratchpad touches other private helpers we don't stub; override
   // with a deterministic stub so `writeScratchpad` synthesis tests don't
   // trip on missing dependencies.

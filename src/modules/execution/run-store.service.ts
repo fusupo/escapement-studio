@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { loadRunRecordsForArtifactRoot, loadRunRecordsFromDisk } from "./run-disk-store.js";
 import type {
+  ActivityLogEntry,
   ExecutionDispatchNodePreview,
   ExecutionRunRecord,
   ExecutionStatusEvent,
@@ -176,6 +177,29 @@ export class RunStore {
     writeFileSync(join(run.artifact_dir, "summary.md"), lines.join("\n"), "utf8");
   }
 
+  /**
+   * Append an entry to a run's activity log and persist to disk,
+   * WITHOUT emitting an SSE event. Used by the pushActivity helper
+   * on ExecutionService — activity-log appends happen frequently
+   * during a run and are not meant to trigger UI status refreshes.
+   * Returns the updated run, or `null` if the run wasn't in the
+   * buffer.
+   */
+  appendActivityLog(runId: string, entry: ActivityLogEntry): ExecutionRunRecord | null {
+    const index = this.recentRuns.findIndex((run) => run.run_id === runId);
+    if (index === -1) {
+      return null;
+    }
+    const nextRun: ExecutionRunRecord = {
+      ...this.recentRuns[index],
+      updated_at: entry.timestamp,
+      activity_log: [...this.recentRuns[index]!.activity_log, entry],
+    };
+    this.recentRuns[index] = nextRun;
+    this.writeStatus(nextRun);
+    return nextRun;
+  }
+
   appendEvent(run: ExecutionRunRecord, payload: Record<string, unknown>): void {
     appendFileSync(
       join(run.artifact_dir, "events.jsonl"),
@@ -193,6 +217,30 @@ export class RunStore {
       session_id: run.run_id,
       turn_id: null,
       payload: { run } satisfies ExecutionStatusEvent,
+    };
+
+    this.eventSubject.next({
+      type: envelope.event_type,
+      data: JSON.stringify(envelope),
+      id: envelope.event_id,
+    });
+  }
+
+  /**
+   * Generic event emission for SSE envelopes that aren't run-status
+   * updates. Used by `emitChecklistIfChanged` (Phase 4a) to push
+   * `execution_checklist` snapshots without reaching into the
+   * private `eventSubject` + counter.
+   */
+  emitEvent<T>(eventType: string, sessionId: string, payload: T): void {
+    const envelope = {
+      event_id: `evt_${++this.eventCounter}`,
+      stream_id: this.streamId,
+      timestamp: this.now(),
+      event_type: eventType,
+      session_id: sessionId,
+      turn_id: null,
+      payload,
     };
 
     this.eventSubject.next({

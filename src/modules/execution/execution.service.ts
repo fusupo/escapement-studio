@@ -19,6 +19,7 @@ import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-w
 import { loadRunRecordsForArtifactRoot } from "./run-disk-store.js";
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
+import { RunStore } from "./run-store.service.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
@@ -59,14 +60,8 @@ import type {
 @Injectable()
 export class ExecutionService implements OnModuleInit {
   private readonly logger = new Logger(ExecutionService.name);
-  private readonly streamId = "execution-runs";
-  private readonly eventSubject = new Subject<MessageEvent>();
   private readonly artifactRoot = resolve(getConfig().artifactRoot);
   private readonly worktreeRoot = worktreesRoot(this.artifactRoot);
-  private readonly recentRuns: ExecutionRunRecord[] = [];
-  private readonly recentRunLimit = 16;
-  // No cap on activity log — full history preserved in status.json
-  private eventCounter = 0;
   /** Active agent sessions keyed by run_id — kept alive while run is active */
   private readonly activeSessions = new Map<string, import("@mariozechner/pi-coding-agent").AgentSession>();
   // Chat history derived from activity_log (agent_message + user_message entries)
@@ -83,6 +78,7 @@ export class ExecutionService implements OnModuleInit {
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
+    @Inject(RunStore) private readonly runStore: RunStore,
   ) {
     this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
   }
@@ -108,47 +104,12 @@ export class ExecutionService implements OnModuleInit {
     }
 
     try {
-      this.hydrateRecentRunsFromDisk();
+      this.runStore.hydrateRecentRunsFromDisk();
     } catch (error) {
       this.logger.warn(
         `Failed to hydrate recentRuns from disk: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-  }
-
-  /**
-   * Issue #176: populate `recentRuns` from `runs/<id>/status.json` on
-   * disk, keeping the most recent `recentRunLimit` entries ordered by
-   * `updated_at` descending. Existing in-memory entries are preserved
-   * and deduplicated by `run_id` so a second call during tests is a
-   * no-op for runs already tracked.
-   *
-   * Exposed as a method (not a bare field initializer) so tests can
-   * exercise the rehydration path independently of `onModuleInit`.
-   */
-  hydrateRecentRunsFromDisk(): void {
-    const loaded = loadRunRecordsForArtifactRoot(this.artifactRoot);
-    const existingIds = new Set(this.recentRuns.map((run) => run.run_id));
-    for (const run of loaded) {
-      if (existingIds.has(run.run_id)) continue;
-      this.recentRuns.push(run);
-      existingIds.add(run.run_id);
-    }
-    this.recentRuns.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    if (this.recentRuns.length > this.recentRunLimit) {
-      this.recentRuns.splice(this.recentRunLimit);
-    }
-  }
-
-  stream(): Observable<MessageEvent> {
-    return new Observable<MessageEvent>((subscriber) => {
-      const subscription = this.eventSubject.subscribe(subscriber);
-      return () => subscription.unsubscribe();
-    });
-  }
-
-  listRecentRuns(): ExecutionRunRecord[] {
-    return [...this.recentRuns].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   }
 
   refreshPullRequestTruth(
@@ -169,7 +130,7 @@ export class ExecutionService implements OnModuleInit {
     const updatedRunIds: string[] = [];
     const workItemIds = new Set(options.work_item_ids ?? []);
 
-    for (const run of this.listRecentRuns()) {
+    for (const run of this.runStore.listRecentRuns()) {
       const matchesByNumber = run.pull_request?.number === pullRequest.number;
       const matchesByBranch = run.branch === pullRequest.head_ref;
       const matchesByWorkItem = workItemIds.has(run.work_item_id);
@@ -196,12 +157,12 @@ export class ExecutionService implements OnModuleInit {
         continue;
       }
 
-      const nextRun = this.updateRun(run.run_id, { pull_request: nextPullRequest });
+      const nextRun = this.runStore.updateRun(run.run_id, { pull_request: nextPullRequest });
       if (!nextRun) {
         continue;
       }
 
-      this.appendEvent(nextRun, {
+      this.runStore.appendEvent(nextRun, {
         type: "pull_request_truth_refreshed",
         pull_request: {
           number: nextPullRequest.number,
@@ -210,7 +171,7 @@ export class ExecutionService implements OnModuleInit {
           merge_commit_sha: nextPullRequest.merge_commit_sha,
         },
       });
-      this.writeSummary(nextRun);
+      this.runStore.writeSummary(nextRun);
       updatedRunIds.push(nextRun.run_id);
     }
 
@@ -339,8 +300,8 @@ export class ExecutionService implements OnModuleInit {
       if (run.errors == null || run.errors.length === 0) {
         run.errors = [{ code: blockedCode, message: blockedReason }];
       }
-      this.persistRun(run);
-      this.emitRun("execution_result", run);
+      this.runStore.persistRun(run);
+      this.runStore.emitRun("execution_result", run);
       return { accepted: false, run };
     }
 
@@ -357,7 +318,7 @@ export class ExecutionService implements OnModuleInit {
       errors: [],
     });
 
-    this.persistRun(run);
+    this.runStore.persistRun(run);
     // ADR 014 step 5: record the run ID on the plan so the plan metadata
     // knows about every attempt (including blocked/failed ones). Non-fatal.
     this.appendRunIdToPlanMetadata(run.work_item_id, run.run_id);
@@ -370,7 +331,7 @@ export class ExecutionService implements OnModuleInit {
     );
     void this.executeRun(run, node, input.disambiguate !== false).catch((error) => {
       this.pushActivity(run.run_id, "error", `Execution failed: ${this.getErrorMessage(error)}`);
-      const failedRun = this.updateRun(run.run_id, {
+      const failedRun = this.runStore.updateRun(run.run_id, {
         status: "error",
         completed_at: this.now(),
         progress_message: `Execution failed: ${this.getErrorMessage(error)}`,
@@ -378,9 +339,9 @@ export class ExecutionService implements OnModuleInit {
         errors: [{ code: "execution_failed", message: this.getErrorMessage(error) }],
       });
       if (failedRun) {
-        this.writeSummary(failedRun);
-        this.appendEvent(failedRun, { type: "run_failed", error: this.getErrorMessage(error) });
-        this.emitRun("execution_result", failedRun);
+        this.runStore.writeSummary(failedRun);
+        this.runStore.appendEvent(failedRun, { type: "run_failed", error: this.getErrorMessage(error) });
+        this.runStore.emitRun("execution_result", failedRun);
       }
     });
 
@@ -393,7 +354,7 @@ export class ExecutionService implements OnModuleInit {
       throw new BadRequestException("run_id is required");
     }
 
-    const run = this.getRun(runId);
+    const run = this.runStore.getRun(runId);
     if (!run) {
       throw new BadRequestException(`Unknown execution run: ${runId}`);
     }
@@ -418,7 +379,7 @@ export class ExecutionService implements OnModuleInit {
     // branch's full committed history relative to the base ref.
     const prStagedViolations = this.findStagedScratchpadViolations(run.worktree_path);
     if (prStagedViolations.length > 0) {
-      this.appendEvent(run, {
+      this.runStore.appendEvent(run, {
         type: "scratchpad_commit_blocked",
         phase: "pull_request",
         paths: prStagedViolations,
@@ -431,7 +392,7 @@ export class ExecutionService implements OnModuleInit {
 
     const committedViolations = this.findCommittedScratchpadViolations(run.worktree_path, baseRef);
     if (committedViolations.length > 0) {
-      this.appendEvent(run, {
+      this.runStore.appendEvent(run, {
         type: "scratchpad_commit_blocked",
         phase: "pull_request_history",
         paths: committedViolations,
@@ -465,11 +426,11 @@ export class ExecutionService implements OnModuleInit {
     ], body);
 
     const pullRequest = this.readPullRequest(run.worktree_path, title, body);
-    const nextRun = this.updateRun(run.run_id, { pull_request: pullRequest }) ?? run;
+    const nextRun = this.runStore.updateRun(run.run_id, { pull_request: pullRequest }) ?? run;
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
     writeFileSync(join(run.artifact_dir, "outputs", "pull-request.json"), JSON.stringify(pullRequest, null, 2), "utf8");
-    this.appendEvent(nextRun, { type: "pull_request_created", pull_request: pullRequest });
-    this.writeSummary(nextRun);
+    this.runStore.appendEvent(nextRun, { type: "pull_request_created", pull_request: pullRequest });
+    this.runStore.writeSummary(nextRun);
 
     // Update work item: dispatch HSM event for state transition, then
     // write non-state fields (branch, meta.pull_request) separately.
@@ -591,14 +552,14 @@ export class ExecutionService implements OnModuleInit {
         merged_at: pullRequest.merged_at,
         merge_commit_sha: pullRequest.merge_commit_sha,
       };
-      const syncedRun = this.updateRun(matchedRun.run_id, { pull_request: nextPullRequest }) ?? matchedRun;
-      this.appendEvent(syncedRun, {
+      const syncedRun = this.runStore.updateRun(matchedRun.run_id, { pull_request: nextPullRequest }) ?? matchedRun;
+      this.runStore.appendEvent(syncedRun, {
         type: "post_merge_sync_completed",
         work_item_id: updatedWorkItem.id,
         pull_request: nextPullRequest,
         actual_files: actualFilesSelection.files,
       });
-      this.writeSummary(syncedRun);
+      this.runStore.writeSummary(syncedRun);
     }
 
     return {
@@ -627,7 +588,7 @@ export class ExecutionService implements OnModuleInit {
       throw new BadRequestException("run_id is required");
     }
 
-    const run = this.recentRuns.find((r) => r.run_id === runId);
+    const run = this.runStore.getRun(runId);
     if (!run) {
       throw new BadRequestException(`No recent run found with id ${runId}`);
     }
@@ -641,7 +602,7 @@ export class ExecutionService implements OnModuleInit {
 
   cleanupAllStale(): CleanupWorktreeResult[] {
     const results: CleanupWorktreeResult[] = [];
-    for (const run of this.recentRuns) {
+    for (const run of this.runStore.listRecentRuns()) {
       if (run.status !== "running" && run.status !== "preparing" && run.status !== "queued") {
         const result = this.safeCleanupWorktree(run);
         if (result) {
@@ -713,7 +674,7 @@ export class ExecutionService implements OnModuleInit {
       throw new BadRequestException("run_id is required");
     }
 
-    const run = this.getRun(runId);
+    const run = this.runStore.getRun(runId);
     if (!run) {
       throw new BadRequestException(`Unknown execution run: ${runId}`);
     }
@@ -753,25 +714,25 @@ export class ExecutionService implements OnModuleInit {
   }
 
   private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview, disambiguate = true) {
-    let run = this.updateRun(initialRun.run_id, {
+    let run = this.runStore.updateRun(initialRun.run_id, {
       status: "preparing",
       progress_message: "Creating isolated git worktree.",
     });
     if (!run) {
       return;
     }
-    this.appendEvent(run, { type: "run_preparing" });
-    this.emitRun("execution_status", run);
+    this.runStore.appendEvent(run, { type: "run_preparing" });
+    this.runStore.emitRun("execution_status", run);
 
     // --- Create worktree ---
     this.runGit(["worktree", "add", run.worktree_path, "-b", run.branch, run.base_ref]);
     this.pushActivity(run.run_id, "status_change", `Worktree created at ${run.worktree_path}`, `Branch: ${run.branch}, Base: ${run.base_ref}`);
-    this.appendEvent(run, { type: "worktree_created", worktree_path: run.worktree_path, branch: run.branch, base_ref: run.base_ref });
+    this.runStore.appendEvent(run, { type: "worktree_created", worktree_path: run.worktree_path, branch: run.branch, base_ref: run.base_ref });
 
     // --- Install dependencies in worktree ---
     if (existsSync(join(run.worktree_path, "package.json"))) {
       this.pushActivity(run.run_id, "status_change", "Installing dependencies in worktree...");
-      this.emitRun("execution_status", run);
+      this.runStore.emitRun("execution_status", run);
       try {
         execFileSync("npm", ["ci", "--ignore-scripts"], { cwd: run.worktree_path, encoding: "utf8", timeout: 120000, stdio: "pipe" });
         this.pushActivity(run.run_id, "status_change", "Dependencies installed.");
@@ -807,7 +768,7 @@ export class ExecutionService implements OnModuleInit {
         ? `Approved plan loaded from canonical scratchpad at ${scratchpadPath}`
         : `Scratchpad written to ${scratchpadPath}`,
     );
-    this.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
+    this.runStore.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.emitChecklistIfChanged(run);
 
     // --- Create agent session ---
@@ -822,15 +783,15 @@ export class ExecutionService implements OnModuleInit {
       this.logger.warn(modelFallbackMessage);
     }
 
-    run = this.updateRun(initialRun.run_id, {
+    run = this.runStore.updateRun(initialRun.run_id, {
       status: "running",
       started_at: this.now(),
       session_id: session.sessionId,
       progress_message: "Agent session started — setup phase.",
     })!;
     this.pushActivity(run.run_id, "status_change", "Agent session started.");
-    this.appendEvent(run, { type: "session_started", session_id: session.sessionId });
-    this.emitRun("execution_status", run);
+    this.runStore.appendEvent(run, { type: "session_started", session_id: session.sessionId });
+    this.runStore.emitRun("execution_status", run);
 
     this.activeSessions.set(run.run_id, session);
     const runId = run.run_id;
@@ -855,7 +816,7 @@ export class ExecutionService implements OnModuleInit {
           "status_change",
           "Approved plan loaded from canonical — skipping setup phase.",
         );
-        this.appendEvent(run, { type: "setup_phase_skipped" });
+        this.runStore.appendEvent(run, { type: "setup_phase_skipped" });
 
         // studio-170: if the approved scratchpad still has open
         // clarifications or blockers, trigger the existing
@@ -888,21 +849,21 @@ export class ExecutionService implements OnModuleInit {
               "info",
               `Approved plan has open items (${qLabel}, ${bLabel}) — pausing for user review before coding.`,
             );
-            this.appendEvent(run, { type: "setup_phase_started" });
+            this.runStore.appendEvent(run, { type: "setup_phase_started" });
 
-            run = this.updateRun(runId, {
+            run = this.runStore.updateRun(runId, {
               status: "disambiguating",
               progress_message: progressSummary,
             })!;
-            this.appendEvent(run, { type: "setup_phase_complete" });
-            this.emitRun("execution_status", run);
+            this.runStore.appendEvent(run, { type: "setup_phase_complete" });
+            this.runStore.emitRun("execution_status", run);
 
             // Block until the user resolves via
             // POST /api/execution/resolve-disambiguation.
             const additionalContext = await new Promise<string | undefined>((resolve) => {
               this.disambiguationGates.set(runId, { resolve });
             });
-            this.appendEvent(run, { type: "setup_approved" });
+            this.runStore.appendEvent(run, { type: "setup_approved" });
 
             if (additionalContext) {
               // The session has no prior orientation in the
@@ -915,23 +876,23 @@ export class ExecutionService implements OnModuleInit {
               this.emitChecklistIfChanged(run);
             }
 
-            run = this.updateRun(runId, {
+            run = this.runStore.updateRun(runId, {
               status: "running",
               progress_message: "Plan approved — coding phase started.",
             })!;
             this.pushActivity(runId, "status_change", "Plan approved. Coding phase started.");
-            this.emitRun("execution_status", run);
+            this.runStore.emitRun("execution_status", run);
           }
         }
       }
       if (shouldRunSetupPhase) {
-        run = this.updateRun(runId, {
+        run = this.runStore.updateRun(runId, {
           status: "running",
           progress_message: "Setup phase — agent is analyzing the issue and planning implementation.",
         })!;
         this.pushActivity(runId, "status_change", "Setup phase started — agent analyzing issue and codebase.");
-        this.appendEvent(run, { type: "setup_phase_started" });
-        this.emitRun("execution_status", run);
+        this.runStore.appendEvent(run, { type: "setup_phase_started" });
+        this.runStore.emitRun("execution_status", run);
 
         const setupPrompt = this.buildSetupPrompt(run, node, workItem, issueBody, projectContext);
         await session.prompt(setupPrompt);
@@ -942,19 +903,19 @@ export class ExecutionService implements OnModuleInit {
 
         // Setup prompt finished — now switch to disambiguating so the UI shows the approval gate
         this.emitChecklistIfChanged(run);
-        run = this.updateRun(runId, {
+        run = this.runStore.updateRun(runId, {
           status: "disambiguating",
           progress_message: "Setup complete. Review the implementation plan and approve to start coding.",
         })!;
         this.pushActivity(runId, "info", "Setup complete — implementation plan ready for review.");
-        this.appendEvent(run, { type: "setup_phase_complete" });
-        this.emitRun("execution_status", run);
+        this.runStore.appendEvent(run, { type: "setup_phase_complete" });
+        this.runStore.emitRun("execution_status", run);
 
         // Block until the user approves — gate is now ready
         const additionalContext = await new Promise<string | undefined>((resolve) => {
           this.disambiguationGates.set(runId, { resolve });
         });
-        this.appendEvent(run, { type: "setup_approved" });
+        this.runStore.appendEvent(run, { type: "setup_approved" });
 
         if (additionalContext) {
           await session.prompt(
@@ -964,12 +925,12 @@ export class ExecutionService implements OnModuleInit {
           this.emitChecklistIfChanged(run);
         }
 
-        run = this.updateRun(runId, {
+        run = this.runStore.updateRun(runId, {
           status: "running",
           progress_message: "Plan approved — coding phase started.",
         })!;
         this.pushActivity(runId, "status_change", "Plan approved. Coding phase started.");
-        this.emitRun("execution_status", run);
+        this.runStore.emitRun("execution_status", run);
       }
 
       // ============================================================
@@ -1008,25 +969,25 @@ export class ExecutionService implements OnModuleInit {
     // scratchpad-final.md is written under the run artifact dir anymore.
 
     this.pushActivity(run.run_id, "status_change", `Execution completed. ${changedFiles.length} file(s) changed.`);
-    run = this.updateRun(initialRun.run_id, {
+    run = this.runStore.updateRun(initialRun.run_id, {
       status: "completed",
       completed_at: this.now(),
       progress_message: actualFilesSync.ok ? "Execution run completed. actual_files updated on the work item." : "Execution run completed.",
       result_summary: actualFilesSync.ok ? `${assistantText}\n\nactual_files synced: ${changedFiles.length} file(s).` : assistantText,
       changed_files: changedFiles,
     })!;
-    this.writeSummary(run, node);
-    this.appendEvent(run, { type: "run_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
-    this.emitRun("execution_result", run);
+    this.runStore.writeSummary(run, node);
+    this.runStore.appendEvent(run, { type: "run_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
+    this.runStore.emitRun("execution_result", run);
   }
 
   getRunActivityLog(runId: string): ActivityLogEntry[] {
-    const run = this.getRun(runId);
+    const run = this.runStore.getRun(runId);
     return run?.activity_log ?? [];
   }
 
   getRunChatHistory(runId: string): RunChatHistory {
-    const run = this.getRun(runId);
+    const run = this.runStore.getRun(runId);
     const messages: RunChatMessage[] = (run?.activity_log ?? [])
       .filter((e) => e.kind === "agent_message" || e.kind === "user_message")
       .map((e) => ({
@@ -1038,7 +999,7 @@ export class ExecutionService implements OnModuleInit {
   }
 
   getRunChecklist(runId: string): ExecutionChecklistSnapshot {
-    const run = this.getRun(runId);
+    const run = this.runStore.getRun(runId);
     if (!run) {
       return { run_id: runId, items: [], completed: 0, total: 0 };
     }
@@ -1052,7 +1013,7 @@ export class ExecutionService implements OnModuleInit {
   }
 
   getRunScratchpad(runId: string): { run_id: string; content: string | null } {
-    const run = this.getRun(runId);
+    const run = this.runStore.getRun(runId);
     if (!run) {
       return { run_id: runId, content: null };
     }
@@ -1108,7 +1069,7 @@ export class ExecutionService implements OnModuleInit {
       throw new BadRequestException("message is required");
     }
 
-    const run = this.getRun(runId);
+    const run = this.runStore.getRun(runId);
     if (!run) {
       throw new BadRequestException(`Unknown execution run: ${runId}`);
     }
@@ -1127,7 +1088,7 @@ export class ExecutionService implements OnModuleInit {
         } else {
           await session.followUp(message);
         }
-        this.appendEvent(run, { type: "follow_up_sent", delivery, message_length: message.length });
+        this.runStore.appendEvent(run, { type: "follow_up_sent", delivery, message_length: message.length });
         return { accepted: true, run_id: runId, delivery, message };
       } catch (error) {
         const errorMessage = this.getErrorMessage(error);
@@ -1140,7 +1101,7 @@ export class ExecutionService implements OnModuleInit {
     if (run.status === "completed" && existsSync(run.worktree_path)) {
       try {
         this.pushActivity(runId, "follow_up", `Starting follow-up turn: ${message.length > 120 ? message.slice(0, 117) + "..." : message}`);
-        const updatedRun = this.updateRun(runId, {
+        const updatedRun = this.runStore.updateRun(runId, {
           status: "running",
           progress_message: "Follow-up turn running.",
         });
@@ -1151,7 +1112,7 @@ export class ExecutionService implements OnModuleInit {
         // Fire-and-forget the follow-up turn
         void this.executeFollowUpTurn(updatedRun, message).catch((error) => {
           this.pushActivity(runId, "error", `Follow-up turn failed: ${this.getErrorMessage(error)}`);
-          this.updateRun(runId, {
+          this.runStore.updateRun(runId, {
             status: "completed",
             progress_message: `Follow-up turn failed: ${this.getErrorMessage(error)}`,
           });
@@ -1208,7 +1169,7 @@ export class ExecutionService implements OnModuleInit {
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
 
     this.pushActivity(run.run_id, "follow_up", `Follow-up turn completed. ${changedFiles.length} file(s) changed.`);
-    const nextRun = this.updateRun(run.run_id, {
+    const nextRun = this.runStore.updateRun(run.run_id, {
       status: "completed",
       completed_at: this.now(),
       progress_message: "Follow-up turn completed.",
@@ -1216,32 +1177,32 @@ export class ExecutionService implements OnModuleInit {
       changed_files: changedFiles,
     });
     if (nextRun) {
-      this.writeSummary(nextRun);
-      this.appendEvent(nextRun, { type: "follow_up_turn_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
-      this.emitRun("execution_result", nextRun);
+      this.runStore.writeSummary(nextRun);
+      this.runStore.appendEvent(nextRun, { type: "follow_up_turn_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
+      this.runStore.emitRun("execution_result", nextRun);
     }
   }
 
   // Chat messages are now stored as agent_message/user_message entries in the activity_log
 
   private handleSessionEvent(runId: string, event: AgentSessionEvent) {
-    const run = this.getRun(runId);
+    const run = this.runStore.getRun(runId);
     if (!run) {
       return;
     }
 
     const toolName = "toolName" in event ? event.toolName ?? null : null;
     if (event.type === "tool_execution_start") {
-      this.appendEvent(run, { type: event.type, tool_name: toolName });
+      this.runStore.appendEvent(run, { type: event.type, tool_name: toolName });
       this.pushActivity(runId, "tool_start", `Tool started: ${toolName ?? "unknown"}`);
-      this.updateRun(runId, { progress_message: `${toolName ?? "tool"} running…` });
+      this.runStore.updateRun(runId, { progress_message: `${toolName ?? "tool"} running…` });
       return;
     }
 
     if (event.type === "tool_execution_end") {
-      this.appendEvent(run, { type: event.type, tool_name: toolName });
+      this.runStore.appendEvent(run, { type: event.type, tool_name: toolName });
       this.pushActivity(runId, "tool_end", `Tool finished: ${toolName ?? "unknown"}`);
-      this.updateRun(runId, { progress_message: `${toolName ?? "tool"} finished.` });
+      this.runStore.updateRun(runId, { progress_message: `${toolName ?? "tool"} finished.` });
       this.emitChecklistIfChanged(run);
       return;
     }
@@ -1249,25 +1210,25 @@ export class ExecutionService implements OnModuleInit {
     if (event.type === "message_end") {
       const message = "message" in event ? event.message : null;
       const text = this.extractTextFromMessage(message);
-      this.appendEvent(run, { type: event.type, text: text?.slice(0, 2000) ?? null });
+      this.runStore.appendEvent(run, { type: event.type, text: text?.slice(0, 2000) ?? null });
       if (text) {
         this.pushActivity(runId, "agent_message", text);
-        this.emitRun("execution_status", run);
+        this.runStore.emitRun("execution_status", run);
       }
       return;
     }
 
     if (event.type === "agent_start" || event.type === "turn_start") {
-      this.appendEvent(run, { type: event.type });
+      this.runStore.appendEvent(run, { type: event.type });
       this.pushActivity(runId, "turn_start", "Execution turn started.");
-      this.updateRun(runId, { progress_message: "Execution turn started." });
+      this.runStore.updateRun(runId, { progress_message: "Execution turn started." });
       return;
     }
 
     if (event.type === "agent_end" || event.type === "turn_end") {
-      this.appendEvent(run, { type: event.type });
+      this.runStore.appendEvent(run, { type: event.type });
       this.pushActivity(runId, "turn_end", "Execution turn completed.");
-      this.updateRun(runId, { progress_message: "Execution turn completed." });
+      this.runStore.updateRun(runId, { progress_message: "Execution turn completed." });
     }
   }
 
@@ -1326,39 +1287,13 @@ export class ExecutionService implements OnModuleInit {
       return; // No change
     }
     this.lastChecklistSnapshots.set(run.run_id, key);
-
-    const envelope = {
-      event_id: `evt_${++this.eventCounter}`,
-      stream_id: this.streamId,
-      timestamp: this.now(),
-      event_type: "execution_checklist",
-      session_id: run.run_id,
-      turn_id: null,
-      payload: snapshot,
-    };
-    this.eventSubject.next({
-      type: envelope.event_type,
-      data: JSON.stringify(envelope),
-      id: envelope.event_id,
-    });
+    this.runStore.emitEvent("execution_checklist", run.run_id, snapshot);
   }
 
   private pushActivity(runId: string, kind: ActivityLogEntryKind, message: string, detail?: string) {
-    const index = this.recentRuns.findIndex((candidate) => candidate.run_id === runId);
-    if (index === -1) {
-      return;
-    }
-
     const timestamp = this.now();
     const entry: ActivityLogEntry = { timestamp, kind, message, ...(detail ? { detail } : {}) };
-    const nextRun: ExecutionRunRecord = {
-      ...this.recentRuns[index],
-      updated_at: timestamp,
-      activity_log: [...this.recentRuns[index]!.activity_log, entry],
-    };
-
-    this.recentRuns[index] = nextRun;
-    this.writeStatus(nextRun);
+    this.runStore.appendActivityLog(runId, entry);
   }
 
   private resolveLaunchEligibility(
@@ -1657,7 +1592,8 @@ export class ExecutionService implements OnModuleInit {
 
   /** Legacy compat — delegates to buildDoWorkPrompt */
   private buildPrompt(workItem: WorkItemRecord, node: ExecutionDispatchNodePreview): string {
-    const run = this.recentRuns[this.recentRuns.length - 1];
+    const recent = this.runStore.listRecentRuns();
+    const run = recent[0];
     if (run) return this.buildDoWorkPrompt(run, node, workItem, null);
     return `Execute work item ${workItem.id}: ${workItem.name}`;
   }
@@ -1918,7 +1854,7 @@ export class ExecutionService implements OnModuleInit {
       status: "queued",
       resultSummary: "Execution run queued by HSM dispatch.",
     });
-    this.persistRun(run);
+    this.runStore.persistRun(run);
     return run;
   }
 
@@ -1958,112 +1894,6 @@ export class ExecutionService implements OnModuleInit {
     };
   }
 
-  private persistRun(run: ExecutionRunRecord) {
-    mkdirSync(run.artifact_dir, { recursive: true });
-    mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
-    this.upsertRecentRun(run);
-    this.writeMetadata(run);
-    this.writeStatus(run);
-    this.appendEvent(run, { type: "run_created", status: run.status });
-    this.emitRun(run.status === "blocked" ? "execution_result" : "execution_status", run);
-  }
-
-  private updateRun(runId: string, patch: Partial<ExecutionRunRecord>): ExecutionRunRecord | null {
-    const index = this.recentRuns.findIndex((run) => run.run_id === runId);
-    if (index === -1) {
-      return null;
-    }
-
-    const nextRun: ExecutionRunRecord = {
-      ...this.recentRuns[index],
-      ...patch,
-      updated_at: this.now(),
-    };
-    this.recentRuns[index] = nextRun;
-    this.writeStatus(nextRun);
-    this.emitRun(nextRun.status === "completed" || nextRun.status === "error" || nextRun.status === "blocked" ? "execution_result" : "execution_status", nextRun);
-    return nextRun;
-  }
-
-  private getRun(runId: string): ExecutionRunRecord | null {
-    return this.recentRuns.find((run) => run.run_id === runId) ?? null;
-  }
-
-  private upsertRecentRun(run: ExecutionRunRecord) {
-    const existingIndex = this.recentRuns.findIndex((item) => item.run_id === run.run_id);
-    if (existingIndex >= 0) {
-      this.recentRuns[existingIndex] = run;
-    } else {
-      this.recentRuns.unshift(run);
-      this.recentRuns.splice(this.recentRunLimit);
-    }
-  }
-
-  private writeMetadata(run: ExecutionRunRecord) {
-    writeFileSync(join(run.artifact_dir, "metadata.json"), JSON.stringify({
-      run_id: run.run_id,
-      run_type: run.run_type,
-      created_at: run.created_at,
-      work_item_id: run.work_item_id,
-      work_item_name: run.work_item_name,
-      repo: run.repo,
-      issue_url: run.issue_url,
-      branch: run.branch,
-      base_ref: run.base_ref,
-      worktree_path: run.worktree_path,
-      artifact_dir: run.artifact_dir,
-    }, null, 2), "utf8");
-  }
-
-  private writeStatus(run: ExecutionRunRecord) {
-    writeFileSync(join(run.artifact_dir, "status.json"), JSON.stringify(run, null, 2), "utf8");
-  }
-
-  private isMissingFileError(error: unknown): boolean {
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: unknown }).code === "ENOENT";
-  }
-
-  private writeSummary(run: ExecutionRunRecord, node?: ExecutionDispatchNodePreview) {
-    const lines = [
-      `# Execution run ${run.run_id}`,
-      "",
-      `- Work item: ${run.work_item_id} — ${run.work_item_name}`,
-      `- Status: ${run.status}`,
-      `- Branch: ${run.branch}`,
-      `- Base ref: ${run.base_ref}`,
-      `- Worktree: ${run.worktree_path}`,
-      `- Artifact dir: ${run.artifact_dir}`,
-      `- Created: ${run.created_at}`,
-      `- Updated: ${run.updated_at}`,
-      ...(run.started_at ? [`- Started: ${run.started_at}`] : []),
-      ...(run.completed_at ? [`- Completed: ${run.completed_at}`] : []),
-      ...(run.pull_request ? [`- Pull request: ${run.pull_request.url}`] : []),
-      "",
-      "## Safety checks",
-      ...run.safety_checks.map((check) => `- [${check.status}] ${check.code}: ${check.message}`),
-      "",
-      ...(node ? ["## Dispatch scope", ...(node.files_owned.length ? ["Owned files:", ...node.files_owned.map((path) => `- ${path}`)] : ["Owned files: (none predicted)"]), ""] : []),
-      "## Result",
-      run.result_summary ?? run.progress_message ?? "No summary available.",
-      "",
-      ...(run.changed_files?.length ? ["## Changed files", ...run.changed_files.map((path) => `- ${path}`), ""] : []),
-      ...(run.pull_request ? [
-        "## Pull request",
-        `- Number: ${run.pull_request.number}`,
-        `- URL: ${run.pull_request.url}`,
-        `- Draft: ${run.pull_request.is_draft ? "yes" : "no"}`,
-        `- Base: ${run.pull_request.base_ref}`,
-        `- Head: ${run.pull_request.head_ref}`,
-        "",
-      ] : []),
-    ];
-
-    writeFileSync(join(run.artifact_dir, "summary.md"), lines.join("\n"), "utf8");
-  }
-
   private extractTextFromMessage(message: unknown): string | null {
     if (!message || typeof message !== "object") return null;
     const msg = message as Record<string, unknown>;
@@ -2078,28 +1908,6 @@ export class ExecutionService implements OnModuleInit {
     }
     if (typeof content === "string") return content || null;
     return null;
-  }
-
-  private appendEvent(run: ExecutionRunRecord, payload: Record<string, unknown>) {
-    appendFileSync(join(run.artifact_dir, "events.jsonl"), `${JSON.stringify({ timestamp: this.now(), run_id: run.run_id, ...payload })}\n`, "utf8");
-  }
-
-  private emitRun(eventType: "execution_status" | "execution_result", run: ExecutionRunRecord) {
-    const envelope = {
-      event_id: `evt_${++this.eventCounter}`,
-      stream_id: this.streamId,
-      timestamp: this.now(),
-      event_type: eventType,
-      session_id: run.run_id,
-      turn_id: null,
-      payload: { run } satisfies ExecutionStatusEvent,
-    };
-
-    this.eventSubject.next({
-      type: envelope.event_type,
-      data: JSON.stringify(envelope),
-      id: envelope.event_id,
-    });
   }
 
   private runGit(args: string[], options: { allowFailure?: boolean } = {}): string {
@@ -2222,7 +2030,7 @@ export class ExecutionService implements OnModuleInit {
     // Replaces the silent `.gitignore` trick — disobedience is now visible.
     const stagedViolations = this.findStagedScratchpadViolations(run.worktree_path);
     if (stagedViolations.length > 0) {
-      this.appendEvent(run, {
+      this.runStore.appendEvent(run, {
         type: "scratchpad_commit_blocked",
         phase: "auto_commit",
         paths: stagedViolations,
@@ -2239,7 +2047,7 @@ export class ExecutionService implements OnModuleInit {
     // Refresh changed files after commit
     const changedFiles = this.listChangedFiles(run.worktree_path);
     if (changedFiles.length > 0) {
-      this.updateRun(run.run_id, { changed_files: changedFiles });
+      this.runStore.updateRun(run.run_id, { changed_files: changedFiles });
     }
   }
 
@@ -2358,68 +2166,6 @@ export class ExecutionService implements OnModuleInit {
     return this.workItemsService.get(workItemId);
   }
 
-  // TODO(phase-4): delete once RunStore owns the in-memory run buffer.
-  // Phase 3 seam: RunDispositionService.removeRunsForWorkItem calls this to
-  // splice every buffered run for a work item out of recentRuns, stamp
-  // disposed_at on each via writeStatus, and return the disposed copies so
-  // the caller can emit execution_result events. Matches the back-to-front
-  // walk of the original private method.
-  //
-  // Returns two slots: `newlyDisposed` are the records that just had
-  // disposed_at stamped (and for which the caller should emit an
-  // execution_result event), and `alreadyDisposedIds` are runs that were
-  // spliced out of the buffer but did not need their disposed_at updated
-  // (idempotent replay — the disposition flow still counts these as
-  // "removed" for the purposes of the caller's returned run-id list but
-  // does NOT re-emit events for them).
-  disposeRunsForWorkItemInBuffer(
-    workItemId: string,
-    disposedAt: string,
-  ): { newlyDisposed: ExecutionRunRecord[]; alreadyDisposedIds: string[] } {
-    const newlyDisposed: ExecutionRunRecord[] = [];
-    const alreadyDisposedIds: string[] = [];
-    for (let i = this.recentRuns.length - 1; i >= 0; i--) {
-      const run = this.recentRuns[i];
-      if (run.work_item_id !== workItemId) continue;
-      if (run.disposed_at) {
-        // Already disposed; drop from the buffer but don't re-write.
-        this.recentRuns.splice(i, 1);
-        alreadyDisposedIds.push(run.run_id);
-        continue;
-      }
-      const next: ExecutionRunRecord = {
-        ...run,
-        disposed_at: disposedAt,
-        updated_at: disposedAt,
-      };
-      try {
-        this.writeStatus(next);
-      } catch (error) {
-        if (!this.isMissingFileError(error)) {
-          this.logger.warn(
-            `disposeRunsForWorkItemInBuffer: failed to stamp disposed_at for run ${run.run_id}: ${this.getErrorMessage(error)}`,
-          );
-        }
-      }
-      this.recentRuns.splice(i, 1);
-      newlyDisposed.push(next);
-    }
-    return { newlyDisposed, alreadyDisposedIds };
-  }
-
-  // TODO(phase-4): delete once RunStore owns the SSE event stream.
-  // Phase 3 seam: RunDispositionService emits execution_result events on
-  // disposed runs without reaching into ExecutionService's private emitRun.
-  emitRunExecutionResult(run: ExecutionRunRecord): void {
-    try {
-      this.emitRun("execution_result", run);
-    } catch (error) {
-      this.logger.warn(
-        `emitRunExecutionResult: failed to emit execution_result for run ${run.run_id}: ${this.getErrorMessage(error)}`,
-      );
-    }
-  }
-
   private async resolvePullRequestFromWorkItem(workItem: WorkItemRecord) {
     const branch = workItem.branch?.trim();
     if (!branch) {
@@ -2435,7 +2181,7 @@ export class ExecutionService implements OnModuleInit {
   }
 
   private findRecentRunForSync(workItem: WorkItemRecord, pullRequestNumber: number): ExecutionRunRecord | null {
-    return this.listRecentRuns().find((run) => {
+    return this.runStore.listRecentRuns().find((run) => {
       if (run.work_item_id !== workItem.id) {
         return false;
       }

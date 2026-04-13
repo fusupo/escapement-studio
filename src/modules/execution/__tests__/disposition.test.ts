@@ -61,15 +61,16 @@ interface HarnessService {
     deletePlanArtifacts: ReturnType<typeof vi.fn>;
   };
 
-  // Phase 3: the run buffer now lives on ExecutionService. The fake exposes
-  // the three public seams RunDispositionService uses to mutate / emit it.
-  executionService: {
+  // Phase 4a: the run buffer lives on RunStore. RunDispositionService uses
+  // `runStore.disposeRunsForWorkItem`, `runStore.captureRunSnapshotForWorkItem`,
+  // and `runStore.listRecentRuns`. The only residual ExecutionService
+  // dependency is `getPreview` (partial drop — see SCRATCHPAD_230 §Decisions).
+  runStore: {
     listRecentRuns: () => ExecutionRunRecord[];
-    disposeRunsForWorkItemInBuffer: (
-      workItemId: string,
-      disposedAt: string,
-    ) => { newlyDisposed: ExecutionRunRecord[]; alreadyDisposedIds: string[] };
-    emitRunExecutionResult: (run: ExecutionRunRecord) => void;
+    disposeRunsForWorkItem: (workItemId: string, now: () => string) => string[];
+    captureRunSnapshotForWorkItem: (workItemId: string) => ExecutionRunRecord[];
+  };
+  executionService: {
     getPreview: (repo?: string) => ExecutionDispatchPreview;
   };
 
@@ -222,35 +223,35 @@ function makeService(params: {
       })),
     deleteIssue: params.githubDeleteIssue ?? vi.fn(async (repo: string, issueNumber: number) => ({ repo, number: issueNumber, deleted: true })),
   };
-  // Filesystem + event emission spies. The fake executionService below
-  // calls these on behalf of RunDispositionService so the legacy
-  // assertions (`writeStatus` / `emitRun` call counts) keep working
-  // without having to reach into ExecutionService internals.
+  // Filesystem + event emission spies. The fake RunStore below calls
+  // these on behalf of RunDispositionService so the legacy assertions
+  // (`writeStatus` / `emitRun` call counts) keep working without
+  // having to reach into RunStore internals.
   const writeStatus = vi.fn();
   const emitRun = vi.fn();
   service.emitRun = emitRun;
-  service.executionService = {
+  service.runStore = {
     listRecentRuns: () => [...service.recentRuns],
-    disposeRunsForWorkItemInBuffer: vi.fn((workItemId: string, disposedAt: string) => {
-      const newlyDisposed: ExecutionRunRecord[] = [];
-      const alreadyDisposedIds: string[] = [];
+    captureRunSnapshotForWorkItem: vi.fn((workItemId: string) => {
+      return service.recentRuns.filter((run) => run.work_item_id === workItemId);
+    }),
+    disposeRunsForWorkItem: vi.fn((workItemId: string, now: () => string) => {
+      const removed: string[] = [];
+      const timestamp = now();
       for (let i = service.recentRuns.length - 1; i >= 0; i--) {
         const run = service.recentRuns[i];
         if (run.work_item_id !== workItemId) continue;
         if (run.disposed_at) {
           service.recentRuns.splice(i, 1);
-          alreadyDisposedIds.push(run.run_id);
+          removed.push(run.run_id);
           continue;
         }
         const next: ExecutionRunRecord = {
           ...run,
-          disposed_at: disposedAt,
-          updated_at: disposedAt,
+          disposed_at: timestamp,
+          updated_at: timestamp,
         };
-        // Production's disposeRunsForWorkItemInBuffer swallows ENOENT
-        // from writeStatus (the disk file may be missing after a partial
-        // failure / restart) but still treats the run as disposed. Mirror
-        // that contract here so the ENOENT idempotency test passes.
+        // Mirror production's ENOENT swallowing (see RunStore.disposeRunsForWorkItem).
         try {
           writeStatus(next);
         } catch (error) {
@@ -264,17 +265,17 @@ function makeService(params: {
           }
         }
         service.recentRuns.splice(i, 1);
-        newlyDisposed.push(next);
+        removed.push(run.run_id);
+        emitRun("execution_result", next);
       }
-      return { newlyDisposed, alreadyDisposedIds };
+      return removed;
     }),
-    emitRunExecutionResult: vi.fn((run: ExecutionRunRecord) => {
-      emitRun("execution_result", run);
-    }),
+  };
+  service.executionService = {
     getPreview: vi.fn(() => makeDispatchPreviewStub()),
   };
   // Legacy field used by tests that assert on writeStatus calls directly.
-  // Bound to the same spy the fake executionService seam calls.
+  // Bound to the same spy the fake runStore seam calls.
   service.writeStatus = writeStatus;
 
   // studio-196: default HSM dispatch mock — transitions to done for user.finalize.
@@ -670,74 +671,13 @@ describe("ADR 014 step 7: disposition flow", () => {
     });
   });
 
-  describe("removeRunsForWorkItem (studio-87 finalizer)", () => {
-    it("splices matching runs, stamps disposed_at, emits execution_result", () => {
-      const service = makeService({
-        artifactRoot: tmpRoot,
-        runs: [
-          makeRun({ run_id: "exec_a", status: "completed" }),
-          makeRun({ run_id: "exec_b", work_item_id: "studio-999", status: "completed" }),
-          makeRun({ run_id: "exec_c", status: "error" }),
-        ],
-      });
-
-      const removed = service.removeRunsForWorkItem("studio-157");
-
-      expect(removed.sort()).toEqual(["exec_a", "exec_c"]);
-      expect(service.recentRuns.map((r) => r.run_id)).toEqual(["exec_b"]);
-      expect(service.writeStatus).toHaveBeenCalledTimes(2);
-      expect(service.emitRun).toHaveBeenCalledTimes(2);
-      for (const call of service.writeStatus.mock.calls) {
-        const run = call[0] as ExecutionRunRecord;
-        expect(run.disposed_at).toBeTruthy();
-      }
-    });
-
-    it("is a no-op for already-disposed runs (idempotent)", () => {
-      const service = makeService({
-        artifactRoot: tmpRoot,
-        runs: [
-          makeRun({ run_id: "exec_a", status: "completed", disposed_at: "2026-04-08T00:00:00.000Z" }),
-        ],
-      });
-
-      const removed = service.removeRunsForWorkItem("studio-157");
-
-      // Still removed from the buffer (cleaned up) but disposed_at not re-stamped.
-      expect(removed).toEqual(["exec_a"]);
-      expect(service.recentRuns).toEqual([]);
-      expect(service.writeStatus).not.toHaveBeenCalled();
-      expect(service.emitRun).not.toHaveBeenCalled();
-    });
-
-    it("returns empty list when no runs match", () => {
-      const service = makeService({ artifactRoot: tmpRoot });
-      expect(service.removeRunsForWorkItem("studio-157")).toEqual([]);
-    });
-
-    it("treats missing in-memory status.json as an idempotent cleanup case", () => {
-      const service = makeService({
-        artifactRoot: tmpRoot,
-        runs: [
-          makeRun({ run_id: "exec_a", status: "completed" }),
-        ],
-      });
-      service.writeStatus.mockImplementation(() => {
-        const error = new Error("ENOENT: no such file or directory");
-        (error as Error & { code?: string }).code = "ENOENT";
-        throw error;
-      });
-
-      const removed = service.removeRunsForWorkItem("studio-157");
-
-      expect(removed).toEqual(["exec_a"]);
-      expect(service.recentRuns).toEqual([]);
-      expect(service.emitRun).toHaveBeenCalledTimes(1);
-      expect(service.logger.warn).not.toHaveBeenCalledWith(
-        expect.stringContaining("failed to stamp disposed_at for run exec_a"),
-      );
-    });
-  });
+  // Phase 4a (#230): the private `removeRunsForWorkItem` helper on
+  // RunDispositionService is gone. Its replacement is
+  // `RunStore.disposeRunsForWorkItem`, covered directly by
+  // `run-store.service.test.ts`. The dispatch-flow-level behaviour
+  // (matching runs get removed after close/archive) is still covered
+  // by the closeMergedPullRequest / archiveAndCloseMergedPullRequest
+  // describe blocks above and below this comment.
 
   describe("archiveAndCloseMergedPullRequest (studio-196 HSM dispatch flow)", () => {
     it("dispatches user.archive_and_finalize, removes runs, returns envelope", async () => {

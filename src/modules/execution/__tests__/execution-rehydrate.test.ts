@@ -3,8 +3,20 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ExecutionService } from "../execution.service.js";
+import { RunStore } from "../run-store.service.js";
 import type { ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
 import { canonicalScratchpadPath } from "../../../lib/context-layout.js";
+
+/**
+ * Phase 4a (#230): the run buffer + disk primitives moved from
+ * `ExecutionService` into `RunStore`. Tests that used to construct an
+ * `ExecutionService.prototype` harness for buffer / hydrate / pushActivity
+ * / chat-history / rehydrate-run-detail assertions now build a `RunStore`
+ * harness for the low-level cases and compose an `ExecutionService` harness
+ * with a `runStore` field for the read-side APIs
+ * (`getRunChatHistory` / `getRunScratchpad` / `getRunChecklist`) that still
+ * live on `ExecutionService` but delegate to `RunStore`.
+ */
 
 function makeRun(runId: string, overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecord {
   return {
@@ -35,16 +47,35 @@ function writeRun(runsDir: string, run: ExecutionRunRecord): void {
   writeFileSync(join(dir, "status.json"), JSON.stringify(run, null, 2), "utf8");
 }
 
-function makeServiceWithEmptyBuffer(artifactRoot: string): ExecutionService {
+function makeRunStoreWithEmptyBuffer(artifactRoot: string): RunStore {
+  const store = Object.create(RunStore.prototype) as RunStore;
+  (store as any).logger = { log: vi.fn(), warn: vi.fn() };
+  (store as any).artifactRoot = artifactRoot;
+  (store as any).recentRuns = [];
+  (store as any).recentRunLimit = 16;
+  (store as any).eventSubject = { next: vi.fn() };
+  (store as any).eventCounter = 0;
+  (store as any).streamId = "execution-runs";
+  return store;
+}
+
+function makeExecutionServiceHarness(
+  artifactRoot: string,
+  runStore: RunStore,
+  extras: Record<string, unknown> = {},
+): ExecutionService {
   const service = Object.create(ExecutionService.prototype) as ExecutionService;
   (service as any).logger = { log: vi.fn(), warn: vi.fn() };
   (service as any).artifactRoot = artifactRoot;
-  (service as any).recentRuns = [];
-  (service as any).recentRunLimit = 16;
+  (service as any).runStore = runStore;
+  (service as any).activeSessions = new Map();
+  (service as any).now = () => "2026-04-10T06:00:00.000Z";
+  (service as any).extractTextFromMessage = (message: any) => message?.text ?? null;
+  Object.assign(service as any, extras);
   return service;
 }
 
-describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
+describe("RunStore.hydrateRecentRunsFromDisk", () => {
   let artifactRoot: string;
 
   beforeEach(() => {
@@ -62,10 +93,10 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
     writeRun(runsDir, makeRun("run_b", { updated_at: "2026-04-03T00:00:00.000Z" }));
     writeRun(runsDir, makeRun("run_c", { updated_at: "2026-04-02T00:00:00.000Z" }));
 
-    const service = makeServiceWithEmptyBuffer(artifactRoot);
-    service.hydrateRecentRunsFromDisk();
+    const store = makeRunStoreWithEmptyBuffer(artifactRoot);
+    store.hydrateRecentRunsFromDisk();
 
-    expect((service as any).recentRuns.map((r: ExecutionRunRecord) => r.run_id)).toEqual([
+    expect((store as any).recentRuns.map((r: ExecutionRunRecord) => r.run_id)).toEqual([
       "run_b",
       "run_c",
       "run_a",
@@ -76,11 +107,11 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
     const runsDir = join(artifactRoot, "runs");
     writeRun(runsDir, makeRun("run_a"));
 
-    const service = makeServiceWithEmptyBuffer(artifactRoot);
-    (service as any).recentRuns.push(makeRun("run_a", { progress_message: "already-tracked" }));
-    service.hydrateRecentRunsFromDisk();
+    const store = makeRunStoreWithEmptyBuffer(artifactRoot);
+    (store as any).recentRuns.push(makeRun("run_a", { progress_message: "already-tracked" }));
+    store.hydrateRecentRunsFromDisk();
 
-    const runs = (service as any).recentRuns as ExecutionRunRecord[];
+    const runs = (store as any).recentRuns as ExecutionRunRecord[];
     expect(runs).toHaveLength(1);
     // In-memory entry wins — disk copy does not overwrite live state.
     expect(runs[0].progress_message).toBe("already-tracked");
@@ -97,10 +128,10 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
       );
     }
 
-    const service = makeServiceWithEmptyBuffer(artifactRoot);
-    service.hydrateRecentRunsFromDisk();
+    const store = makeRunStoreWithEmptyBuffer(artifactRoot);
+    store.hydrateRecentRunsFromDisk();
 
-    const runs = (service as any).recentRuns as ExecutionRunRecord[];
+    const runs = (store as any).recentRuns as ExecutionRunRecord[];
     expect(runs).toHaveLength(16);
     expect(runs[0].run_id).toBe("run_19");
     expect(runs.at(-1)?.run_id).toBe("run_04");
@@ -136,10 +167,10 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
     mkdirSync(malformedDir, { recursive: true });
     writeFileSync(join(malformedDir, "status.json"), JSON.stringify({ run_id: "run_malformed" }), "utf8");
 
-    const service = makeServiceWithEmptyBuffer(artifactRoot);
-    service.hydrateRecentRunsFromDisk();
+    const store = makeRunStoreWithEmptyBuffer(artifactRoot);
+    store.hydrateRecentRunsFromDisk();
 
-    const runs = (service as any).recentRuns as ExecutionRunRecord[];
+    const runs = (store as any).recentRuns as ExecutionRunRecord[];
     expect(runs.map((run) => run.run_id)).toEqual(["run_completed", "run_error"]);
     expect(runs[0].result_summary).toBe("done");
     expect(runs[0].changed_files).toEqual(["src/a.ts"]);
@@ -149,9 +180,9 @@ describe("ExecutionService.hydrateRecentRunsFromDisk", () => {
 
   it("is a no-op when the runs dir does not exist", () => {
     rmSync(join(artifactRoot, "runs"), { recursive: true, force: true });
-    const service = makeServiceWithEmptyBuffer(artifactRoot);
-    service.hydrateRecentRunsFromDisk();
-    expect((service as any).recentRuns).toEqual([]);
+    const store = makeRunStoreWithEmptyBuffer(artifactRoot);
+    store.hydrateRecentRunsFromDisk();
+    expect((store as any).recentRuns).toEqual([]);
   });
 });
 
@@ -167,21 +198,11 @@ describe("ExecutionService activity persistence", () => {
     rmSync(artifactRoot, { recursive: true, force: true });
   });
 
-  function makeService(run: ExecutionRunRecord): ExecutionService {
-    const service = Object.create(ExecutionService.prototype) as ExecutionService;
-    (service as any).logger = { log: vi.fn(), warn: vi.fn() };
-    (service as any).artifactRoot = artifactRoot;
-    (service as any).recentRuns = [run];
-    (service as any).recentRunLimit = 16;
-    (service as any).activeSessions = new Map();
-    (service as any).eventSubject = { next: vi.fn() };
-    (service as any).eventCounter = 0;
-    (service as any).streamId = "execution-runs";
-    (service as any).now = () => "2026-04-10T06:00:00.000Z";
-    (service as any).appendEvent = vi.fn();
-    (service as any).emitRun = vi.fn();
-    (service as any).extractTextFromMessage = (message: any) => message?.text ?? null;
-    return service;
+  function makeService(run: ExecutionRunRecord): { service: ExecutionService; runStore: RunStore } {
+    const runStore = makeRunStoreWithEmptyBuffer(artifactRoot);
+    (runStore as any).recentRuns.push(run);
+    const service = makeExecutionServiceHarness(artifactRoot, runStore);
+    return { service, runStore };
   }
 
   it("flushes pushActivity updates to status.json so chat survives a restart", () => {
@@ -192,7 +213,7 @@ describe("ExecutionService activity persistence", () => {
     });
     writeRun(runsDir, run);
 
-    const service = makeService(run);
+    const { service } = makeService(run);
     (service as any).pushActivity("run_chat", "user_message", "Please keep the summary short.");
 
     const persisted = JSON.parse(readFileSync(join(runsDir, "run_chat", "status.json"), "utf8")) as ExecutionRunRecord;
@@ -202,8 +223,10 @@ describe("ExecutionService activity persistence", () => {
       message: "Please keep the summary short.",
     });
 
-    const restarted = makeServiceWithEmptyBuffer(artifactRoot);
-    restarted.hydrateRecentRunsFromDisk();
+    // Simulated restart: fresh RunStore + fresh ExecutionService harness.
+    const restartedStore = makeRunStoreWithEmptyBuffer(artifactRoot);
+    restartedStore.hydrateRecentRunsFromDisk();
+    const restarted = makeExecutionServiceHarness(artifactRoot, restartedStore);
     expect(restarted.getRunChatHistory("run_chat").messages).toEqual([
       {
         timestamp: "2026-04-10T06:00:00.000Z",
@@ -221,7 +244,7 @@ describe("ExecutionService activity persistence", () => {
     });
     writeRun(runsDir, run);
 
-    const service = makeService(run);
+    const { service } = makeService(run);
     (service as any).handleSessionEvent("run_agent", {
       type: "message_end",
       message: { text: "Implemented the restart recovery flow." } as any,
@@ -233,8 +256,9 @@ describe("ExecutionService activity persistence", () => {
       message: "Implemented the restart recovery flow.",
     });
 
-    const restarted = makeServiceWithEmptyBuffer(artifactRoot);
-    restarted.hydrateRecentRunsFromDisk();
+    const restartedStore = makeRunStoreWithEmptyBuffer(artifactRoot);
+    restartedStore.hydrateRecentRunsFromDisk();
+    const restarted = makeExecutionServiceHarness(artifactRoot, restartedStore);
     expect(restarted.getRunChatHistory("run_agent").messages).toEqual([
       {
         timestamp: "2026-04-10T06:00:00.000Z",
@@ -252,7 +276,7 @@ describe("ExecutionService activity persistence", () => {
     });
     writeRun(runsDir, run);
 
-    const service = makeService(run);
+    const { service } = makeService(run);
     const result = await service.sendFollowUp({
       run_id: "run_follow_up",
       message: "Can you explain what failed?",
@@ -307,10 +331,11 @@ describe("ExecutionService run detail rehydration", () => {
       "- [ ] Rehydrate detail endpoints",
     ].join("\n"), "utf8");
 
-    const service = makeServiceWithEmptyBuffer(artifactRoot);
-    service.hydrateRecentRunsFromDisk();
+    const runStore = makeRunStoreWithEmptyBuffer(artifactRoot);
+    runStore.hydrateRecentRunsFromDisk();
+    const service = makeExecutionServiceHarness(artifactRoot, runStore);
 
-    expect(service.listRecentRuns().map((candidate) => candidate.run_id)).toEqual(["run_detail"]);
+    expect(runStore.listRecentRuns().map((candidate) => candidate.run_id)).toEqual(["run_detail"]);
     expect(service.getRunChatHistory("run_detail").messages).toEqual([
       {
         timestamp: "2026-04-10T06:00:00.000Z",
@@ -387,18 +412,16 @@ describe("ExecutionService.onModuleInit", () => {
       }),
     };
 
-    const service = Object.create(ExecutionService.prototype) as ExecutionService;
-    (service as any).logger = { log: vi.fn(), warn: vi.fn() };
-    (service as any).artifactRoot = artifactRoot;
-    (service as any).recentRuns = [];
-    (service as any).recentRunLimit = 16;
-    (service as any).workItemReconciler = reconcilerStub;
-    (service as any).hsmService = { registerActionHandler: vi.fn() };
+    const runStore = makeRunStoreWithEmptyBuffer(artifactRoot);
+    const service = makeExecutionServiceHarness(artifactRoot, runStore, {
+      workItemReconciler: reconcilerStub,
+      hsmService: { registerActionHandler: vi.fn() },
+    });
 
     await service.onModuleInit();
 
     expect(reconcilerStub.runStartupReconcile).toHaveBeenCalledTimes(1);
-    const runs = (service as any).recentRuns as ExecutionRunRecord[];
+    const runs = (runStore as any).recentRuns as ExecutionRunRecord[];
     expect(runs.map((r) => r.run_id)).toEqual(["run_running", "run_completed"]);
     expect(runs[0]).toMatchObject({
       run_id: "run_running",
@@ -413,22 +436,21 @@ describe("ExecutionService.onModuleInit", () => {
     const runsDir = join(artifactRoot, "runs");
     writeRun(runsDir, makeRun("run_completed", { status: "completed" }));
 
+    const runStore = makeRunStoreWithEmptyBuffer(artifactRoot);
     const logger = { log: vi.fn(), warn: vi.fn() };
-    const service = Object.create(ExecutionService.prototype) as ExecutionService;
-    (service as any).logger = logger;
-    (service as any).artifactRoot = artifactRoot;
-    (service as any).recentRuns = [];
-    (service as any).recentRunLimit = 16;
-    (service as any).workItemReconciler = {
-      runStartupReconcile: vi.fn(async () => {
-        throw new Error("reconciler boom");
-      }),
-    };
-    (service as any).hsmService = { registerActionHandler: vi.fn() };
+    const service = makeExecutionServiceHarness(artifactRoot, runStore, {
+      logger,
+      workItemReconciler: {
+        runStartupReconcile: vi.fn(async () => {
+          throw new Error("reconciler boom");
+        }),
+      },
+      hsmService: { registerActionHandler: vi.fn() },
+    });
 
     await service.onModuleInit();
 
     expect(logger.warn).toHaveBeenCalled();
-    expect((service as any).recentRuns).toHaveLength(1);
+    expect((runStore as any).recentRuns).toHaveLength(1);
   });
 });

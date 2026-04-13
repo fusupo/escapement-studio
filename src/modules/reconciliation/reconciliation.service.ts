@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { ExecutionService } from "../execution/execution.service.js";
+import { RunStore } from "../execution/run-store.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord } from "../graph/types.js";
 import type { ExecutionRunRecord } from "../execution/types.js";
@@ -14,7 +14,7 @@ import type {
 export class ReconciliationService {
   constructor(
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
-    @Inject(ExecutionService) private readonly executionService: ExecutionService,
+    @Inject(RunStore) private readonly runStore: RunStore,
   ) {}
 
   listReports(workItemId?: string): ReconciliationReport[] {
@@ -23,7 +23,7 @@ export class ReconciliationService {
       : this.workItemsService.list().filter((item) => item.actual_files.length > 0 || item.predicted_files.length > 0);
 
     const allWorkItems = this.workItemsService.list();
-    const completedRuns = this.executionService.listRecentRuns().filter((run) => run.status === "completed");
+    const completedRuns = this.runStore.listRecentRuns().filter((run) => run.status === "completed");
 
     return workItems
       .map((workItem) => this.buildReport(workItem, allWorkItems, completedRuns))

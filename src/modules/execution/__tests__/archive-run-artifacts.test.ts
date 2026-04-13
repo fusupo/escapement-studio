@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { RunDispositionService } from "../run-disposition.service.js";
+import { loadRunRecordsForArtifactRoot } from "../run-disk-store.js";
 import { archiveDir, runsRoot } from "../../../lib/context-layout.js";
 import type { ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
 import type { WorkItemRecord } from "../../graph/types.js";
@@ -24,8 +25,9 @@ interface HarnessService {
     get: (id: string) => WorkItemRecord;
     update: (id: string, patch: Partial<WorkItemRecord>) => WorkItemRecord;
   };
-  executionService: {
+  runStore: {
     listRecentRuns: () => ExecutionRunRecord[];
+    captureRunSnapshotForWorkItem: (workItemId: string) => ExecutionRunRecord[];
   };
   archiveRunArtifacts: RunDispositionService["archiveRunArtifacts"];
   assertNoActiveRunForWorkItem: (id: string) => void;
@@ -99,8 +101,35 @@ function makeService(params: {
     },
     update: (_id, _patch) => workItem,
   };
-  service.executionService = {
+  // Phase 4a: RunDispositionService.archiveRunArtifacts delegates to
+  // `runStore.listRecentRuns()` via `assertNoActiveRunForWorkItem`
+  // AND to `runStore.captureRunSnapshotForWorkItem()` for the merged
+  // in-memory+disk snapshot. The fake below mirrors the production
+  // semantics of both (buffer scan, disk merge, dedup by run_id).
+  service.runStore = {
     listRecentRuns: () => params.runs ?? [],
+    captureRunSnapshotForWorkItem: (workItemId: string) => {
+      const merged: ExecutionRunRecord[] = [];
+      const seen = new Set<string>();
+      for (const run of params.runs ?? []) {
+        if (run.work_item_id !== workItemId) continue;
+        if (seen.has(run.run_id)) continue;
+        merged.push(run);
+        seen.add(run.run_id);
+      }
+      try {
+        const diskRuns = loadRunRecordsForArtifactRoot(params.artifactRoot);
+        for (const run of diskRuns) {
+          if (run.work_item_id !== workItemId) continue;
+          if (seen.has(run.run_id)) continue;
+          merged.push(run);
+          seen.add(run.run_id);
+        }
+      } catch {
+        // swallow — tests that don't seed disk dirs hit this path
+      }
+      return merged;
+    },
   };
   return service;
 }
