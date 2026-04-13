@@ -3,7 +3,6 @@ import {
   Body,
   Controller,
   Delete,
-  forwardRef,
   Get,
   Inject,
   Param,
@@ -11,12 +10,16 @@ import {
   Put,
   Query,
 } from "@nestjs/common";
-import { ExecutionService } from "../execution/execution.service.js";
-import { PlansService } from "../plans/plans.service.js";
-import type { WorkItemHsmEvent, WorkItemRecord, UpdateWorkItemDto } from "./types.js";
+import { CommandBus } from "@nestjs/cqrs";
+import { CancelWorkItemCommand } from "../execution/application/commands/cancel-work-item.command.js";
+import { TransitionInProgressToDraftingCommand } from "../execution/application/commands/transition-in-progress-to-drafting.command.js";
+import { TransitionInProgressToReadyCommand } from "../execution/application/commands/transition-in-progress-to-ready.command.js";
+import type { CancelWorkItemResult } from "../execution/types.js";
+import { PreparePlanCommand } from "../plans/application/commands/prepare-plan.command.js";
+import { ReopenPlanCommand } from "../plans/application/commands/reopen-plan.command.js";
+import type { CreateWorkItemDto, UpdateWorkItemDto, WorkItemRecord } from "./types.js";
 import { WorkItemHsmService } from "./work-item-hsm.service.js";
 import { WorkItemsService } from "./work-items.service.js";
-import type { CreateWorkItemDto } from "./types.js";
 
 interface TransitionDto {
   event: WorkItemTransitionEvent;
@@ -44,10 +47,7 @@ export class WorkItemsController {
   constructor(
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
-    @Inject(forwardRef(() => ExecutionService))
-    private readonly executionService: ExecutionService,
-    @Inject(forwardRef(() => PlansService))
-    private readonly plansService: PlansService,
+    private readonly commandBus: CommandBus,
   ) {}
 
   @Get()
@@ -85,7 +85,10 @@ export class WorkItemsController {
   }
 
   @Post(":id/transition")
-  async transition(@Param("id") id: string, @Body() body: TransitionDto): Promise<any> {
+  async transition(
+    @Param("id") id: string,
+    @Body() body: TransitionDto,
+  ): Promise<WorkItemRecord | CancelWorkItemResult> {
     const eventType = body?.event;
     if (!eventType) {
       throw new BadRequestException("transition event `event` is required");
@@ -117,11 +120,13 @@ export class WorkItemsController {
         await this.hsmService.dispatch(id, { type: eventType });
         break;
       case "user.cancel":
-        return await this.executionService.cancelWorkItem({
-          work_item_id: id,
-          confirm_cancel: body.confirm_cancel === true,
-          cancel_note: body.cancel_note,
-        });
+        return await this.commandBus.execute<CancelWorkItemCommand, CancelWorkItemResult>(
+          new CancelWorkItemCommand({
+            work_item_id: id,
+            confirm_cancel: body.confirm_cancel === true,
+            cancel_note: body.cancel_note,
+          }),
+        );
     }
 
     return this.workItems.get(id);
@@ -136,17 +141,17 @@ export class WorkItemsController {
     const leafState = this.leafState(workItem.state);
 
     if (leafState === "planned" || leafState === "drafting") {
-      await this.plansService.prepare(id);
+      await this.commandBus.execute(new PreparePlanCommand(id));
       return;
     }
 
     if (leafState === "ready") {
-      await this.plansService.reopen(id);
+      await this.commandBus.execute(new ReopenPlanCommand(id));
       return;
     }
 
     if (leafState === "in_progress") {
-      await this.executionService.transitionInProgressToDrafting(id);
+      await this.commandBus.execute(new TransitionInProgressToDraftingCommand(id));
       return;
     }
 
@@ -159,7 +164,7 @@ export class WorkItemsController {
     const leafState = this.leafState(workItem.state);
 
     if (leafState === "in_progress") {
-      await this.executionService.transitionInProgressToReady(id);
+      await this.commandBus.execute(new TransitionInProgressToReadyCommand(id));
       return;
     }
 

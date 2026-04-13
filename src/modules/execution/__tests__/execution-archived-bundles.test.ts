@@ -121,7 +121,7 @@ describe("ExecutionController archived bundle routes", () => {
       getArchivedRunBundle: vi.fn(() => ({ work_item_id: "studio-89", readme_content: "# Archive" })),
     } as unknown as ExecutionService;
 
-    const controller = new ExecutionController(executionService);
+    const controller = new ExecutionController(executionService, {} as never);
     expect(controller.getArchivedRunBundles()).toEqual([{ work_item_id: "studio-89" }]);
     expect(controller.getArchivedRunBundle("studio-89")).toEqual({ work_item_id: "studio-89", readme_content: "# Archive" });
   });
