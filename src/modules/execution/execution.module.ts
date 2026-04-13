@@ -16,6 +16,7 @@ import { GitHubCacheScheduler } from "./github-cache-scheduler.service.js";
 import { ExecutionService } from "./execution.service.js";
 import { HsmActionHandlers } from "./hsm-action-handlers.js";
 import { RunDispositionService } from "./run-disposition.service.js";
+import { RunInteractionService } from "./run-interaction.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
 import { WorkItemReconcilerController } from "./work-item-reconciler.controller.js";
@@ -31,6 +32,7 @@ import { WorktreeService } from "./worktree.service.js";
     GitHubCacheScheduler,
     HsmActionHandlers,
     RunDispositionService,
+    RunInteractionService,
     RunStore,
     ScratchpadService,
     WorktreeService,
@@ -47,6 +49,7 @@ import { WorktreeService } from "./worktree.service.js";
     GitHubBatchCache,
     GitHubCacheScheduler,
     RunDispositionService,
+    RunInteractionService,
     RunStore,
     ScratchpadService,
     WorktreeService,
