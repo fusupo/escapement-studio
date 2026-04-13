@@ -17,11 +17,6 @@ import type { WorkItemRecord } from "../../graph/types.js";
  * sandbox-related child-process failures.
  */
 
-interface GitInvocation {
-  args: string[];
-  allowFailure?: boolean;
-}
-
 interface HarnessService {
   artifactRoot: string;
   logger: { log: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
