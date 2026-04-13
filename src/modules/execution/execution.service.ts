@@ -1,7 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { createAgentSession, createCodingTools, SessionManager, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import {
@@ -10,7 +9,6 @@ import {
   readPlanMetadata,
   runDir,
   workItemSlug,
-  worktreesRoot,
   writePlanMetadata,
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
@@ -19,6 +17,7 @@ import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { RunStore } from "./run-store.service.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
+import { WorktreeService } from "./worktree.service.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
@@ -58,7 +57,6 @@ import type {
 export class ExecutionService implements OnModuleInit {
   private readonly logger = new Logger(ExecutionService.name);
   private readonly artifactRoot = resolve(getConfig().artifactRoot);
-  private readonly worktreeRoot = worktreesRoot(this.artifactRoot);
   /** Active agent sessions keyed by run_id — kept alive while run is active */
   private readonly activeSessions = new Map<string, import("@mariozechner/pi-coding-agent").AgentSession>();
   // Chat history derived from activity_log (agent_message + user_message entries)
@@ -76,6 +74,7 @@ export class ExecutionService implements OnModuleInit {
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
     @Inject(RunStore) private readonly runStore: RunStore,
+    @Inject(WorktreeService) private readonly worktreeService: WorktreeService,
   ) {
     this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
   }
@@ -186,7 +185,7 @@ export class ExecutionService implements OnModuleInit {
         if (!workItem) {
           const repoValue = group.repo === "unknown" ? null : group.repo;
           const defaultBaseRef = getDefaultWorkingBranch(repoValue);
-          const worktreePath = this.getWorktreePath(node.branch);
+          const worktreePath = this.worktreeService.getWorktreePath(node.branch);
           const safetyChecks: ExecutionSafetyCheck[] = [{
             code: "missing_work_item",
             status: "fail",
@@ -233,7 +232,7 @@ export class ExecutionService implements OnModuleInit {
           files_owned: node.files_owned,
           files_shared: node.files_shared,
           files_forbidden: node.files_forbidden,
-          worktree_path: this.getWorktreePath(node.branch),
+          worktree_path: this.worktreeService.getWorktreePath(node.branch),
           safety_checks: fallbackChecks,
           can_launch: false,
           issue_backed: workItem.kind === "issue",
@@ -280,7 +279,7 @@ export class ExecutionService implements OnModuleInit {
 
     if (!eligibility.can_launch || !node) {
       const branch = node?.branch ?? workItem.branch ?? `${workItem.id}-branch`;
-      const worktreePath = node?.worktree_path ?? this.getWorktreePath(branch);
+      const worktreePath = node?.worktree_path ?? this.worktreeService.getWorktreePath(branch);
       const blockedReason = eligibility.launch_unavailable_reason ?? "Work item is not currently launchable.";
       const blockedCode = eligibility.launch_unavailable_code ?? "launch_unavailable";
       const run = this.createRunRecord({
@@ -402,13 +401,13 @@ export class ExecutionService implements OnModuleInit {
 
     const title = input.title?.trim() || this.buildPullRequestTitle(workItem);
     const body = input.body?.trim() || this.buildPullRequestBody(run, workItem, baseRef);
-    const aheadCount = this.countCommitsAhead(run.worktree_path, baseRef, run.branch);
+    const aheadCount = this.worktreeService.countCommitsAhead(run.worktree_path, baseRef, run.branch);
     if (aheadCount === 0) {
       throw new BadRequestException(`Branch ${run.branch} has no commits ahead of ${baseRef}; nothing is ready to open as a pull request`);
     }
 
-    this.runGitIn(run.worktree_path, ["push", "--set-upstream", "origin", run.branch]);
-    this.runGhIn(run.worktree_path, [
+    this.worktreeService.runGitIn(run.worktree_path, ["push", "--set-upstream", "origin", run.branch]);
+    this.worktreeService.runGhIn(run.worktree_path, [
       "pr",
       "create",
       "--base",
@@ -575,7 +574,7 @@ export class ExecutionService implements OnModuleInit {
       actual_files_source: actualFilesSelection.source,
       dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
       managed_block_sync: managedBlockSync,
-      cleanup: matchedRun ? this.safeCleanupWorktree(matchedRun) : null,
+      cleanup: matchedRun ? this.worktreeService.safeCleanupRun(matchedRun) : null,
     };
   }
 
@@ -594,75 +593,20 @@ export class ExecutionService implements OnModuleInit {
       throw new BadRequestException(`Cannot cleanup worktree for run ${runId} — status is ${run.status}`);
     }
 
-    return this.removeWorktreeAndBranch(run);
+    return this.worktreeService.cleanupRun(run);
   }
 
   cleanupAllStale(): CleanupWorktreeResult[] {
     const results: CleanupWorktreeResult[] = [];
     for (const run of this.runStore.listRecentRuns()) {
       if (run.status !== "running" && run.status !== "preparing" && run.status !== "queued") {
-        const result = this.safeCleanupWorktree(run);
+        const result = this.worktreeService.safeCleanupRun(run);
         if (result) {
           results.push(result);
         }
       }
     }
     return results;
-  }
-
-  private safeCleanupWorktree(run: ExecutionRunRecord): CleanupWorktreeResult | null {
-    try {
-      return this.removeWorktreeAndBranch(run);
-    } catch (error) {
-      this.logger.warn(`Failed to cleanup worktree for run ${run.run_id}: ${error}`);
-      return null;
-    }
-  }
-
-  private removeWorktreeAndBranch(run: ExecutionRunRecord): CleanupWorktreeResult {
-    const worktreeRemoved = this.removeWorktreeDir(run.worktree_path);
-    const branchRemoved = this.removeLocalBranch(run.branch);
-
-    if (worktreeRemoved || branchRemoved) {
-      this.logger.log(`Cleaned up run ${run.run_id}: worktree=${worktreeRemoved}, branch=${branchRemoved}`);
-    }
-
-    return {
-      run_id: run.run_id,
-      branch: run.branch,
-      worktree_path: run.worktree_path,
-      worktree_removed: worktreeRemoved,
-      branch_removed: branchRemoved,
-    };
-  }
-
-  private removeWorktreeDir(worktreePath: string): boolean {
-    if (!existsSync(worktreePath)) {
-      return false;
-    }
-    try {
-      this.runGit(["worktree", "remove", worktreePath, "--force"]);
-      return true;
-    } catch {
-      // Fallback: remove directory and prune
-      try {
-        rmSync(worktreePath, { recursive: true, force: true });
-        this.runGit(["worktree", "prune"]);
-        return true;
-      } catch (error) {
-        this.logger.warn(`Failed to remove worktree at ${worktreePath}: ${error}`);
-        return false;
-      }
-    }
-  }
-
-  private removeLocalBranch(branch: string): boolean {
-    try {
-      this.runGit(["branch", "-D", branch]);
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   async resolveDisambiguation(input: ResolveDisambiguationDto): Promise<ResolveDisambiguationResult> {
@@ -722,27 +666,17 @@ export class ExecutionService implements OnModuleInit {
     this.runStore.emitRun("execution_status", run);
 
     // --- Create worktree ---
-    this.runGit(["worktree", "add", run.worktree_path, "-b", run.branch, run.base_ref]);
+    this.worktreeService.createWorktree(run.branch, run.base_ref, run.worktree_path);
     this.pushActivity(run.run_id, "status_change", `Worktree created at ${run.worktree_path}`, `Branch: ${run.branch}, Base: ${run.base_ref}`);
     this.runStore.appendEvent(run, { type: "worktree_created", worktree_path: run.worktree_path, branch: run.branch, base_ref: run.base_ref });
 
     // --- Install dependencies in worktree ---
-    if (existsSync(join(run.worktree_path, "package.json"))) {
-      this.pushActivity(run.run_id, "status_change", "Installing dependencies in worktree...");
-      this.runStore.emitRun("execution_status", run);
-      try {
-        execFileSync("npm", ["ci", "--ignore-scripts"], { cwd: run.worktree_path, encoding: "utf8", timeout: 120000, stdio: "pipe" });
-        this.pushActivity(run.run_id, "status_change", "Dependencies installed.");
-      } catch (npmErr) {
-        this.pushActivity(run.run_id, "info", `npm ci failed, trying npm install: ${this.getErrorMessage(npmErr).slice(0, 200)}`);
-        try {
-          execFileSync("npm", ["install", "--ignore-scripts"], { cwd: run.worktree_path, encoding: "utf8", timeout: 120000, stdio: "pipe" });
-          this.pushActivity(run.run_id, "status_change", "Dependencies installed (via npm install).");
-        } catch {
-          this.pushActivity(run.run_id, "info", "Dependency installation failed — agent may not be able to run quality checks.");
-        }
-      }
-    }
+    // Emit a status event before the potentially slow install so the UI shows progress.
+    this.runStore.emitRun("execution_status", run);
+    const runIdForActivity = run.run_id;
+    this.worktreeService.installDependencies(run.worktree_path, (kind, message) => {
+      this.pushActivity(runIdForActivity, kind, message);
+    });
 
     // --- Gather context ---
     const workItem = this.workItemsService.get(run.work_item_id);
@@ -956,7 +890,7 @@ export class ExecutionService implements OnModuleInit {
     if (reasoningSummary) {
       this.pushActivity(run.run_id, "reasoning", reasoningSummary);
     }
-    const changedFiles = this.listChangedFiles(run.worktree_path);
+    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
     writeFileSync(join(run.artifact_dir, "outputs", "response.json"), JSON.stringify({ assistant_text: assistantText, changed_files: changedFiles, actual_files_sync: actualFilesSync }, null, 2), "utf8");
@@ -1162,7 +1096,7 @@ export class ExecutionService implements OnModuleInit {
     const assistantText = session.getLastAssistantText()?.trim() ?? "Follow-up turn completed without a summary.";
     this.pushActivity(run.run_id, "agent_message", assistantText);
 
-    const changedFiles = this.listChangedFiles(run.worktree_path);
+    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
 
     this.pushActivity(run.run_id, "follow_up", `Follow-up turn completed. ${changedFiles.length} file(s) changed.`);
@@ -1301,7 +1235,7 @@ export class ExecutionService implements OnModuleInit {
     const plan = options.plan ?? this.graphService.getPlan(workItem.repo ?? undefined);
     const groupedNode = this.findPlannedNode(plan, workItem.id);
     const branch = groupedNode?.node.branch ?? workItem.branch ?? `${workItem.id}-branch`;
-    const worktreePath = this.getWorktreePath(branch);
+    const worktreePath = this.worktreeService.getWorktreePath(branch);
     const safetyChecks: ExecutionSafetyCheck[] = [];
     const issueBacked = this.isIssueBacked(workItem);
 
@@ -1313,7 +1247,7 @@ export class ExecutionService implements OnModuleInit {
       });
     } else {
       safetyChecks.push(this.checkLaunchableState(workItem));
-      safetyChecks.push(...this.evaluateSafety(branch, worktreePath, baseRef));
+      safetyChecks.push(...this.worktreeService.evaluateSafety(branch, worktreePath, baseRef));
     }
 
     const firstFailure = safetyChecks.find((check) => check.status === "fail") ?? null;
@@ -1377,16 +1311,6 @@ export class ExecutionService implements OnModuleInit {
     return workItem.kind === "issue";
   }
 
-  private evaluateSafety(branch: string, worktreePath: string, baseRef = getDefaultWorkingBranch(null)): ExecutionSafetyCheck[] {
-    const checks: ExecutionSafetyCheck[] = [];
-    checks.push(this.checkTrackedRepoClean());
-    checks.push(this.checkBaseRef(baseRef));
-    checks.push(this.checkBranchAvailable(branch));
-    checks.push(this.checkWorktreePathAvailable(worktreePath));
-    checks.push(this.checkPathBounded(worktreePath));
-    return checks;
-  }
-
   /**
    * ADR 014 step 5: gate launch on work item state.
    *
@@ -1420,42 +1344,6 @@ export class ExecutionService implements OnModuleInit {
         `Work item state '${workItem.state}' is not launchable. ` +
         "Expected 'ready' (approved plan) or 'planned' (fallback).",
     };
-  }
-
-  private checkTrackedRepoClean(): ExecutionSafetyCheck {
-    const output = this.runGit(["status", "--porcelain", "--untracked-files=no"], { allowFailure: true });
-    return output.trim().length === 0
-      ? { code: "tracked_repo_clean", status: "pass", message: "Repo has no tracked changes that would interfere with dispatch." }
-      : { code: "tracked_repo_clean", status: "warn", message: "Repo has tracked local changes, but execution still uses an isolated worktree and will not mutate the main checkout." };
-  }
-
-  private checkBaseRef(baseRef: string): ExecutionSafetyCheck {
-    const ok = this.runGit(["rev-parse", "--verify", baseRef], { allowFailure: true }).trim().length > 0;
-    return ok
-      ? { code: "base_ref_exists", status: "pass", message: `Base ref ${baseRef} is available.` }
-      : { code: "base_ref_exists", status: "fail", message: `Base ref ${baseRef} was not found.` };
-  }
-
-  private checkBranchAvailable(branch: string): ExecutionSafetyCheck {
-    const existing = this.runGit(["branch", "--list", branch], { allowFailure: true }).trim();
-    return existing.length === 0
-      ? { code: "branch_available", status: "pass", message: `Branch ${branch} is available for a new worktree.` }
-      : { code: "branch_available", status: "fail", message: `Branch ${branch} already exists locally.` };
-  }
-
-  private checkWorktreePathAvailable(worktreePath: string): ExecutionSafetyCheck {
-    const listed = this.runGit(["worktree", "list", "--porcelain"], { allowFailure: true });
-    return listed.includes(`worktree ${worktreePath}`)
-      ? { code: "worktree_path_available", status: "fail", message: `Worktree path ${worktreePath} is already in use.` }
-      : { code: "worktree_path_available", status: "pass", message: "Target worktree path is available." };
-  }
-
-  private checkPathBounded(worktreePath: string): ExecutionSafetyCheck {
-    const boundedRoot = resolve(this.worktreeRoot);
-    const target = resolve(worktreePath);
-    return target.startsWith(`${boundedRoot}/`) || target === boundedRoot
-      ? { code: "worktree_path_bounded", status: "pass", message: "Target worktree path is inside the configured execution worktree root." }
-      : { code: "worktree_path_bounded", status: "fail", message: "Target worktree path escaped the configured execution worktree root." };
   }
 
   private buildSetupPrompt(
@@ -1840,7 +1728,7 @@ export class ExecutionService implements OnModuleInit {
   } = {}): ExecutionRunRecord {
     const branch = options.branch?.trim() || workItem.branch?.trim() || `${workItem.id}-branch`;
     const baseRef = options.baseRef?.trim() || getDefaultWorkingBranch(workItem.repo);
-    const worktreePath = options.worktreePath?.trim() || join(this.worktreeRoot, branch);
+    const worktreePath = options.worktreePath?.trim() || this.worktreeService.getWorktreePath(branch);
     const run = this.createRunRecord({
       workItem,
       branch,
@@ -1907,54 +1795,8 @@ export class ExecutionService implements OnModuleInit {
     return null;
   }
 
-  private runGit(args: string[], options: { allowFailure?: boolean } = {}): string {
-    return this.runCommand("git", args, { cwd: process.cwd(), allowFailure: options.allowFailure });
-  }
-
-  private runGitIn(cwd: string, args: string[], options: { allowFailure?: boolean } = {}): string {
-    return this.runCommand("git", args, { cwd, allowFailure: options.allowFailure });
-  }
-
-  private runGhIn(cwd: string, args: string[], stdin?: string): string {
-    return this.runCommand("gh", args, { cwd, stdin });
-  }
-
-  private runCommand(command: string, args: string[], options: { cwd: string; stdin?: string; allowFailure?: boolean }): string {
-    try {
-      return execFileSync(command, args, {
-        cwd: options.cwd,
-        input: options.stdin,
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024 * 4,
-      });
-    } catch (error) {
-      if (options.allowFailure) {
-        return "";
-      }
-      throw error;
-    }
-  }
-
-  private listChangedFiles(worktreePath: string): string[] {
-    const output = execFileSync("git", ["status", "--short"], { cwd: worktreePath, encoding: "utf8" });
-    return output
-      .split("\n")
-      .map((line) => this.parseChangedFilePath(line))
-      .filter((path): path is string => Boolean(path));
-  }
-
-  private parseChangedFilePath(line: string): string | null {
-    return parseChangedFilePath(line);
-  }
-
-  private countCommitsAhead(worktreePath: string, baseRef: string, branch: string): number {
-    const output = this.runGitIn(worktreePath, ["rev-list", "--count", `${baseRef}..${branch}`], { allowFailure: true }).trim();
-    const parsed = Number(output);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-
   private readPullRequest(worktreePath: string, fallbackTitle: string, body: string): ExecutionPullRequestRecord {
-    const raw = this.runGhIn(worktreePath, ["pr", "view", "--json", "number,url,title,body,baseRefName,headRefName,isDraft"]);
+    const raw = this.worktreeService.runGhIn(worktreePath, ["pr", "view", "--json", "number,url,title,body,baseRefName,headRefName,isDraft"]);
     const parsed = JSON.parse(raw) as {
       number?: number;
       url?: string;
@@ -2015,13 +1857,13 @@ export class ExecutionService implements OnModuleInit {
   }
 
   private autoStageAndCommit(run: ExecutionRunRecord, workItem: WorkItemRecord, commitMessage?: string): void {
-    const status = this.runGitIn(run.worktree_path, ["status", "--porcelain"], { allowFailure: true }).trim();
+    const status = this.worktreeService.runGitIn(run.worktree_path, ["status", "--porcelain"], { allowFailure: true }).trim();
     if (!status) {
       return; // working tree is clean, nothing to commit
     }
 
     this.logger.log(`Auto-staging and committing changes in ${run.worktree_path}`);
-    this.runGitIn(run.worktree_path, ["add", "-A"]);
+    this.worktreeService.runGitIn(run.worktree_path, ["add", "-A"]);
 
     // ADR 014 step 6: hard guard against committing `SCRATCHPAD_*.md`.
     // Replaces the silent `.gitignore` trick — disobedience is now visible.
@@ -2039,10 +1881,10 @@ export class ExecutionService implements OnModuleInit {
     }
 
     const message = commitMessage?.trim() || this.buildCommitMessage(workItem);
-    this.runGitIn(run.worktree_path, ["commit", "-m", message]);
+    this.worktreeService.runGitIn(run.worktree_path, ["commit", "-m", message]);
 
     // Refresh changed files after commit
-    const changedFiles = this.listChangedFiles(run.worktree_path);
+    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
     if (changedFiles.length > 0) {
       this.runStore.updateRun(run.run_id, { changed_files: changedFiles });
     }
@@ -2056,7 +1898,7 @@ export class ExecutionService implements OnModuleInit {
    * message and for the `scratchpad_commit_blocked` event payload.
    */
   private findStagedScratchpadViolations(worktreePath: string): string[] {
-    const output = this.runGitIn(worktreePath, ["diff", "--cached", "--name-only"], { allowFailure: true });
+    const output = this.worktreeService.runGitIn(worktreePath, ["diff", "--cached", "--name-only"], { allowFailure: true });
     return output
       .split("\n")
       .map((line) => line.trim())
@@ -2072,7 +1914,7 @@ export class ExecutionService implements OnModuleInit {
    * what GitHub shows in a pull-request diff.
    */
   private findCommittedScratchpadViolations(worktreePath: string, baseRef: string): string[] {
-    const output = this.runGitIn(worktreePath, ["diff", "--name-only", `${baseRef}...HEAD`], { allowFailure: true });
+    const output = this.worktreeService.runGitIn(worktreePath, ["diff", "--name-only", `${baseRef}...HEAD`], { allowFailure: true });
     return output
       .split("\n")
       .map((line) => line.trim())
@@ -2329,11 +2171,6 @@ export class ExecutionService implements OnModuleInit {
       return summary;
     }
     return summary.slice(0, 297) + "...";
-  }
-
-  private getWorktreePath(branch: string): string {
-    const safeBranch = branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "execution-run";
-    return join(this.worktreeRoot, safeBranch);
   }
 
   private safeGetWorkItem(id: string): WorkItemRecord | null {

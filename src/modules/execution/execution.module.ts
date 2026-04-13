@@ -19,6 +19,7 @@ import { RunDispositionService } from "./run-disposition.service.js";
 import { RunStore } from "./run-store.service.js";
 import { WorkItemReconcilerController } from "./work-item-reconciler.controller.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
+import { WorktreeService } from "./worktree.service.js";
 
 @Module({
   imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => PlansModule), forwardRef(() => SettingsModule)],
@@ -30,6 +31,7 @@ import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
     HsmActionHandlers,
     RunDispositionService,
     RunStore,
+    WorktreeService,
     WorkItemReconcilerService,
     CancelWorkItemHandler,
     DeleteWorkItemHandler,
@@ -38,6 +40,14 @@ import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
     CloseMergedPullRequestHandler,
     ArchiveAndCloseMergedPullRequestHandler,
   ],
-  exports: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, RunDispositionService, RunStore, WorkItemReconcilerService],
+  exports: [
+    ExecutionService,
+    GitHubBatchCache,
+    GitHubCacheScheduler,
+    RunDispositionService,
+    RunStore,
+    WorktreeService,
+    WorkItemReconcilerService,
+  ],
 })
 export class ExecutionModule {}

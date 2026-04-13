@@ -17,11 +17,6 @@ import type { WorkItemRecord } from "../../graph/types.js";
  * sandbox-related child-process failures.
  */
 
-interface GitInvocation {
-  args: string[];
-  allowFailure?: boolean;
-}
-
 interface HarnessService {
   artifactRoot: string;
   logger: { log: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
@@ -33,9 +28,16 @@ interface HarnessService {
     getRun: (runId: string) => ExecutionRunRecord | null;
     writeSummary: ReturnType<typeof vi.fn>;
   };
-  runGhIn: ReturnType<typeof vi.fn>;
-  runGitIn: ReturnType<typeof vi.fn>;
-  listChangedFiles: ReturnType<typeof vi.fn>;
+  // Phase 4b (#231): runGhIn / runGitIn / listChangedFiles moved to
+  // WorktreeService. The harness installs a worktreeService field with
+  // all three stubbed so the scratchpad commit guards (still on
+  // ExecutionService.prototype) can reach them via
+  // `this.worktreeService.runGitIn(...)`.
+  worktreeService: {
+    runGhIn: ReturnType<typeof vi.fn>;
+    runGitIn: ReturnType<typeof vi.fn>;
+    listChangedFiles: ReturnType<typeof vi.fn>;
+  };
   buildPullRequestTitle: (workItem: WorkItemRecord) => string;
   buildPullRequestBody: (run: ExecutionRunRecord, workItem: WorkItemRecord, baseRef: string) => string;
 
@@ -116,21 +118,26 @@ function makeService(params: {
     getRun: (runId: string) => (params.run && params.run.run_id === runId ? params.run : null),
     writeSummary: vi.fn(),
   };
-  service.runGhIn = vi.fn(() => {
-    throw new Error("runGhIn should not be called when guard rejects");
-  });
-  service.runGitIn = vi.fn((_cwd: string, args: string[], options?: { allowFailure?: boolean }) => {
-    const key = args.join(" ");
-    const response = gitResponses[key];
-    if (response != null) {
-      return response;
-    }
-    if (options?.allowFailure) {
+  // Phase 4b (#231): runGhIn / runGitIn / listChangedFiles live on
+  // WorktreeService. The harness provides a worktreeService field with
+  // all three stubbed.
+  service.worktreeService = {
+    runGhIn: vi.fn(() => {
+      throw new Error("runGhIn should not be called when guard rejects");
+    }),
+    runGitIn: vi.fn((_cwd: string, args: string[], options?: { allowFailure?: boolean }) => {
+      const key = args.join(" ");
+      const response = gitResponses[key];
+      if (response != null) {
+        return response;
+      }
+      if (options?.allowFailure) {
+        return "";
+      }
       return "";
-    }
-    return "";
-  });
-  service.listChangedFiles = vi.fn(() => params.changedFiles ?? []);
+    }),
+    listChangedFiles: vi.fn(() => params.changedFiles ?? []),
+  };
   service.buildPullRequestTitle = () => "title";
   service.buildPullRequestBody = () => "body";
   return service;
@@ -252,8 +259,8 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
       });
 
       expect(() => service.autoStageAndCommit(run, workItem)).not.toThrow();
-      expect(service.runGitIn).toHaveBeenCalledWith(worktree, ["add", "-A"]);
-      expect(service.runGitIn).toHaveBeenCalledWith(
+      expect(service.worktreeService.runGitIn).toHaveBeenCalledWith(worktree, ["add", "-A"]);
+      expect(service.worktreeService.runGitIn).toHaveBeenCalledWith(
         worktree,
         ["commit", "-m", `${workItem.name} (#${workItem.issue_number})`],
       );
@@ -272,8 +279,8 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
       });
 
       expect(() => service.autoStageAndCommit(run, workItem)).not.toThrow();
-      expect(service.runGitIn).toHaveBeenCalledTimes(1);
-      expect(service.runGitIn).toHaveBeenCalledWith(worktree, ["status", "--porcelain"], { allowFailure: true });
+      expect(service.worktreeService.runGitIn).toHaveBeenCalledTimes(1);
+      expect(service.worktreeService.runGitIn).toHaveBeenCalledWith(worktree, ["status", "--porcelain"], { allowFailure: true });
       expect(service.runStore.appendEvent).not.toHaveBeenCalled();
     });
 
@@ -297,7 +304,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
         phase: "auto_commit",
         paths: ["SCRATCHPAD_studio_156.md"],
       });
-      expect(service.runGitIn).not.toHaveBeenCalledWith(
+      expect(service.worktreeService.runGitIn).not.toHaveBeenCalledWith(
         worktree,
         ["commit", "-m", `${workItem.name} (#${workItem.issue_number})`],
       );
@@ -329,8 +336,8 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
         phase: "pull_request",
         paths: ["SCRATCHPAD_studio_156.md"],
       });
-      expect(service.runGhIn).not.toHaveBeenCalled();
-      expect(service.runGitIn).not.toHaveBeenCalledWith(
+      expect(service.worktreeService.runGhIn).not.toHaveBeenCalled();
+      expect(service.worktreeService.runGitIn).not.toHaveBeenCalledWith(
         worktree,
         ["push", "--set-upstream", "origin", run.branch],
       );
@@ -361,7 +368,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
         phase: "pull_request_history",
         paths: ["SCRATCHPAD_studio_156.md"],
       });
-      expect(service.runGhIn).not.toHaveBeenCalled();
+      expect(service.worktreeService.runGhIn).not.toHaveBeenCalled();
     });
   });
 
