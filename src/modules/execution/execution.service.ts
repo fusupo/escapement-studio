@@ -2695,6 +2695,58 @@ export class ExecutionService implements OnModuleInit {
     this.logger.warn(message);
   }
 
+  // TODO(phase-4): delete once RunStore owns the in-memory run buffer.
+  // Phase 3 seam: RunDispositionService.removeRunsForWorkItem calls this to
+  // splice every buffered run for a work item out of recentRuns, stamp
+  // disposed_at on each via writeStatus, and return the disposed copies so
+  // the caller can emit execution_result events. Matches the back-to-front
+  // walk of the original private method.
+  disposeRunsForWorkItemInBuffer(
+    workItemId: string,
+    disposedAt: string,
+  ): ExecutionRunRecord[] {
+    const disposed: ExecutionRunRecord[] = [];
+    for (let i = this.recentRuns.length - 1; i >= 0; i--) {
+      const run = this.recentRuns[i];
+      if (run.work_item_id !== workItemId) continue;
+      if (run.disposed_at) {
+        // Already disposed; drop from the buffer but don't re-write.
+        this.recentRuns.splice(i, 1);
+        continue;
+      }
+      const next: ExecutionRunRecord = {
+        ...run,
+        disposed_at: disposedAt,
+        updated_at: disposedAt,
+      };
+      try {
+        this.writeStatus(next);
+      } catch (error) {
+        if (!this.isMissingFileError(error)) {
+          this.logger.warn(
+            `disposeRunsForWorkItemInBuffer: failed to stamp disposed_at for run ${run.run_id}: ${this.getErrorMessage(error)}`,
+          );
+        }
+      }
+      this.recentRuns.splice(i, 1);
+      disposed.push(next);
+    }
+    return disposed;
+  }
+
+  // TODO(phase-4): delete once RunStore owns the SSE event stream.
+  // Phase 3 seam: RunDispositionService emits execution_result events on
+  // disposed runs without reaching into ExecutionService's private emitRun.
+  emitRunExecutionResult(run: ExecutionRunRecord): void {
+    try {
+      this.emitRun("execution_result", run);
+    } catch (error) {
+      this.logger.warn(
+        `emitRunExecutionResult: failed to emit execution_result for run ${run.run_id}: ${this.getErrorMessage(error)}`,
+      );
+    }
+  }
+
   // TODO(phase-3): move to RunDispositionService once Phase 3 lands.
   // Public so the moved HsmActionHandlers (Phase 1) can reach it without
   // referencing private state.
