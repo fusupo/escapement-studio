@@ -4,46 +4,91 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestException } from "@nestjs/common";
 import { ExecutionService } from "../execution.service.js";
+import { ScratchpadService } from "../scratchpad.service.js";
 import type { ExecutionRunRecord } from "../types.js";
 import type { WorkItemRecord } from "../../graph/types.js";
 
 /**
  * ADR 014 step 6: scratchpad commit guards.
  *
- * These tests focus on guard behavior, not the OS process boundary.
- * The service methods already centralize git access through `runGitIn()`,
- * so the test harness stubs command output instead of shelling out to a
- * real `git` binary. That keeps the assertions deterministic and avoids
- * sandbox-related child-process failures.
+ * Phase 4c (#232): the commit-guard helpers
+ * (`findStagedScratchpadViolations`, `findCommittedScratchpadViolations`,
+ * `isScratchpadPath`) live on ScratchpadService. The pull-request-creation
+ * and auto-stage-commit methods that call those guards still live on
+ * ExecutionService; they will migrate to PullRequestService in Phase 4e.
+ *
+ * This file therefore uses two harnesses:
+ *   - ScratchpadHarness: Object.create(ScratchpadService.prototype)
+ *     with a stubbed worktreeService.runGitIn. Exercises the pure
+ *     commit-guard helpers directly.
+ *   - ExecutionHarness: Object.create(ExecutionService.prototype) with
+ *     a scratchpadService field that stubs findStagedScratchpadViolations
+ *     / findCommittedScratchpadViolations / isScratchpadPath plus the
+ *     existing runStore + worktreeService fields. Exercises
+ *     autoStageAndCommit / createPullRequest end to end.
  */
 
-interface HarnessService {
+// ─── ScratchpadService harness (pure commit guards) ───────────────────
+
+interface ScratchpadHarness {
+  logger: { warn: ReturnType<typeof vi.fn> };
+  worktreeService: {
+    runGitIn: ReturnType<typeof vi.fn>;
+  };
+  findStagedScratchpadViolations: ScratchpadService["findStagedScratchpadViolations"];
+  findCommittedScratchpadViolations: ScratchpadService["findCommittedScratchpadViolations"];
+  isScratchpadPath: ScratchpadService["isScratchpadPath"];
+}
+
+function makeScratchpadHarness(gitResponses: Record<string, string> = {}): ScratchpadHarness {
+  const service = Object.create(ScratchpadService.prototype) as ScratchpadHarness;
+  service.logger = { warn: vi.fn() };
+  service.worktreeService = {
+    runGitIn: vi.fn((_cwd: string, args: string[], options?: { allowFailure?: boolean }) => {
+      const key = args.join(" ");
+      const response = gitResponses[key];
+      if (response != null) {
+        return response;
+      }
+      if (options?.allowFailure) {
+        return "";
+      }
+      return "";
+    }),
+  };
+  return service;
+}
+
+// ─── ExecutionService harness (autoStageAndCommit + createPullRequest) ──
+
+interface ExecutionHarness {
   artifactRoot: string;
   logger: { log: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
   workItemsService: { get: (id: string) => WorkItemRecord; update: ReturnType<typeof vi.fn> };
-  // Phase 4a: appendEvent, updateRun, getRun, writeSummary moved to RunStore.
   runStore: {
     appendEvent: ReturnType<typeof vi.fn>;
     updateRun: ReturnType<typeof vi.fn>;
     getRun: (runId: string) => ExecutionRunRecord | null;
     writeSummary: ReturnType<typeof vi.fn>;
   };
-  // Phase 4b (#231): runGhIn / runGitIn / listChangedFiles moved to
-  // WorktreeService. The harness installs a worktreeService field with
-  // all three stubbed so the scratchpad commit guards (still on
-  // ExecutionService.prototype) can reach them via
-  // `this.worktreeService.runGitIn(...)`.
   worktreeService: {
     runGhIn: ReturnType<typeof vi.fn>;
     runGitIn: ReturnType<typeof vi.fn>;
     listChangedFiles: ReturnType<typeof vi.fn>;
   };
+  // Phase 4c (#232): commit guards + isScratchpadPath live on
+  // ScratchpadService. The ExecutionService orchestrator reaches them
+  // via `this.scratchpadService.X(...)`, so the harness provides
+  // stubs for the three helpers that autoStageAndCommit /
+  // createPullRequest call.
+  scratchpadService: {
+    findStagedScratchpadViolations: ReturnType<typeof vi.fn>;
+    findCommittedScratchpadViolations: ReturnType<typeof vi.fn>;
+    isScratchpadPath: ReturnType<typeof vi.fn>;
+  };
   buildPullRequestTitle: (workItem: WorkItemRecord) => string;
   buildPullRequestBody: (run: ExecutionRunRecord, workItem: WorkItemRecord, baseRef: string) => string;
 
-  findStagedScratchpadViolations: ExecutionService["findStagedScratchpadViolations"];
-  findCommittedScratchpadViolations: ExecutionService["findCommittedScratchpadViolations"];
-  isScratchpadPath: ExecutionService["isScratchpadPath"];
   autoStageAndCommit: (run: ExecutionRunRecord, workItem: WorkItemRecord, commitMessage?: string) => void;
   createPullRequest: ExecutionService["createPullRequest"];
 }
@@ -90,13 +135,19 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
   };
 }
 
-function makeService(params: {
+function isScratchpadPath(path: string): boolean {
+  return /(?:^|\/)SCRATCHPAD_[^/]*\.md$/.test(path);
+}
+
+function makeExecutionHarness(params: {
   run?: ExecutionRunRecord;
   workItem?: WorkItemRecord;
   gitResponses?: Record<string, string>;
+  stagedViolations?: string[];
+  committedViolations?: string[];
   changedFiles?: string[];
-} = {}): HarnessService {
-  const service = Object.create(ExecutionService.prototype) as HarnessService;
+} = {}): ExecutionHarness {
+  const service = Object.create(ExecutionService.prototype) as ExecutionHarness;
   const workItem = params.workItem ?? makeWorkItem();
   const gitResponses = params.gitResponses ?? {};
 
@@ -106,9 +157,6 @@ function makeService(params: {
     get: (_id: string) => workItem,
     update: vi.fn((_id: string, patch: Partial<WorkItemRecord>) => ({ ...workItem, ...patch })),
   };
-  // Phase 4a (#230): these methods moved to RunStore. Harness provides
-  // a runStore field with spies so assertions like
-  // `expect(service.runStore.appendEvent).toHaveBeenCalled(...)` work.
   service.runStore = {
     appendEvent: vi.fn(),
     updateRun: vi.fn((_runId: string, patch: Partial<ExecutionRunRecord>) => ({
@@ -118,9 +166,6 @@ function makeService(params: {
     getRun: (runId: string) => (params.run && params.run.run_id === runId ? params.run : null),
     writeSummary: vi.fn(),
   };
-  // Phase 4b (#231): runGhIn / runGitIn / listChangedFiles live on
-  // WorktreeService. The harness provides a worktreeService field with
-  // all three stubbed.
   service.worktreeService = {
     runGhIn: vi.fn(() => {
       throw new Error("runGhIn should not be called when guard rejects");
@@ -137,6 +182,29 @@ function makeService(params: {
       return "";
     }),
     listChangedFiles: vi.fn(() => params.changedFiles ?? []),
+  };
+  // Phase 4c (#232): the thin-wrapper stubs for the commit-guard methods
+  // that ExecutionService now calls via `this.scratchpadService.X(...)`.
+  // Each stub returns the fixture list the test parameterized or honors
+  // the parser-driven default (derive from gitResponses + basename check).
+  const derivedStagedViolations = params.stagedViolations
+    ?? (gitResponses["diff --cached --name-only"] ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && isScratchpadPath(line));
+  const derivedCommittedViolations = params.committedViolations
+    ?? (() => {
+      const key = Object.keys(gitResponses).find((k) => k.startsWith("diff --name-only "));
+      if (!key) return [];
+      return gitResponses[key]
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && isScratchpadPath(line));
+    })();
+  service.scratchpadService = {
+    findStagedScratchpadViolations: vi.fn(() => derivedStagedViolations),
+    findCommittedScratchpadViolations: vi.fn(() => derivedCommittedViolations),
+    isScratchpadPath: vi.fn(isScratchpadPath),
   };
   service.buildPullRequestTitle = () => "title";
   service.buildPullRequestBody = () => "body";
@@ -156,8 +224,8 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  describe("isScratchpadPath", () => {
-    const service = Object.create(ExecutionService.prototype) as HarnessService;
+  describe("ScratchpadService.isScratchpadPath", () => {
+    const service = Object.create(ScratchpadService.prototype) as ScratchpadHarness;
 
     it("matches SCRATCHPAD_<slug>.md at worktree root", () => {
       expect(service.isScratchpadPath("SCRATCHPAD_studio_156.md")).toBe(true);
@@ -176,78 +244,64 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
     });
   });
 
-  describe("findStagedScratchpadViolations", () => {
+  describe("ScratchpadService.findStagedScratchpadViolations", () => {
     it("returns [] when the index is clean", () => {
-      const service = makeService({
-        gitResponses: {
-          "diff --cached --name-only": "",
-        },
+      const service = makeScratchpadHarness({
+        "diff --cached --name-only": "",
       });
       expect(service.findStagedScratchpadViolations(worktree)).toEqual([]);
     });
 
     it("returns [] when only non-scratchpad files are staged", () => {
-      const service = makeService({
-        gitResponses: {
-          "diff --cached --name-only": "src.ts\nREADME.md\n",
-        },
+      const service = makeScratchpadHarness({
+        "diff --cached --name-only": "src.ts\nREADME.md\n",
       });
       expect(service.findStagedScratchpadViolations(worktree)).toEqual([]);
     });
 
     it("detects a staged SCRATCHPAD_*.md at the root", () => {
-      const service = makeService({
-        gitResponses: {
-          "diff --cached --name-only": "SCRATCHPAD_studio_156.md\n",
-        },
+      const service = makeScratchpadHarness({
+        "diff --cached --name-only": "SCRATCHPAD_studio_156.md\n",
       });
       expect(service.findStagedScratchpadViolations(worktree)).toEqual(["SCRATCHPAD_studio_156.md"]);
     });
 
     it("detects a staged SCRATCHPAD_*.md at a nested path", () => {
-      const service = makeService({
-        gitResponses: {
-          "diff --cached --name-only": "docs/plans/SCRATCHPAD_x.md\nsrc.ts\n",
-        },
+      const service = makeScratchpadHarness({
+        "diff --cached --name-only": "docs/plans/SCRATCHPAD_x.md\nsrc.ts\n",
       });
       expect(service.findStagedScratchpadViolations(worktree)).toEqual(["docs/plans/SCRATCHPAD_x.md"]);
     });
   });
 
-  describe("findCommittedScratchpadViolations", () => {
+  describe("ScratchpadService.findCommittedScratchpadViolations", () => {
     it("returns [] when the branch is clean relative to base", () => {
-      const service = makeService({
-        gitResponses: {
-          "diff --name-only main...HEAD": "",
-        },
+      const service = makeScratchpadHarness({
+        "diff --name-only main...HEAD": "",
       });
       expect(service.findCommittedScratchpadViolations(worktree, "main")).toEqual([]);
     });
 
     it("returns [] when only non-scratchpad files were committed", () => {
-      const service = makeService({
-        gitResponses: {
-          "diff --name-only main...HEAD": "src.ts\nREADME.md\n",
-        },
+      const service = makeScratchpadHarness({
+        "diff --name-only main...HEAD": "src.ts\nREADME.md\n",
       });
       expect(service.findCommittedScratchpadViolations(worktree, "main")).toEqual([]);
     });
 
     it("detects a scratchpad committed to the branch", () => {
-      const service = makeService({
-        gitResponses: {
-          "diff --name-only main...HEAD": "SCRATCHPAD_studio_156.md\nsrc.ts\n",
-        },
+      const service = makeScratchpadHarness({
+        "diff --name-only main...HEAD": "SCRATCHPAD_studio_156.md\nsrc.ts\n",
       });
       expect(service.findCommittedScratchpadViolations(worktree, "main")).toEqual(["SCRATCHPAD_studio_156.md"]);
     });
   });
 
-  describe("autoStageAndCommit", () => {
+  describe("ExecutionService.autoStageAndCommit", () => {
     it("commits normally when no scratchpad is staged", () => {
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({
+      const service = makeExecutionHarness({
         run,
         workItem,
         gitResponses: {
@@ -270,7 +324,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
     it("is a no-op when the worktree is clean", () => {
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({
+      const service = makeExecutionHarness({
         run,
         workItem,
         gitResponses: {
@@ -287,7 +341,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
     it("throws and emits an event when a scratchpad is staged (does not create a commit)", () => {
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({
+      const service = makeExecutionHarness({
         run,
         workItem,
         gitResponses: {
@@ -311,11 +365,11 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
     });
   });
 
-  describe("createPullRequest guards", () => {
+  describe("ExecutionService.createPullRequest guards", () => {
     it("rejects with phase=pull_request when the index contains a scratchpad (auto_commit: false)", async () => {
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({
+      const service = makeExecutionHarness({
         run,
         workItem,
         gitResponses: {
@@ -346,7 +400,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
     it("rejects with phase=pull_request_history when the branch has a committed scratchpad", async () => {
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
-      const service = makeService({
+      const service = makeExecutionHarness({
         run,
         workItem,
         gitResponses: {

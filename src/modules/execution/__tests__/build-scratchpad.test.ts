@@ -1,13 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { ExecutionService } from "../execution.service.js";
+import { ScratchpadService } from "../scratchpad.service.js";
 import type { ExecutionRunRecord, ExecutionDispatchNodePreview } from "../types.js";
 
 /**
- * We test buildScratchpad by constructing a minimal service instance via
- * Object.create so we can call the public method without wiring up DI.
+ * Phase 4c (#232): buildScratchpad lives on ScratchpadService.
+ *
+ * The method is pure — it takes no state — so the harness constructs
+ * a ScratchpadService instance via Object.create without wiring any
+ * fields. No DI, no filesystem.
  */
 function callBuildScratchpad(run: ExecutionRunRecord, node: ExecutionDispatchNodePreview): string {
-  const service = Object.create(ExecutionService.prototype) as ExecutionService;
+  const service = Object.create(ScratchpadService.prototype) as ScratchpadService;
   return service.buildScratchpad(run, node);
 }
 

@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { ExecutionService } from "../execution.service.js";
+import { ScratchpadService } from "../scratchpad.service.js";
 
+/**
+ * Phase 4c (#232): parseImplementationPlanChecklist lives on
+ * ScratchpadService. The method is a pure parser, so the harness
+ * constructs a bare ScratchpadService instance via Object.create.
+ */
 function parseChecklist(content: string) {
-  const service = Object.create(ExecutionService.prototype) as ExecutionService;
+  const service = Object.create(ScratchpadService.prototype) as ScratchpadService;
   return service.parseImplementationPlanChecklist(content);
 }
 

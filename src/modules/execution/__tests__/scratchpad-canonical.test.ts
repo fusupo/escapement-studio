@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExecutionService } from "../execution.service.js";
+import { ScratchpadService } from "../scratchpad.service.js";
 import type { ExecutionDispatchNodePreview, ExecutionRunRecord } from "../types.js";
 import {
   canonicalScratchpadPath,
@@ -14,32 +15,30 @@ import {
 /**
  * Canonical scratchpad behavior (ADR 014 step 2).
  *
- * Tests use Object.create to bypass DI and inject the artifactRoot + a
- * minimal run record, matching the pattern in build-scratchpad.test.ts and
- * launch-eligibility.test.ts.
+ * Phase 4c (#232): the pure scratchpad methods live on
+ * ScratchpadService. The HTTP getters stay on ExecutionService as thin
+ * orchestrator wrappers that delegate to the injected scratchpadService.
+ * `appendRunIdToPlanMetadata` stays on ExecutionService.
+ *
+ * Tests use `Object.create` to bypass DI and inject the minimal set of
+ * fields each method under test needs.
  */
 
-interface HarnessService {
+// ─── ScratchpadService harness (pure scratchpad methods) ──────────────
+
+interface ScratchpadHarness {
   artifactRoot: string;
   logger: { warn: (msg: string) => void };
   warnings: string[];
-  syncScratchpadToCanonical: ExecutionService["syncScratchpadToCanonical"];
-  getRunScratchpad: ExecutionService["getRunScratchpad"];
-  getRunChecklist: ExecutionService["getRunChecklist"];
-  writeScratchpad: (
-    run: ExecutionRunRecord,
-    node: ExecutionDispatchNodePreview,
-  ) => { path: string; source: "canonical_ready" | "carried_forward" | "synthesized" };
-  appendRunIdToPlanMetadata: (workItemId: string, runId: string) => void;
-  buildScratchpad: (run: ExecutionRunRecord, node: ExecutionDispatchNodePreview) => string;
-  getErrorMessage: (error: unknown) => string;
-  runStore: {
-    getRun: (runId: string) => ExecutionRunRecord | null;
-  };
+  syncScratchpadToCanonical: ScratchpadService["syncScratchpadToCanonical"];
+  getRunScratchpad: ScratchpadService["getRunScratchpad"];
+  getRunChecklist: ScratchpadService["getRunChecklist"];
+  writeScratchpad: ScratchpadService["writeScratchpad"];
+  buildScratchpad: ScratchpadService["buildScratchpad"];
 }
 
-function makeService(artifactRoot: string, run?: ExecutionRunRecord): HarnessService {
-  const service = Object.create(ExecutionService.prototype) as HarnessService;
+function makeScratchpadService(artifactRoot: string): ScratchpadHarness {
+  const service = Object.create(ScratchpadService.prototype) as ScratchpadHarness;
   service.artifactRoot = artifactRoot;
   service.warnings = [];
   service.logger = {
@@ -47,18 +46,55 @@ function makeService(artifactRoot: string, run?: ExecutionRunRecord): HarnessSer
       service.warnings.push(msg);
     },
   };
-  // Phase 4a (#230): getRun lives on RunStore. The harness provides
-  // a minimal runStore field so ExecutionService methods (still on
-  // the prototype) can reach it via `this.runStore.getRun(runId)`.
-  service.runStore = {
-    getRun: (runId: string) => (run && run.run_id === runId ? run : null),
-  };
-  // buildScratchpad touches other private helpers we don't stub; override
-  // with a deterministic stub so `writeScratchpad` synthesis tests don't
-  // trip on missing dependencies.
+  // writeScratchpad falls back to buildScratchpad when the canonical
+  // file is missing. buildScratchpad is pure so the real implementation
+  // works, but we override with a deterministic stub so the synthesis
+  // test is stable.
   (service as any).buildScratchpad = () => "synthesized skeleton content";
   return service;
 }
+
+// ─── ExecutionService harness (thin-wrapper HTTP getters + appendRunIdToPlanMetadata) ──
+
+interface ExecutionHarness {
+  artifactRoot: string;
+  logger: { warn: (msg: string) => void };
+  warnings: string[];
+  getRunScratchpad: ExecutionService["getRunScratchpad"];
+  getRunChecklist: ExecutionService["getRunChecklist"];
+  appendRunIdToPlanMetadata: (workItemId: string, runId: string) => void;
+  getErrorMessage: (error: unknown) => string;
+  runStore: {
+    getRun: (runId: string) => ExecutionRunRecord | null;
+  };
+  scratchpadService: ScratchpadService;
+}
+
+function makeExecutionService(artifactRoot: string, run?: ExecutionRunRecord): ExecutionHarness {
+  const service = Object.create(ExecutionService.prototype) as ExecutionHarness;
+  service.artifactRoot = artifactRoot;
+  service.warnings = [];
+  service.logger = {
+    warn: (msg: string) => {
+      service.warnings.push(msg);
+    },
+  };
+  // Phase 4a (#230): getRun lives on RunStore.
+  service.runStore = {
+    getRun: (runId: string) => (run && run.run_id === runId ? run : null),
+  };
+  // Phase 4c (#232): the thin-wrapper getters delegate to a real
+  // ScratchpadService. Construct a ScratchpadService-prototype harness
+  // and wire it up; the instance doesn't need RunStore/WorktreeService
+  // for the getter paths under test.
+  const scratchpad = Object.create(ScratchpadService.prototype) as ScratchpadService;
+  (scratchpad as any).artifactRoot = artifactRoot;
+  (scratchpad as any).logger = { warn: () => {} };
+  service.scratchpadService = scratchpad;
+  return service;
+}
+
+// ─── Fixtures ─────────────────────────────────────────────────────────
 
 function makeNode(workItemId: string): ExecutionDispatchNodePreview {
   const branch = `${workItemId}-branch`;
@@ -104,7 +140,7 @@ function makeRun(overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecor
   };
 }
 
-describe("ExecutionService scratchpad canonical flow", () => {
+describe("ScratchpadService canonical flow", () => {
   let tmpRoot: string;
   let worktree: string;
 
@@ -121,7 +157,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
   describe("syncScratchpadToCanonical", () => {
     it("copies the worktree scratchpad to canonical when present", () => {
       const run = makeRun({ worktree_path: worktree });
-      const service = makeService(tmpRoot, run);
+      const service = makeScratchpadService(tmpRoot);
 
       // Seed the canonical plan dir and the worktree scratchpad
       mkdirSync(planDir(tmpRoot, run.work_item_id), { recursive: true });
@@ -137,7 +173,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
 
     it("leaves canonical unchanged and logs a warning when worktree file is missing", () => {
       const run = makeRun({ worktree_path: worktree });
-      const service = makeService(tmpRoot, run);
+      const service = makeScratchpadService(tmpRoot);
 
       // Seed canonical with prior content; no worktree scratchpad
       mkdirSync(planDir(tmpRoot, run.work_item_id), { recursive: true });
@@ -150,92 +186,13 @@ describe("ExecutionService scratchpad canonical flow", () => {
     });
   });
 
-  describe("getRunScratchpad", () => {
-    it("prefers the canonical plan file", () => {
-      const run = makeRun({
-        worktree_path: worktree,
-        artifact_dir: join(tmpRoot, "runs", "exec_test"),
-      });
-      const service = makeService(tmpRoot, run);
-
-      mkdirSync(planDir(tmpRoot, run.work_item_id), { recursive: true });
-      writeFileSync(canonicalScratchpadPath(tmpRoot, run.work_item_id), "canonical content", "utf8");
-      // Also write a worktree copy — canonical should win
-      writeFileSync(join(worktree, "SCRATCHPAD_studio_999.md"), "worktree content", "utf8");
-
-      const result = service.getRunScratchpad("exec_test");
-      expect(result.content).toBe("canonical content");
-      expect(result).not.toHaveProperty("source");
-    });
-
-    it("falls back to the worktree live copy when canonical is absent", () => {
-      const run = makeRun({
-        worktree_path: worktree,
-        artifact_dir: join(tmpRoot, "runs", "exec_test"),
-      });
-      const service = makeService(tmpRoot, run);
-
-      writeFileSync(join(worktree, "SCRATCHPAD_studio_999.md"), "worktree only", "utf8");
-
-      const result = service.getRunScratchpad("exec_test");
-      expect(result.content).toBe("worktree only");
-    });
-
-    it("returns null content when neither canonical nor worktree exists", () => {
-      const run = makeRun({
-        worktree_path: worktree,
-        artifact_dir: join(tmpRoot, "runs", "exec_test"),
-      });
-      const service = makeService(tmpRoot, run);
-
-      const result = service.getRunScratchpad("exec_test");
-      expect(result.content).toBe(null);
-    });
-
-    it("returns null content when run is not found", () => {
-      const service = makeService(tmpRoot);
-      const result = service.getRunScratchpad("nonexistent");
-      expect(result.content).toBe(null);
-    });
-  });
-
-  describe("getRunChecklist", () => {
-    it("reconstructs checklist state from the surviving worktree scratchpad", () => {
-      const run = makeRun({
-        worktree_path: worktree,
-        artifact_dir: join(tmpRoot, "runs", "exec_test"),
-      });
-      const service = makeService(tmpRoot, run);
-
-      writeFileSync(join(worktree, "SCRATCHPAD_studio_999.md"), [
-        "# Scratchpad",
-        "",
-        "## Implementation Plan",
-        "- [x] Finish persistence layer",
-        "- [ ] Verify restart hydration",
-        "",
-        "## Work Log",
-      ].join("\n"), "utf8");
-
-      expect(service.getRunChecklist("exec_test")).toEqual({
-        run_id: "exec_test",
-        items: [
-          { text: "Finish persistence layer", checked: true },
-          { text: "Verify restart hydration", checked: false },
-        ],
-        completed: 1,
-        total: 2,
-      });
-    });
-  });
-
   // ADR 014 step 5: writeScratchpad must source content differently depending
   // on the plan metadata state, returning a discriminated result so the
   // caller knows whether to run the setup phase.
   describe("writeScratchpad (ADR 014 step 5)", () => {
     it("copies canonical into the worktree when plan state is 'ready'", () => {
       const run = makeRun({ worktree_path: worktree });
-      const service = makeService(tmpRoot, run);
+      const service = makeScratchpadService(tmpRoot);
 
       // Seed a ready plan: canonical scratchpad + metadata marked ready
       ensurePlanDir(tmpRoot, run.work_item_id);
@@ -259,7 +216,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
 
     it("throws ready_plan_scratchpad_missing when plan is ready but canonical is absent", () => {
       const run = makeRun({ worktree_path: worktree });
-      const service = makeService(tmpRoot, run);
+      const service = makeScratchpadService(tmpRoot);
 
       // Seed metadata as ready but do NOT create the canonical scratchpad
       ensurePlanDir(tmpRoot, run.work_item_id);
@@ -281,7 +238,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
 
     it("carries existing canonical forward when plan state is null (legacy)", () => {
       const run = makeRun({ worktree_path: worktree });
-      const service = makeService(tmpRoot, run);
+      const service = makeScratchpadService(tmpRoot);
 
       // Seed canonical but leave metadata.state as null (drafting/untouched)
       ensurePlanDir(tmpRoot, run.work_item_id);
@@ -295,7 +252,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
 
     it("synthesizes a skeleton when no canonical file exists (fallback)", () => {
       const run = makeRun({ worktree_path: worktree });
-      const service = makeService(tmpRoot, run);
+      const service = makeScratchpadService(tmpRoot);
 
       // No plan dir, no canonical file — ensurePlanDir will create the dir
       const result = service.writeScratchpad(run, makeNode(run.work_item_id));
@@ -307,13 +264,107 @@ describe("ExecutionService scratchpad canonical flow", () => {
       expect(readFileSync(canonical, "utf8")).toBe("synthesized skeleton content");
     });
   });
+});
+
+describe("ExecutionService scratchpad orchestration", () => {
+  let tmpRoot: string;
+  let worktree: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "studio-152-exec-"));
+    worktree = join(tmpRoot, "wt");
+    mkdirSync(worktree, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  describe("getRunScratchpad thin wrapper", () => {
+    it("prefers the canonical plan file", () => {
+      const run = makeRun({
+        worktree_path: worktree,
+        artifact_dir: join(tmpRoot, "runs", "exec_test"),
+      });
+      const service = makeExecutionService(tmpRoot, run);
+
+      mkdirSync(planDir(tmpRoot, run.work_item_id), { recursive: true });
+      writeFileSync(canonicalScratchpadPath(tmpRoot, run.work_item_id), "canonical content", "utf8");
+      // Also write a worktree copy — canonical should win
+      writeFileSync(join(worktree, "SCRATCHPAD_studio_999.md"), "worktree content", "utf8");
+
+      const result = service.getRunScratchpad("exec_test");
+      expect(result.content).toBe("canonical content");
+      expect(result).not.toHaveProperty("source");
+    });
+
+    it("falls back to the worktree live copy when canonical is absent", () => {
+      const run = makeRun({
+        worktree_path: worktree,
+        artifact_dir: join(tmpRoot, "runs", "exec_test"),
+      });
+      const service = makeExecutionService(tmpRoot, run);
+
+      writeFileSync(join(worktree, "SCRATCHPAD_studio_999.md"), "worktree only", "utf8");
+
+      const result = service.getRunScratchpad("exec_test");
+      expect(result.content).toBe("worktree only");
+    });
+
+    it("returns null content when neither canonical nor worktree exists", () => {
+      const run = makeRun({
+        worktree_path: worktree,
+        artifact_dir: join(tmpRoot, "runs", "exec_test"),
+      });
+      const service = makeExecutionService(tmpRoot, run);
+
+      const result = service.getRunScratchpad("exec_test");
+      expect(result.content).toBe(null);
+    });
+
+    it("returns null content when run is not found", () => {
+      const service = makeExecutionService(tmpRoot);
+      const result = service.getRunScratchpad("nonexistent");
+      expect(result.content).toBe(null);
+    });
+  });
+
+  describe("getRunChecklist thin wrapper", () => {
+    it("reconstructs checklist state from the surviving worktree scratchpad", () => {
+      const run = makeRun({
+        worktree_path: worktree,
+        artifact_dir: join(tmpRoot, "runs", "exec_test"),
+      });
+      const service = makeExecutionService(tmpRoot, run);
+
+      writeFileSync(join(worktree, "SCRATCHPAD_studio_999.md"), [
+        "# Scratchpad",
+        "",
+        "## Implementation Plan",
+        "- [x] Finish persistence layer",
+        "- [ ] Verify restart hydration",
+        "",
+        "## Work Log",
+      ].join("\n"), "utf8");
+
+      expect(service.getRunChecklist("exec_test")).toEqual({
+        run_id: "exec_test",
+        items: [
+          { text: "Finish persistence layer", checked: true },
+          { text: "Verify restart hydration", checked: false },
+        ],
+        completed: 1,
+        total: 2,
+      });
+    });
+  });
 
   // ADR 014 step 5: plan metadata.run_ids tracks every run attempt.
   describe("appendRunIdToPlanMetadata (ADR 014 step 5)", () => {
     it("appends a run ID to the plan metadata run_ids array", () => {
       const workItemId = "studio-999";
       ensurePlanDir(tmpRoot, workItemId);
-      const service = makeService(tmpRoot);
+      const service = makeExecutionService(tmpRoot);
 
       service.appendRunIdToPlanMetadata(workItemId, "exec_111");
 
@@ -324,7 +375,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
     it("is idempotent — appending the same run ID twice is a no-op", () => {
       const workItemId = "studio-999";
       ensurePlanDir(tmpRoot, workItemId);
-      const service = makeService(tmpRoot);
+      const service = makeExecutionService(tmpRoot);
 
       service.appendRunIdToPlanMetadata(workItemId, "exec_111");
       service.appendRunIdToPlanMetadata(workItemId, "exec_111");
@@ -336,7 +387,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
     it("appends multiple distinct run IDs in order", () => {
       const workItemId = "studio-999";
       ensurePlanDir(tmpRoot, workItemId);
-      const service = makeService(tmpRoot);
+      const service = makeExecutionService(tmpRoot);
 
       service.appendRunIdToPlanMetadata(workItemId, "exec_111");
       service.appendRunIdToPlanMetadata(workItemId, "exec_222");
@@ -347,7 +398,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
     });
 
     it("is a no-op when plan metadata is missing", () => {
-      const service = makeService(tmpRoot);
+      const service = makeExecutionService(tmpRoot);
 
       // No ensurePlanDir — metadata does not exist
       expect(() => service.appendRunIdToPlanMetadata("studio-999", "exec_111")).not.toThrow();
@@ -357,7 +408,7 @@ describe("ExecutionService scratchpad canonical flow", () => {
     it("logs a warning and does not throw when the write fails", () => {
       const workItemId = "studio-999";
       ensurePlanDir(tmpRoot, workItemId);
-      const service = makeService(tmpRoot);
+      const service = makeExecutionService(tmpRoot);
       // Provide a getErrorMessage shim (used by the warning path)
       (service as any).getErrorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
