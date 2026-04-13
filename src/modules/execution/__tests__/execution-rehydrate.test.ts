@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ExecutionService } from "../execution.service.js";
+import { RunInteractionService } from "../run-interaction.service.js";
 import { RunStore } from "../run-store.service.js";
 import { ScratchpadService } from "../scratchpad.service.js";
 import type { ExecutionRunRecord, ExecutionRunStatus } from "../types.js";
@@ -69,9 +70,7 @@ function makeExecutionServiceHarness(
   (service as any).logger = { log: vi.fn(), warn: vi.fn() };
   (service as any).artifactRoot = artifactRoot;
   (service as any).runStore = runStore;
-  (service as any).activeSessions = new Map();
   (service as any).now = () => "2026-04-10T06:00:00.000Z";
-  (service as any).extractTextFromMessage = (message: any) => message?.text ?? null;
   // Phase 4c (#232): the thin-wrapper HTTP getters
   // (`getRunScratchpad` / `getRunChecklist`) delegate to a real
   // ScratchpadService instance. Construct a bare-prototype
@@ -81,6 +80,23 @@ function makeExecutionServiceHarness(
   (scratchpad as any).artifactRoot = artifactRoot;
   (scratchpad as any).logger = { warn: vi.fn() };
   (service as any).scratchpadService = scratchpad;
+  // Phase 4d (#233): the session lifecycle + pushActivity + getRunChatHistory
+  // + handleSessionEvent + sendFollowUp all live on RunInteractionService.
+  // Construct a bare-prototype instance sharing the same runStore +
+  // scratchpadService so the rehydrate tests exercise the real
+  // activity-log / chat-history / event-translation logic without
+  // booting Nest DI. The `now` + `extractTextFromMessage` overrides
+  // match the pre-4d harness so existing test assertions keep their
+  // deterministic timestamps and their simplified message shape.
+  const interaction = Object.create(RunInteractionService.prototype) as RunInteractionService;
+  (interaction as any).logger = { log: vi.fn(), warn: vi.fn() };
+  (interaction as any).runStore = runStore;
+  (interaction as any).scratchpadService = scratchpad;
+  (interaction as any).activeSessions = new Map();
+  (interaction as any).disambiguationGates = new Map();
+  (interaction as any).now = () => "2026-04-10T06:00:00.000Z";
+  (interaction as any).extractTextFromMessage = (message: any) => message?.text ?? null;
+  (service as any).runInteractionService = interaction;
   Object.assign(service as any, extras);
   return service;
 }
@@ -224,7 +240,7 @@ describe("ExecutionService activity persistence", () => {
     writeRun(runsDir, run);
 
     const { service } = makeService(run);
-    (service as any).pushActivity("run_chat", "user_message", "Please keep the summary short.");
+    (service as any).runInteractionService.pushActivity("run_chat", "user_message", "Please keep the summary short.");
 
     const persisted = JSON.parse(readFileSync(join(runsDir, "run_chat", "status.json"), "utf8")) as ExecutionRunRecord;
     expect(persisted.updated_at).toBe("2026-04-10T06:00:00.000Z");
@@ -255,7 +271,7 @@ describe("ExecutionService activity persistence", () => {
     writeRun(runsDir, run);
 
     const { service } = makeService(run);
-    (service as any).handleSessionEvent("run_agent", {
+    (service as any).runInteractionService.handleSessionEvent("run_agent", {
       type: "message_end",
       message: { text: "Implemented the restart recovery flow." } as any,
     } as any);
