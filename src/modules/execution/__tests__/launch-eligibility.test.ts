@@ -74,8 +74,14 @@ function makeService(params: {
       return item;
     },
   };
-  (service as any).worktreeRoot = "/tmp/studio-worktrees";
-  (service as any).evaluateSafety = () => params.safetyChecks ?? [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }];
+  // Phase 4b (#231): worktreeRoot + evaluateSafety + getWorktreePath moved
+  // to WorktreeService. The harness provides a minimal worktreeService field
+  // so resolveLaunchEligibility and getPreview can reach them via
+  // `this.worktreeService.X(...)`.
+  (service as any).worktreeService = {
+    evaluateSafety: () => params.safetyChecks ?? [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }],
+    getWorktreePath: (branch: string) => `/tmp/studio-worktrees/${branch}`,
+  };
 
   return service;
 }
@@ -142,7 +148,11 @@ function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: bool
     };
   };
 
-  (service as any).worktreeRoot = "/tmp/studio-worktrees";
+  // Phase 4b (#231): minimal worktreeService for the launch harness —
+  // getWorktreePath is the only method launch() reaches via the service.
+  (service as any).worktreeService = {
+    getWorktreePath: (branch: string) => `/tmp/studio-worktrees/${branch}`,
+  };
 
   (service as any).hsmService = {
     async dispatch(id: string, event: { type: string }) {
