@@ -1,6 +1,4 @@
-import { forwardRef, Module } from "@nestjs/common";
-import { ExecutionModule } from "../execution/execution.module.js";
-import { PlansModule } from "../plans/plans.module.js";
+import { Module } from "@nestjs/common";
 import { EdgesController } from "./edges.controller.js";
 import { EdgesService } from "./edges.service.js";
 import { GraphController } from "./graph.controller.js";
@@ -13,7 +11,7 @@ import { WorkItemsController } from "./work-items.controller.js";
 import { WorkItemsService } from "./work-items.service.js";
 
 @Module({
-  imports: [forwardRef(() => ExecutionModule), forwardRef(() => PlansModule)],
+  imports: [],
   controllers: [WorkItemsController, EdgesController, GraphController],
   providers: [
     SQLiteService,

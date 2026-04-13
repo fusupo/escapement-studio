@@ -1,6 +1,11 @@
 import { Body, Controller, Get, Inject, Param, Post, Query, Sse } from "@nestjs/common";
 import type { MessageEvent } from "@nestjs/common";
+import { CommandBus } from "@nestjs/cqrs";
 import { Observable } from "rxjs";
+import { CancelWorkItemCommand } from "./application/commands/cancel-work-item.command.js";
+import { DeleteWorkItemCommand } from "./application/commands/delete-work-item.command.js";
+import { TransitionInProgressToDraftingCommand } from "./application/commands/transition-in-progress-to-drafting.command.js";
+import { TransitionInProgressToReadyCommand } from "./application/commands/transition-in-progress-to-ready.command.js";
 import { ExecutionService } from "./execution.service.js";
 import type {
   CancelWorkItemDto,
@@ -16,10 +21,14 @@ import type {
   SyncMergedExecutionDto,
   TransitionWorkItemDto,
 } from "./types.js";
+import type { WorkItemRecord } from "../graph/types.js";
 
 @Controller("api/execution")
 export class ExecutionController {
-  constructor(@Inject(ExecutionService) private readonly executionService: ExecutionService) {}
+  constructor(
+    @Inject(ExecutionService) private readonly executionService: ExecutionService,
+    private readonly commandBus: CommandBus,
+  ) {}
 
   @Get("preview")
   getPreview(@Query("repo") repo?: string) {
@@ -87,13 +96,17 @@ export class ExecutionController {
   }
 
   @Post("transition-ready")
-  async transitionInProgressToReady(@Body() body: TransitionWorkItemDto) {
-    return await this.executionService.transitionInProgressToReady(body.work_item_id);
+  transitionInProgressToReady(@Body() body: TransitionWorkItemDto): Promise<WorkItemRecord> {
+    return this.commandBus.execute<TransitionInProgressToReadyCommand, WorkItemRecord>(
+      new TransitionInProgressToReadyCommand(body.work_item_id),
+    );
   }
 
   @Post("transition-drafting")
-  async transitionInProgressToDrafting(@Body() body: TransitionWorkItemDto) {
-    return await this.executionService.transitionInProgressToDrafting(body.work_item_id);
+  transitionInProgressToDrafting(@Body() body: TransitionWorkItemDto): Promise<WorkItemRecord> {
+    return this.commandBus.execute<TransitionInProgressToDraftingCommand, WorkItemRecord>(
+      new TransitionInProgressToDraftingCommand(body.work_item_id),
+    );
   }
 
   @Post("close-merged")
@@ -108,12 +121,16 @@ export class ExecutionController {
 
   @Post("cancel-work-item")
   cancelWorkItem(@Body() body: CancelWorkItemDto): Promise<CancelWorkItemResult> {
-    return this.executionService.cancelWorkItem(body);
+    return this.commandBus.execute<CancelWorkItemCommand, CancelWorkItemResult>(
+      new CancelWorkItemCommand(body),
+    );
   }
 
   @Post("delete-work-item")
   deleteWorkItem(@Body() body: DeleteWorkItemDto): Promise<DeleteWorkItemResult> {
-    return this.executionService.deleteWorkItem(body);
+    return this.commandBus.execute<DeleteWorkItemCommand, DeleteWorkItemResult>(
+      new DeleteWorkItemCommand(body),
+    );
   }
 
   @Get("runs/:runId/chat")

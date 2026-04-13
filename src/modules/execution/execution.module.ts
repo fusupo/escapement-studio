@@ -3,6 +3,10 @@ import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
 import { PlansModule } from "../plans/plans.module.js";
 import { SettingsModule } from "../settings/settings.module.js";
+import { CancelWorkItemHandler } from "./application/commands/cancel-work-item.handler.js";
+import { DeleteWorkItemHandler } from "./application/commands/delete-work-item.handler.js";
+import { TransitionInProgressToDraftingHandler } from "./application/commands/transition-in-progress-to-drafting.handler.js";
+import { TransitionInProgressToReadyHandler } from "./application/commands/transition-in-progress-to-ready.handler.js";
 import { ExecutionController } from "./execution.controller.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { GitHubCacheController } from "./github-cache.controller.js";
@@ -15,7 +19,17 @@ import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 @Module({
   imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => PlansModule), forwardRef(() => SettingsModule)],
   controllers: [ExecutionController, GitHubCacheController, WorkItemReconcilerController],
-  providers: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, HsmActionHandlers, WorkItemReconcilerService],
+  providers: [
+    ExecutionService,
+    GitHubBatchCache,
+    GitHubCacheScheduler,
+    HsmActionHandlers,
+    WorkItemReconcilerService,
+    CancelWorkItemHandler,
+    DeleteWorkItemHandler,
+    TransitionInProgressToReadyHandler,
+    TransitionInProgressToDraftingHandler,
+  ],
   exports: [ExecutionService, GitHubBatchCache, GitHubCacheScheduler, WorkItemReconcilerService],
 })
 export class ExecutionModule {}

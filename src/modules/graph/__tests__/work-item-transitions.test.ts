@@ -1,7 +1,12 @@
 import { BadRequestException } from "@nestjs/common";
+import type { CommandBus, ICommand } from "@nestjs/cqrs";
 import { describe, expect, it, vi } from "vitest";
-import type { ExecutionService } from "../../execution/execution.service.js";
-import type { PlansService } from "../../plans/plans.service.js";
+import { CancelWorkItemCommand } from "../../execution/application/commands/cancel-work-item.command.js";
+import { TransitionInProgressToDraftingCommand } from "../../execution/application/commands/transition-in-progress-to-drafting.command.js";
+import { TransitionInProgressToReadyCommand } from "../../execution/application/commands/transition-in-progress-to-ready.command.js";
+import type { CancelWorkItemResult } from "../../execution/types.js";
+import { PreparePlanCommand } from "../../plans/application/commands/prepare-plan.command.js";
+import { ReopenPlanCommand } from "../../plans/application/commands/reopen-plan.command.js";
 import type { DispatchResult, WorkItemRecord, WorkItemState } from "../types.js";
 import type { WorkItemHsmService } from "../work-item-hsm.service.js";
 import { WorkItemsController } from "../work-items.controller.js";
@@ -22,7 +27,7 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
     predicted_files: [],
     actual_files: [],
     meta: {},
-    updated_at: "2026-04-09T00:00:00.000Z",
+    updated_at: "2026-04-13T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -41,6 +46,37 @@ function makeDispatchResult(
     mutation_applied: true,
     rejected: false,
   };
+}
+
+interface DispatchedCommand {
+  type: string;
+  command: ICommand;
+}
+
+/**
+ * Build a fake CommandBus that routes dispatched commands through the
+ * provided handler map and records every dispatch for assertion.
+ *
+ * Phase 2 (#222) shifted WorkItemsController to dispatch commands via
+ * @nestjs/cqrs CommandBus instead of injecting ExecutionService and
+ * PlansService directly. This harness preserves the behavioural
+ * coverage of the previous test by faking the bus and letting each
+ * handler mutate the shared `current` state the same way the old
+ * service mocks did. The assertions shifted from
+ * "executionService.cancelWorkItem was called with X" to
+ * "commandBus.execute was called with CancelWorkItemCommand containing X."
+ */
+function makeCommandBusHarness(handlers: Map<Function, (cmd: any) => any>) {
+  const dispatched: DispatchedCommand[] = [];
+  const execute = vi.fn(async (command: ICommand) => {
+    dispatched.push({ type: command.constructor.name, command });
+    const handler = handlers.get(command.constructor);
+    if (!handler) {
+      throw new Error(`No fake handler registered for ${command.constructor.name}`);
+    }
+    return await handler(command);
+  });
+  return { dispatched, execute, asCommandBus: { execute } as unknown as CommandBus };
 }
 
 function makeController(options: {
@@ -76,73 +112,99 @@ function makeController(options: {
     }),
   } as unknown as WorkItemHsmService;
 
-  const executionService = {
-    transitionInProgressToReady: vi.fn(async (_id: string) => {
-      current = { ...current, state: "pre_pr.ready" };
-      return current;
-    }),
-    transitionInProgressToDrafting: vi.fn(async (_id: string) => {
-      current = { ...current, state: "pre_pr.drafting" };
-      return current;
-    }),
-    cancelWorkItem: vi.fn(async (input: { work_item_id: string; confirm_cancel: boolean; cancel_note?: string }) => {
-      if (input.confirm_cancel !== true) {
-        throw new BadRequestException("confirm_cancel must be true");
-      }
-      current = { ...current, state: "cancelled" };
-      return {
-        cancelled: true as const,
-        work_item: {
-          id: current.id,
-          state: current.state,
-          archive_path: current.archive_path,
-          updated_at: current.updated_at,
-        },
-        closed_issue: {
-          repo: current.repo ?? "",
-          number: current.issue_number ?? 0,
-          url: current.issue_url ?? "",
-          title: current.name,
-          state: "CLOSED",
-        },
-        warnings: [],
-      };
-    }),
-  } as unknown as ExecutionService;
+  const handlerMap = new Map<Function, (cmd: any) => any>([
+    [
+      PreparePlanCommand,
+      async (_cmd: PreparePlanCommand) => {
+        current = { ...current, state: "pre_pr.drafting" };
+        return {
+          work_item_id: current.id,
+          metadata: { state: "drafting" },
+          scratchpad_content: "# scratchpad",
+        };
+      },
+    ],
+    [
+      ReopenPlanCommand,
+      async (_cmd: ReopenPlanCommand) => {
+        current = { ...current, state: "pre_pr.drafting" };
+        return {
+          work_item_id: current.id,
+          metadata: { state: "drafting" },
+          scratchpad_content: "# scratchpad",
+        };
+      },
+    ],
+    [
+      TransitionInProgressToDraftingCommand,
+      async (_cmd: TransitionInProgressToDraftingCommand) => {
+        current = { ...current, state: "pre_pr.drafting" };
+        return current;
+      },
+    ],
+    [
+      TransitionInProgressToReadyCommand,
+      async (_cmd: TransitionInProgressToReadyCommand) => {
+        current = { ...current, state: "pre_pr.ready" };
+        return current;
+      },
+    ],
+    [
+      CancelWorkItemCommand,
+      async (cmd: CancelWorkItemCommand): Promise<CancelWorkItemResult> => {
+        if (cmd.dto.confirm_cancel !== true) {
+          throw new BadRequestException("confirm_cancel must be true");
+        }
+        current = { ...current, state: "cancelled" };
+        return {
+          cancelled: true as const,
+          work_item: {
+            id: current.id,
+            state: current.state,
+            archive_path: current.archive_path,
+            updated_at: current.updated_at,
+          },
+          closed_issue: {
+            repo: current.repo ?? "",
+            number: current.issue_number ?? 0,
+            url: current.issue_url ?? "",
+            title: current.name,
+            state: "CLOSED",
+          },
+          warnings: [],
+        };
+      },
+    ],
+  ]);
 
-  const plansService = {
-    prepare: vi.fn(async (_id: string) => {
-      current = { ...current, state: "pre_pr.drafting" };
-      return {
-        work_item_id: current.id,
-        metadata: { state: "drafting" },
-        scratchpad_content: "# scratchpad",
-      };
-    }),
-    reopen: vi.fn(async (_id: string) => {
-      current = { ...current, state: "pre_pr.drafting" };
-      return {
-        work_item_id: current.id,
-        metadata: { state: "drafting" },
-        scratchpad_content: "# scratchpad",
-      };
-    }),
-  } as unknown as PlansService;
-
-  const controller = new WorkItemsController(workItemsService, hsmService, executionService, plansService);
+  const bus = makeCommandBusHarness(handlerMap);
+  const controller = new WorkItemsController(workItemsService, hsmService, bus.asCommandBus);
 
   return {
     controller,
     workItemsService,
     hsmService,
-    executionService,
-    plansService,
+    commandBus: bus,
     getCurrent: () => current,
   };
 }
 
+function asWorkItem(value: WorkItemRecord | CancelWorkItemResult): WorkItemRecord {
+  if ("cancelled" in value) {
+    throw new Error("Expected WorkItemRecord but got CancelWorkItemResult");
+  }
+  return value;
+}
+
+function asCancelResult(value: WorkItemRecord | CancelWorkItemResult): CancelWorkItemResult {
+  if (!("cancelled" in value)) {
+    throw new Error("Expected CancelWorkItemResult but got WorkItemRecord");
+  }
+  return value;
+}
+
 describe("WorkItemsController.transition", () => {
-  it("routes planned -> user.start_draft through PlansService.prepare", async () => {
+  it("routes planned -> user.start_draft via PreparePlanCommand", async () => {
     const harness = makeController({
       initialState: "planned",
       enabledEvents: ["user.start_draft"],
@@ -150,13 +212,13 @@ describe("WorkItemsController.transition", () => {
 
     const result = await harness.controller.transition("studio-153", { event: "user.start_draft" });
 
-    expect(harness.plansService.prepare).toHaveBeenCalledWith("studio-153");
-    expect(harness.plansService.reopen).not.toHaveBeenCalled();
-    expect(harness.executionService.transitionInProgressToDrafting).not.toHaveBeenCalled();
-    expect(result.state).toBe("pre_pr.drafting");
+    expect(harness.commandBus.dispatched.map((d) => d.type)).toEqual(["PreparePlanCommand"]);
+    expect(harness.commandBus.dispatched[0].command).toBeInstanceOf(PreparePlanCommand);
+    expect((harness.commandBus.dispatched[0].command as PreparePlanCommand).workItemId).toBe("studio-153");
+    expect(asWorkItem(result).state).toBe("pre_pr.drafting");
   });
 
-  it("routes ready -> user.start_draft through PlansService.reopen", async () => {
+  it("routes ready -> user.start_draft via ReopenPlanCommand", async () => {
     const harness = makeController({
       initialState: "ready",
       enabledEvents: ["user.start_draft"],
@@ -164,12 +226,12 @@ describe("WorkItemsController.transition", () => {
 
     const result = await harness.controller.transition("studio-153", { event: "user.start_draft" });
 
-    expect(harness.plansService.reopen).toHaveBeenCalledWith("studio-153");
-    expect(harness.plansService.prepare).not.toHaveBeenCalled();
-    expect(result.state).toBe("pre_pr.drafting");
+    expect(harness.commandBus.dispatched.map((d) => d.type)).toEqual(["ReopenPlanCommand"]);
+    expect((harness.commandBus.dispatched[0].command as ReopenPlanCommand).workItemId).toBe("studio-153");
+    expect(asWorkItem(result).state).toBe("pre_pr.drafting");
   });
 
-  it("routes in_progress -> user.start_draft through ExecutionService.transitionInProgressToDrafting", async () => {
+  it("routes in_progress -> user.start_draft via TransitionInProgressToDraftingCommand", async () => {
     const harness = makeController({
       initialState: "in_progress",
       enabledEvents: ["user.start_draft"],
@@ -177,12 +239,16 @@ describe("WorkItemsController.transition", () => {
 
     const result = await harness.controller.transition("studio-153", { event: "user.start_draft" });
 
-    expect(harness.executionService.transitionInProgressToDrafting).toHaveBeenCalledWith("studio-153");
-    expect(harness.plansService.prepare).not.toHaveBeenCalled();
-    expect(result.state).toBe("pre_pr.drafting");
+    expect(harness.commandBus.dispatched.map((d) => d.type)).toEqual([
+      "TransitionInProgressToDraftingCommand",
+    ]);
+    expect(
+      (harness.commandBus.dispatched[0].command as TransitionInProgressToDraftingCommand).workItemId,
+    ).toBe("studio-153");
+    expect(asWorkItem(result).state).toBe("pre_pr.drafting");
   });
 
-  it("routes in_progress -> user.investigate through ExecutionService.transitionInProgressToReady", async () => {
+  it("routes in_progress -> user.investigate via TransitionInProgressToReadyCommand", async () => {
     const harness = makeController({
       initialState: "in_progress",
       enabledEvents: ["user.investigate"],
@@ -190,12 +256,17 @@ describe("WorkItemsController.transition", () => {
 
     const result = await harness.controller.transition("studio-153", { event: "user.investigate" });
 
-    expect(harness.executionService.transitionInProgressToReady).toHaveBeenCalledWith("studio-153");
+    expect(harness.commandBus.dispatched.map((d) => d.type)).toEqual([
+      "TransitionInProgressToReadyCommand",
+    ]);
+    expect(
+      (harness.commandBus.dispatched[0].command as TransitionInProgressToReadyCommand).workItemId,
+    ).toBe("studio-153");
     expect(harness.hsmService.dispatch).not.toHaveBeenCalled();
-    expect(result.state).toBe("pre_pr.ready");
+    expect(asWorkItem(result).state).toBe("pre_pr.ready");
   });
 
-  it("routes run_errored -> user.investigate through the HSM", async () => {
+  it("routes run_errored -> user.investigate through the HSM (not the bus)", async () => {
     const harness = makeController({
       initialState: "pre_pr.run_errored",
       enabledEvents: ["user.investigate"],
@@ -204,11 +275,11 @@ describe("WorkItemsController.transition", () => {
     const result = await harness.controller.transition("studio-153", { event: "user.investigate" });
 
     expect(harness.hsmService.dispatch).toHaveBeenCalledWith("studio-153", { type: "user.investigate" });
-    expect(harness.executionService.transitionInProgressToReady).not.toHaveBeenCalled();
-    expect(result.state).toBe("pre_pr.ready");
+    expect(harness.commandBus.dispatched).toEqual([]);
+    expect(asWorkItem(result).state).toBe("pre_pr.ready");
   });
 
-  it("dispatches user.defer directly through the HSM", async () => {
+  it("dispatches user.defer directly through the HSM (not the bus)", async () => {
     const harness = makeController({
       initialState: "ready",
       enabledEvents: ["user.defer"],
@@ -217,10 +288,11 @@ describe("WorkItemsController.transition", () => {
     const result = await harness.controller.transition("studio-153", { event: "user.defer" });
 
     expect(harness.hsmService.dispatch).toHaveBeenCalledWith("studio-153", { type: "user.defer" });
-    expect(result.state).toBe("deferred");
+    expect(harness.commandBus.dispatched).toEqual([]);
+    expect(asWorkItem(result).state).toBe("deferred");
   });
 
-  it("dispatches user.undefer directly through the HSM", async () => {
+  it("dispatches user.undefer directly through the HSM (not the bus)", async () => {
     const harness = makeController({
       initialState: "deferred",
       enabledEvents: ["user.undefer"],
@@ -229,10 +301,11 @@ describe("WorkItemsController.transition", () => {
     const result = await harness.controller.transition("studio-153", { event: "user.undefer" });
 
     expect(harness.hsmService.dispatch).toHaveBeenCalledWith("studio-153", { type: "user.undefer" });
-    expect(result.state).toBe("planned");
+    expect(harness.commandBus.dispatched).toEqual([]);
+    expect(asWorkItem(result).state).toBe("planned");
   });
 
-  it("routes user.cancel through ExecutionService.cancelWorkItem", async () => {
+  it("routes user.cancel via CancelWorkItemCommand and rejects without confirmation", async () => {
     const harness = makeController({
       initialState: "ready",
       enabledEvents: ["user.cancel"],
@@ -241,7 +314,8 @@ describe("WorkItemsController.transition", () => {
     await expect(
       harness.controller.transition("studio-153", { event: "user.cancel" }),
     ).rejects.toThrow(/confirm_cancel must be true/);
-    expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith({
+    expect(harness.commandBus.dispatched.map((d) => d.type)).toEqual(["CancelWorkItemCommand"]);
+    expect((harness.commandBus.dispatched[0].command as CancelWorkItemCommand).dto).toEqual({
       work_item_id: "studio-153",
       confirm_cancel: false,
       cancel_note: undefined,
@@ -249,7 +323,7 @@ describe("WorkItemsController.transition", () => {
     expect(harness.hsmService.dispatch).not.toHaveBeenCalled();
   });
 
-  it("passes cancel confirmation payload through to ExecutionService.cancelWorkItem", async () => {
+  it("passes cancel confirmation payload through to CancelWorkItemCommand", async () => {
     const harness = makeController({
       initialState: "ready",
       enabledEvents: ["user.cancel"],
@@ -261,13 +335,13 @@ describe("WorkItemsController.transition", () => {
       cancel_note: "No longer needed.",
     });
 
-    expect(harness.executionService.cancelWorkItem).toHaveBeenCalledWith({
+    expect((harness.commandBus.dispatched[0].command as CancelWorkItemCommand).dto).toEqual({
       work_item_id: "studio-153",
       confirm_cancel: true,
       cancel_note: "No longer needed.",
     });
     expect(harness.hsmService.dispatch).not.toHaveBeenCalled();
-    expect(result.work_item.state).toBe("cancelled");
+    expect(asCancelResult(result).work_item.state).toBe("cancelled");
   });
 
   it("rejects unsupported transition events", async () => {
@@ -307,7 +381,7 @@ describe("WorkItemsController.delete", () => {
     const result = harness.controller.delete("studio-153");
 
     expect(harness.workItemsService.delete).toHaveBeenCalledWith("studio-153");
-    expect(harness.executionService.cancelWorkItem).not.toHaveBeenCalled();
+    expect(harness.commandBus.dispatched).toEqual([]);
     expect(result).toEqual({ deleted: true, id: "studio-153" });
   });
 });
