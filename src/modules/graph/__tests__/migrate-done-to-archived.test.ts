@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initManifest } from "../../../lib/manifest-core.js";
 import { archiveDir } from "../../../lib/context-layout.js";
-import { SQLiteService } from "../sqlite.service.js";
+import { SQLiteService } from "../../../platform/sqlite.service.js";
 import { migrateDoneToArchived } from "../../../../scripts/migrate-done-to-archived.js";
 
 const tempRoots: string[] = [];

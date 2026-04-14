@@ -1,8 +1,17 @@
 import { Injectable } from "@nestjs/common";
 import type { Database as DatabaseType } from "better-sqlite3";
-import { getConfig } from "../../config.js";
-import { hasSchema, initManifest, isHealthy } from "../../lib/manifest-core.js";
+import { getConfig } from "../config.js";
+import { hasSchema, initManifest, isHealthy } from "../lib/manifest-core.js";
 
+/**
+ * Phase 6a (#235): moved from `src/modules/graph/sqlite.service.ts`
+ * to `src/platform/sqlite.service.ts`. `SQLiteService` is
+ * infrastructure — a 135-line wrapper around `better-sqlite3` +
+ * startup schema migration — not a graph concern. Placing it in the
+ * `@Global()` PlatformModule removes the last transitive dependency
+ * that required `Settings → Graph`, `Execution → Settings`, and
+ * `Plans → Settings` forwardRefs. See `docs/proposals/phase-6-platform-module.md`.
+ */
 @Injectable()
 export class SQLiteService {
   private readonly manifestPath = getConfig().manifestPath;

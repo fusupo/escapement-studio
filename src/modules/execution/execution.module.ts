@@ -25,7 +25,7 @@ import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { WorktreeService } from "./worktree.service.js";
 
 @Module({
-  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => SettingsModule)],
+  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), SettingsModule],
   controllers: [ExecutionController, GitHubCacheController, WorkItemReconcilerController],
   providers: [
     ExecutionService,

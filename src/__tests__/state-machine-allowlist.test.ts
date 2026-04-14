@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { initManifest } from "../lib/manifest-core.js";
-import { SQLiteService } from "../modules/graph/sqlite.service.js";
+import { SQLiteService } from "../platform/sqlite.service.js";
 import type { WorkItemState } from "../modules/graph/types.js";
 
 /**

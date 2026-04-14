@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { SQLiteService } from "../graph/sqlite.service.js";
+import { SQLiteService } from "../../platform/sqlite.service.js";
 
 @Injectable()
 export class HealthService {

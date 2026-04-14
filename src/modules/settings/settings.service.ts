@@ -1,6 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Api, Model } from "@mariozechner/pi-ai";
-import { SQLiteService } from "../graph/sqlite.service.js";
+import { SQLiteService } from "../../platform/sqlite.service.js";
 import { getConfig } from "../../config.js";
 import { ModelRegistryService } from "./model-registry.service.js";
 

@@ -11,7 +11,7 @@ import {
   queryOverlaps,
 } from "../../lib/manifest-core.js";
 import type { Assessment, DispatchPlan, FrontierItem } from "../../lib/manifest-core.js";
-import { SQLiteService } from "./sqlite.service.js";
+import { SQLiteService } from "../../platform/sqlite.service.js";
 import type { GraphFilters, WorkItemRecord } from "./types.js";
 import { WorkItemsService } from "./work-items.service.js";
 
