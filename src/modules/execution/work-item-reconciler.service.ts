@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { runsRoot, worktreesRoot } from "../../lib/context-layout.js";
-import { GitHubBatchCache } from "./github-batch-cache.service.js";
+import { GitHubBatchCache } from "../github/github-batch-cache.service.js";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemHsmEvent, WorkItemRecord, WorkItemState } from "../graph/types.js";

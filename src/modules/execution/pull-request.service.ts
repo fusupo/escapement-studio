@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDefaultWorkingBranch } from "./default-working-branches.js";
 import { WorkItemMergedEvent } from "./events/work-item-merged.event.js";
-import { GitHubBatchCache } from "./github-batch-cache.service.js";
+import { GitHubBatchCache } from "../github/github-batch-cache.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
 import { WorktreeService } from "./worktree.service.js";

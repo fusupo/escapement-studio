@@ -10,9 +10,6 @@ import { TransitionInProgressToDraftingHandler } from "./application/commands/tr
 import { TransitionInProgressToReadyHandler } from "./application/commands/transition-in-progress-to-ready.handler.js";
 import { PullRequestTruthRefreshedHandler } from "./events/pull-request-truth-refreshed.handler.js";
 import { ExecutionController } from "./execution.controller.js";
-import { GitHubBatchCache } from "./github-batch-cache.service.js";
-import { GitHubCacheController } from "./github-cache.controller.js";
-import { GitHubCacheScheduler } from "./github-cache-scheduler.service.js";
 import { ExecutionService } from "./execution.service.js";
 import { HsmActionHandlers } from "./hsm-action-handlers.js";
 import { PullRequestService } from "./pull-request.service.js";
@@ -26,11 +23,9 @@ import { WorktreeService } from "./worktree.service.js";
 
 @Module({
   imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), SettingsModule],
-  controllers: [ExecutionController, GitHubCacheController, WorkItemReconcilerController],
+  controllers: [ExecutionController, WorkItemReconcilerController],
   providers: [
     ExecutionService,
-    GitHubBatchCache,
-    GitHubCacheScheduler,
     HsmActionHandlers,
     PullRequestService,
     RunDispositionService,
@@ -49,8 +44,6 @@ import { WorktreeService } from "./worktree.service.js";
   ],
   exports: [
     ExecutionService,
-    GitHubBatchCache,
-    GitHubCacheScheduler,
     PullRequestService,
     RunDispositionService,
     RunInteractionService,
