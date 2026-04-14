@@ -1,7 +1,7 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { GraphWriterService } from "./graph-writer.service.js";
-import { SQLiteService } from "./sqlite.service.js";
+import { SQLiteService } from "../../platform/sqlite.service.js";
 import type { CreateEdgeDto, EdgeRecord, UpdateEdgeDto } from "./types.js";
 
 interface RawEdgeRecord {

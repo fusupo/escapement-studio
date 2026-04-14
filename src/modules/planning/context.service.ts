@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { queryBlocked, queryFrontier } from "../../lib/manifest-core.js";
 import { EdgesService } from "../graph/edges.service.js";
-import { SQLiteService } from "../graph/sqlite.service.js";
+import { SQLiteService } from "../../platform/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { EdgeRecord, WorkItemRecord } from "../graph/types.js";
 import { MemoryService } from "./memory.service.js";

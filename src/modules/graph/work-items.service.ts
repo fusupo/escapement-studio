@@ -2,7 +2,7 @@ import { BadRequestException, Inject, Injectable, Logger, NotFoundException } fr
 import type { Database as DatabaseType } from "better-sqlite3";
 import { parseJsonArray } from "../../lib/manifest-core.js";
 import { GraphWriterService } from "./graph-writer.service.js";
-import { SQLiteService } from "./sqlite.service.js";
+import { SQLiteService } from "../../platform/sqlite.service.js";
 import { deriveIssueWorkItemId, type CreateWorkItemDto, type EdgeRecord, type MisalignedWorkItem, type UpdateWorkItemDto, type WorkItemRecord, type WorkItemState } from "./types.js";
 
 interface RawWorkItemRecord {

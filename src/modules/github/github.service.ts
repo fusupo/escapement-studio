@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 import { PullRequestTruthRefreshedEvent } from "../execution/events/pull-request-truth-refreshed.event.js";
-import { SQLiteService } from "../graph/sqlite.service.js";
+import { SQLiteService } from "../../platform/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { UpdateWorkItemDto, WorkItemRecord } from "../graph/types.js";
 import type {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { initManifest } from "../../../lib/manifest-core.js";
 import { GraphService } from "../graph.service.js";
 import { GraphWriterService } from "../graph-writer.service.js";
-import { SQLiteService } from "../sqlite.service.js";
+import { SQLiteService } from "../../../platform/sqlite.service.js";
 import type { WorkItemState } from "../types.js";
 import { WorkItemsService } from "../work-items.service.js";
 

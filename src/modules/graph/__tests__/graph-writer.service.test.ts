@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { initManifest } from "../../../lib/manifest-core.js";
 import { GraphWriterService } from "../graph-writer.service.js";
-import { SQLiteService } from "../sqlite.service.js";
+import { SQLiteService } from "../../../platform/sqlite.service.js";
 import type {
   ApplyGraphMutationsDto,
   GraphMutation,

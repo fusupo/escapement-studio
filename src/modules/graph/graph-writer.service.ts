@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable } from "@nestjs/common";
 import type { Database as DatabaseType } from "better-sqlite3";
-import { SQLiteService } from "./sqlite.service.js";
+import { SQLiteService } from "../../platform/sqlite.service.js";
 import {
   checkIdAlignment,
   type ApplyGraphMutationsDto,
