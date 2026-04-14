@@ -63,7 +63,6 @@
     <state id="run_errored">
       <transition event="user.retry" target="in_progress" />
       <transition event="user.investigate" target="ready" />
-      <transition event="user.resolve_disambiguation" target="ready" />
     </state>
   </state>
 
