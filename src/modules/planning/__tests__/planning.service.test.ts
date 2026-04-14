@@ -31,6 +31,8 @@ vi.mock("../../reconciliation/reconciliation.service.js", () => ({
 import { checkIdAlignment } from "../../graph/types.js";
 import { PlanningService } from "../planning.service.js";
 import { ProposalStateService } from "../proposal-state.service.js";
+import { createGitHubCreateIssueTool } from "../tools/github-create-issue.tool.js";
+import type { PlanningToolDeps } from "../tools/types.js";
 import type { PlanningMutationProposal } from "../types.js";
 
 type CreatedIssue = {
@@ -69,10 +71,26 @@ function makePlanningService(createdIssues: CreatedIssue[]) {
 
   (service as any).currentTurnId = "turn_0001";
 
+  // Phase 7 (#227): the github_create_issue tool is now a pure factory
+  // that takes a typed deps bag instead of a method on PlanningService.
+  // Build the bag with the same mocks the service got so the existing
+  // proposal-staging assertions exercise the real tool body.
+  const deps: PlanningToolDeps = {
+    graphService,
+    memoryService,
+    subAgentService: {} as never,
+    githubService,
+    reconciliationService: {} as never,
+    proposalState,
+    emitStudioEvent: () => {},
+    buildProposalDefaults: () => ({ currentTurnId: "turn_0001", sessionId: "planning-root" }),
+    getCurrentTurnId: () => "turn_0001",
+  };
+
   return {
     service,
     createIssue,
-    tool: (service as any).createGitHubCreateIssueTool(),
+    tool: createGitHubCreateIssueTool(deps),
   };
 }
 

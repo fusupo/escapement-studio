@@ -1,6 +1,5 @@
 import { BadRequestException, Inject, Injectable, Logger, MessageEvent, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { Type } from "@sinclair/typebox";
-import { createAgentSession, defineTool, SessionManager, type AgentSession, type AgentSessionEvent, type SessionEntry } from "@mariozechner/pi-coding-agent";
+import { createAgentSession, SessionManager, type AgentSession, type AgentSessionEvent, type SessionEntry } from "@mariozechner/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -8,15 +7,14 @@ import { getConfig } from "../../config.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { GraphWriterService } from "../graph/graph-writer.service.js";
-import {
-  deriveIssueWorkItemId,
-  type CreateEdgeDto,
-  type CreateWorkItemDto,
-  type DeleteEdgeMutation,
-  type DeleteWorkItemMutation,
-  type EdgeRel,
-  type GraphMutation,
-  type UpdateWorkItemDto,
+import type {
+  CreateEdgeDto,
+  CreateWorkItemDto,
+  DeleteEdgeMutation,
+  DeleteWorkItemMutation,
+  EdgeRel,
+  GraphMutation,
+  UpdateWorkItemDto,
 } from "../graph/types.js";
 import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
@@ -24,34 +22,24 @@ import { ProposalStateService } from "./proposal-state.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
 import { ReconciliationService } from "../reconciliation/reconciliation.service.js";
 import { SettingsService } from "../settings/settings.service.js";
+import { createPlanningTools } from "./tools/tool-registry.js";
+import type { PlanningToolDeps } from "./tools/types.js";
 import type {
   ApproveGitHubSyncDto,
   ApproveMutationProposalDto,
   ApprovePlanningMemoryChangeDto,
   CreateEdgePayload,
   CreateWorkItemPayload,
-  DelegateSubAgentToolInput,
-  GitHubReadToolInput,
-  GitHubSyncProposal,
   GitHubSyncResult,
-  GitHubSyncToolInput,
-  GraphQueryToolInput,
   PlanningGraphCommitResult,
-  PlanningMemoryChange,
-  PlanningMemoryEdit,
   PlanningMemoryWriteResult,
-  PlanningMutationProposal,
   PlanningMutationProposalMutation,
   PlanningSessionSnapshot,
   PlanningSessionTranscriptEntry,
-  ProposeMemoryWriteToolInput,
-  ProposeMutationsToolInput,
   SendAgentMessageDto,
   SendAgentMessageResult,
   StudioSseEnvelope,
   UpdateWorkItemPayload,
-  ReconciliationQueryToolInput,
-  GitHubCreateIssueToolInput,
 } from "./types.js";
 
 @Injectable()
@@ -290,18 +278,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       cwd: process.cwd(),
       sessionManager: SessionManager.continueRecent(process.cwd(), this.sessionDir),
       model: this.settingsService.getSelectedModel(),
-      customTools: [
-        this.createGraphQueryTool(),
-        this.createProposeMutationsTool(),
-        this.createGraphMutateTool(),
-        this.createMemoryReadTool(),
-        this.createMemoryWriteTool(),
-        this.createDelegateSubAgentTool(),
-        this.createGitHubReadTool(),
-        this.createGitHubCreateIssueTool(),
-        this.createGitHubSyncTool(),
-        this.createReconciliationQueryTool(),
-      ],
+      customTools: createPlanningTools(this.buildToolDeps()),
     });
 
     if (modelFallbackMessage) {
@@ -348,439 +325,23 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private createGraphQueryTool() {
-    return defineTool({
-      name: "graph_query",
-      label: "Graph Query",
-      description: "Query the Studio planning graph, frontier, or dispatch plan.",
-      promptSnippet: "graph_query: inspect graph, frontier, or dispatch plan data before proposing structural changes.",
-      promptGuidelines: [
-        "Use graph_query to inspect the current graph/frontier/plan before proposing structural graph changes.",
-      ],
-      parameters: Type.Object({
-        query: Type.Union([Type.Literal("graph"), Type.Literal("frontier"), Type.Literal("plan")]),
-        repo: Type.Optional(Type.String()),
-        state: Type.Optional(Type.String()),
-        track: Type.Optional(Type.String()),
-        phase: Type.Optional(Type.String()),
-      }),
-      execute: async (_toolCallId, params: GraphQueryToolInput) => {
-        const result = params.query === "graph"
-          ? this.graphService.getGraph({
-              repo: params.repo,
-              state: params.state,
-              track: params.track,
-              phase: params.phase,
-            })
-          : params.query === "frontier"
-            ? this.graphService.getFrontier(params.repo)
-            : this.graphService.getPlan(params.repo);
-
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: result,
-        };
-      },
-    });
-  }
-
-  private createProposeMutationsTool() {
-    return defineTool({
-      name: "propose_mutations",
-      label: "Propose Mutations",
-      description: "Stage a structured graph mutation proposal for browser review and approval.",
-      promptSnippet: "propose_mutations: emit a structured mutation proposal envelope for browser approval instead of only describing changes in prose.",
-      promptGuidelines: [
-        "When recommending graph changes, call propose_mutations with a structured proposal envelope that matches the browser approval contract.",
-        "Include a concise summary plus rationale for each mutation so the browser can render reviewable cards.",
-        "Set based_on_graph_version from graph_query results when available.",
-      ],
-      parameters: Type.Object({
-        proposal_id: Type.Optional(Type.String()),
-        created_at: Type.Optional(Type.String()),
-        source: Type.Optional(Type.Object({
-          agent: Type.Optional(Type.String()),
-          turn_id: Type.Optional(Type.String()),
-          session_id: Type.Optional(Type.String()),
-        })),
-        context: Type.Optional(Type.Object({
-          scope: Type.Optional(Type.String()),
-          mode: Type.Optional(Type.Union([Type.Literal("default"), Type.Literal("focused"), Type.Literal("full")])) ,
-          based_on_graph_version: Type.Optional(Type.String()),
-        })),
-        summary: Type.String(),
-        mutations: Type.Array(Type.Object({
-          id: Type.Optional(Type.String()),
-          type: Type.Union([
-            Type.Literal("create_work_item"),
-            Type.Literal("update_work_item"),
-            Type.Literal("create_edge"),
-            Type.Literal("delete_edge"),
-            Type.Literal("delete_work_item"),
-          ]),
-          entity_id: Type.Optional(Type.String()),
-          payload: Type.Optional(Type.Any()),
-          rationale: Type.String(),
-          validation: Type.Optional(Type.Any()),
-          group_id: Type.Optional(Type.String()),
-          depends_on_mutation_ids: Type.Optional(Type.Array(Type.String())),
-        })),
-      }),
-      execute: async (_toolCallId, params: ProposeMutationsToolInput) => {
-        const proposal = this.proposalState.normalizeProposal(params, this.buildProposalDefaults());
-        this.proposalState.setActiveProposal(proposal);
-        this.emitStudioEvent("mutation_proposal", { proposal });
-
-        return {
-          content: [{ type: "text", text: `Staged proposal ${proposal.proposal_id} with ${proposal.mutations.length} mutation(s).` }],
-          details: { proposal },
-        };
-      },
-    });
-  }
-
-  private createGraphMutateTool() {
-    return defineTool({
-      name: "graph_mutate",
-      label: "Graph Mutate",
-      description: "Reserved graph commit tool. In V1, actual commits must go through browser approval.",
-      promptSnippet: "graph_mutate: reserved for approval-backed graph commits; do not call directly in V1.",
-      promptGuidelines: [
-        "Do not call graph_mutate directly in V1. Human approval in the browser is required; use propose_mutations instead.",
-      ],
-      parameters: Type.Object({
-        proposal_id: Type.String(),
-        approved_mutation_ids: Type.Array(Type.String()),
-      }),
-      execute: async (_toolCallId, params: ApproveMutationProposalDto) => ({
-        content: [{
-          type: "text",
-          text: `Direct graph_mutate execution is disabled in V1. Proposal ${params.proposal_id} must be committed from the browser approval UI.`,
-        }],
-        details: {
-          blocked: true,
-          reason: "browser_approval_required",
-          proposal_id: params.proposal_id,
-          approved_mutation_ids: params.approved_mutation_ids,
-        },
-      }),
-    });
-  }
-
-  private createMemoryReadTool() {
-    return defineTool({
-      name: "memory_read",
-      label: "Planning Memory Read",
-      description: "Read the curated durable planning memory file.",
-      promptSnippet: "memory_read: inspect the curated planning memory before proposing durable memory changes.",
-      promptGuidelines: [
-        "Use memory_read before suggesting durable planning-memory edits so you can update the existing curated structure intentionally.",
-      ],
-      parameters: Type.Object({}),
-      execute: async () => {
-        const memory = this.memoryService.read();
-        return {
-          content: [{ type: "text", text: memory.content }],
-          details: memory,
-        };
-      },
-    });
-  }
-
-  private createMemoryWriteTool() {
-    return defineTool({
-      name: "memory_write",
-      label: "Planning Memory Write",
-      description: "Stage targeted planning memory edits for browser approval.",
-      promptSnippet: "memory_write: stage targeted edits to PLANNING_MEMORY.md for browser approval instead of writing directly.",
-      promptGuidelines: [
-        "Use memory_write only for durable, curated planning-memory updates.",
-        "Prefer targeted replacements or section-specific inserts over append-only growth.",
-        "Do not include transcript residue, raw tool output, or broad dumps.",
-      ],
-      parameters: Type.Object({
-        change_id: Type.Optional(Type.String()),
-        created_at: Type.Optional(Type.String()),
-        source: Type.Optional(Type.Object({
-          agent: Type.Optional(Type.String()),
-          turn_id: Type.Optional(Type.String()),
-          session_id: Type.Optional(Type.String()),
-        })),
-        summary: Type.String(),
-        edits: Type.Array(Type.Object({
-          id: Type.Optional(Type.String()),
-          kind: Type.Union([
-            Type.Literal("replace_text"),
-            Type.Literal("insert_after_heading"),
-            Type.Literal("delete_text"),
-          ]),
-          summary: Type.String(),
-          rationale: Type.String(),
-          old_text: Type.Optional(Type.String()),
-          new_text: Type.Optional(Type.String()),
-          target_heading: Type.Optional(Type.String()),
-        })),
-      }),
-      execute: async (_toolCallId, params: ProposeMemoryWriteToolInput) => {
-        const change = this.proposalState.normalizeMemoryChange(params, this.buildProposalDefaults());
-        this.proposalState.setActiveMemoryChange(change);
-        this.emitStudioEvent("memory_change_proposal", { change });
-
-        return {
-          content: [{ type: "text", text: `Staged planning memory change ${change.change_id} with ${change.edits.length} edit(s).` }],
-          details: { change },
-        };
-      },
-    });
-  }
-
-  private createDelegateSubAgentTool() {
-    return defineTool({
-      name: "delegate_subagent",
-      label: "Delegate Sub-agent",
-      description: "Launch a bounded specialist run for repo research and return a structured result.",
-      promptSnippet: "delegate_subagent: delegate bounded code research to a structured specialist when the planner needs grounded repo evidence.",
-      promptGuidelines: [
-        "Use delegate_subagent when you need grounded repository evidence beyond quick direct reasoning.",
-        "Pick code-crawler for concrete implementation tracing and scope-predictor for bounded impact prediction.",
-        "Keep the delegated task narrow and include focus paths or work item ids when useful.",
-      ],
-      parameters: Type.Object({
-        agent_type: Type.Union([Type.Literal("code-crawler"), Type.Literal("scope-predictor"), Type.Literal("reconciliation-analyst")]),
-        task: Type.String(),
-        repo: Type.Optional(Type.String()),
-        focus_paths: Type.Optional(Type.Array(Type.String())),
-        work_item_ids: Type.Optional(Type.Array(Type.String())),
-        notes: Type.Optional(Type.String()),
-      }),
-      execute: async (_toolCallId, params: DelegateSubAgentToolInput) => {
-        const run = await this.subAgentService.runDelegation(params, {
-          onStatus: (nextRun) => this.emitStudioEvent("subagent_status", { run: nextRun }),
-          onResult: (nextRun) => this.emitStudioEvent("subagent_result", { run: nextRun }),
-        });
-
-        return {
-          content: [{ type: "text", text: JSON.stringify(run.result ?? run, null, 2) }],
-          details: { run },
-        };
-      },
-    });
-  }
-
-  private createGitHubReadTool() {
-    return defineTool({
-      name: "github_read",
-      label: "GitHub Read",
-      description: "Read GitHub issue details for an issue-backed work item or repo issue.",
-      promptSnippet: "github_read: inspect GitHub issue details before making GitHub sync recommendations.",
-      promptGuidelines: [
-        "Use github_read when you need grounded issue details from GitHub rather than relying only on graph metadata.",
-        "Prefer the work item's repo + issue_number when available.",
-      ],
-      parameters: Type.Object({
-        repo: Type.String(),
-        issue_number: Type.Number(),
-      }),
-      execute: async (_toolCallId, params: GitHubReadToolInput) => {
-        const issue = await this.githubService.readIssue(params.repo, params.issue_number);
-        return {
-          content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
-          details: issue,
-        };
-      },
-    });
-  }
-
-  private createGitHubCreateIssueTool() {
-    return defineTool({
-      name: "github_create_issue",
-      label: "GitHub Create Issue",
-      description: "Create a GitHub issue with a polished body and automatically stage a graph work item proposal for browser approval.",
-      promptSnippet: "github_create_issue: draft a rich GitHub issue body and auto-stage the corresponding graph work item proposal in one step.",
-      promptGuidelines: [
-        "Use github_create_issue when the user asks to create a new issue — it handles both GitHub issue creation and graph proposal staging.",
-        "Prefer richer issue bodies by default. Unless the user explicitly wants a quick capture, include background or motivation, the current problem, proposed behavior or expected vs actual behavior, scope or impact, and acceptance criteria.",
-        "For under-specified requests, draft the proposed title/body in chat and confirm before calling the tool.",
-        "Use lightweight repo context when it will materially improve the issue body — for example relevant docs, nearby module/file names, and any canonical Escapement Studio issue drafting template included in prompt context.",
-        "Keep issue text grounded in the user's request and repo evidence; do not invent repro steps, implementation details, or acceptance criteria.",
-        "The graph mutation proposal is staged automatically for browser approval; no separate propose_mutations call is needed.",
-        "Provide a work_item_id that follows the project's naming convention (e.g. 'studio-57').",
-        "Include scope_hint and predicted_files when available to enrich the graph node.",
-        "Use parent_id and depends_on_ids to wire the new item into the graph hierarchy.",
-      ],
-      parameters: Type.Object({
-        repo: Type.String(),
-        title: Type.String(),
-        body: Type.Optional(Type.String()),
-        labels: Type.Optional(Type.Array(Type.String())),
-        work_item_id: Type.Optional(Type.String()),
-        scope_hint: Type.Optional(Type.String()),
-        predicted_files: Type.Optional(Type.Array(Type.String())),
-        parent_id: Type.Optional(Type.String()),
-        depends_on_ids: Type.Optional(Type.Array(Type.String())),
-      }),
-      execute: async (_toolCallId, params: GitHubCreateIssueToolInput) => {
-        const created = await this.githubService.createIssue({
-          repo: params.repo,
-          title: params.title,
-          body: params.body,
-          labels: params.labels,
-        });
-
-        const existingProposal = this.proposalState.getActiveProposalForAccumulation(this.currentTurnId);
-        const stagedWorkItemIds = this.proposalState.getStagedWorkItemIds(existingProposal);
-        const requestedWorkItemId = params.work_item_id?.trim();
-        const workItemId = deriveIssueWorkItemId(created.number);
-        this.proposalState.rememberIssueIdAlias(requestedWorkItemId, workItemId, stagedWorkItemIds);
-
-        const groupId = `issue-${created.number}`;
-        const parentId = this.proposalState.resolveIssueIdAlias(params.parent_id, stagedWorkItemIds);
-        const dependsOnIds = params.depends_on_ids
-          ?.map((depId) => this.proposalState.resolveIssueIdAlias(depId, stagedWorkItemIds))
-          .filter((depId): depId is string => Boolean(depId));
-
-        const mutations: ProposeMutationsToolInput["mutations"] = [
-          {
-            type: "create_work_item",
-            entity_id: workItemId,
-            group_id: groupId,
-            payload: {
-              id: workItemId,
-              name: created.title,
-              kind: "issue",
-              state: "planned",
-              repo: params.repo,
-              issue_number: created.number,
-              issue_url: created.url,
-              scope_hint: params.scope_hint ?? null,
-              predicted_files: params.predicted_files ?? [],
-            },
-            rationale: `Graph representation for newly created GitHub issue #${created.number}.`,
-          },
-        ];
-
-        if (parentId) {
-          mutations.push({
-            type: "create_edge",
-            group_id: groupId,
-            payload: {
-              from_id: workItemId,
-              rel: "is_part_of",
-              to_id: parentId,
-            },
-            rationale: `Attach ${workItemId} under parent ${parentId}.`,
-          });
-        }
-
-        if (dependsOnIds) {
-          for (const depId of dependsOnIds) {
-            mutations.push({
-              type: "create_edge",
-              group_id: groupId,
-              payload: {
-                from_id: workItemId,
-                rel: "depends_on",
-                to_id: depId,
-              },
-              rationale: `${workItemId} depends on ${depId}.`,
-            });
-          }
-        }
-
-        // Accumulate into existing active proposal from the same turn,
-        // so multi-issue creation produces one reviewable proposal.
-        let proposal: PlanningMutationProposal;
-
-        if (existingProposal) {
-          proposal = this.proposalState.accumulateMutations(
-            existingProposal,
-            mutations,
-            `+ GitHub issue #${created.number}: ${created.title}`,
-          );
-        } else {
-          proposal = this.proposalState.normalizeProposal({
-            summary: `Graph work item for GitHub issue #${created.number}: ${created.title}`,
-            mutations,
-          }, this.buildProposalDefaults());
-        }
-
-        proposal = this.proposalState.rewriteProposalIssueAliases(proposal);
-
-        this.proposalState.setActiveProposal(proposal);
-        this.emitStudioEvent("mutation_proposal", { proposal });
-
-        const summary = `Created GitHub issue #${created.number} (${created.url}) and staged graph proposal ${proposal.proposal_id} with ${proposal.mutations.length} mutation(s) for browser approval.`;
-
-        return {
-          content: [{ type: "text", text: summary }],
-          details: {
-            issue: created,
-            proposal,
-          },
-        };
-      },
-    });
-  }
-
-  private createGitHubSyncTool() {
-    return defineTool({
-      name: "github_sync",
-      label: "GitHub Sync",
-      description: "Stage an approval-gated GitHub sync proposal for a GitHub-backed work item.",
-      promptSnippet: "github_sync: stage a structured GitHub sync proposal for browser approval instead of mutating GitHub directly.",
-      promptGuidelines: [
-        "Use github_sync only for narrow, non-destructive GitHub updates.",
-        "V1 sync supports only the machine-managed issue body block bounded by studio-sync markers.",
-        "Do not attempt direct GitHub mutation outside the approval flow.",
-      ],
-      parameters: Type.Object({
-        sync_id: Type.Optional(Type.String()),
-        created_at: Type.Optional(Type.String()),
-        source: Type.Optional(Type.Object({
-          agent: Type.Optional(Type.String()),
-          turn_id: Type.Optional(Type.String()),
-          session_id: Type.Optional(Type.String()),
-        })),
-        summary: Type.String(),
-        work_item_id: Type.String(),
-      }),
-      execute: async (_toolCallId, params: GitHubSyncToolInput) => {
-        const sync = await this.proposalState.normalizeGitHubSync(params, this.buildProposalDefaults());
-        this.proposalState.setActiveGitHubSync(sync);
-        this.emitStudioEvent("github_sync_proposal", { sync });
-
-        return {
-          content: [{ type: "text", text: `Staged GitHub sync ${sync.sync_id} with ${sync.operations.length} operation(s).` }],
-          details: { sync },
-        };
-      },
-    });
-  }
-
-  private createReconciliationQueryTool() {
-    return defineTool({
-      name: "reconciliation_query",
-      label: "Reconciliation Query",
-      description: "Read deterministic predicted-vs-actual reconciliation reports for recent or specific work items.",
-      promptSnippet: "reconciliation_query: inspect reconciliation reports before explaining drift or proposing planning memory learnings.",
-      promptGuidelines: [
-        "Use reconciliation_query when you need deterministic predicted-vs-actual comparison data.",
-        "Prefer a specific work_item_id when discussing one execution run or one work item's drift.",
-      ],
-      parameters: Type.Object({
-        work_item_id: Type.Optional(Type.String()),
-      }),
-      execute: async (_toolCallId, params: ReconciliationQueryToolInput) => {
-        const result = params.work_item_id
-          ? this.reconciliationService.getReport(params.work_item_id)
-          : this.reconciliationService.listReports();
-
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          details: result,
-        };
-      },
-    });
+  /**
+   * Phase 7 (#227): build the typed dependency bag the tool registry
+   * factories receive. Bound to `this` so the SSE emitter / turn id /
+   * session id callbacks stay private to PlanningService.
+   */
+  private buildToolDeps(): PlanningToolDeps {
+    return {
+      graphService: this.graphService,
+      memoryService: this.memoryService,
+      subAgentService: this.subAgentService,
+      githubService: this.githubService,
+      reconciliationService: this.reconciliationService,
+      proposalState: this.proposalState,
+      emitStudioEvent: (eventType, payload) => this.emitStudioEvent(eventType, payload),
+      buildProposalDefaults: () => this.buildProposalDefaults(),
+      getCurrentTurnId: () => this.currentTurnId,
+    };
   }
 
   private toGraphMutation(mutation: PlanningMutationProposalMutation): GraphMutation {
