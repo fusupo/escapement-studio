@@ -217,6 +217,12 @@ Phase 6), but not in the cleanest order. See §12.
 
 ## 3. Smell #1: `ExecutionService` is a god class
 
+> The size thresholds discussed below (~400 / ~600 / ~1000 lines) are
+> codified as a written convention in
+> [`CLAUDE.md`](../../CLAUDE.md#service-size-convention).
+> Treat that as the forcing function for future extractions; §3 is
+> the historical rationale behind the numbers.
+
 **File:** `src/modules/execution/execution.service.ts`
 **Size:** 3286 lines
 **Constructor:** 8 injected services, one of them forwardRef'd.
