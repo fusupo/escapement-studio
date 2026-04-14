@@ -208,9 +208,15 @@ export class PlansService {
     };
   }
 
+  /**
+   * Phase 5 (#225): safely idempotent. Callers are now the
+   * `WorkItemDeletedHandler` event subscriber (post-graph-delete),
+   * plus any legacy direct caller that may still need synchronous
+   * cleanup. Since the event handler fires AFTER the graph delete
+   * commits, the work item lookup guard was removed — the path
+   * computation + existence check stand on their own.
+   */
   deletePlanArtifacts(workItemId: string): { removed: boolean; path: string | null } {
-    this.workItemsService.get(workItemId);
-
     const target = planDir(this.artifactRoot, workItemId);
     if (!existsSync(target)) {
       return { removed: false, path: null };

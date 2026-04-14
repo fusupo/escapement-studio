@@ -332,10 +332,10 @@ export interface DeleteWorkItemResult {
     fallback_used: boolean;
     message: string | null;
   };
-  plan_cleanup: {
-    removed: boolean;
-    path: string | null;
-  };
+  // Phase 5 (#225): plan-artifact cleanup now runs via
+  // WorkItemDeletedEvent → WorkItemDeletedHandler (in PlansModule),
+  // not via a direct synchronous call. The `plan_cleanup` return
+  // field was test-only and is dropped from the envelope.
   warnings: string[];
 }
 

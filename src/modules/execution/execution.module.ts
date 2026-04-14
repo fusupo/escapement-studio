@@ -1,7 +1,6 @@
 import { forwardRef, Module } from "@nestjs/common";
 import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
-import { PlansModule } from "../plans/plans.module.js";
 import { SettingsModule } from "../settings/settings.module.js";
 import { ArchiveAndCloseMergedPullRequestHandler } from "./application/commands/archive-and-close-merged-pull-request.handler.js";
 import { CancelWorkItemHandler } from "./application/commands/cancel-work-item.handler.js";
@@ -26,7 +25,7 @@ import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { WorktreeService } from "./worktree.service.js";
 
 @Module({
-  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => PlansModule), forwardRef(() => SettingsModule)],
+  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => SettingsModule)],
   controllers: [ExecutionController, GitHubCacheController, WorkItemReconcilerController],
   providers: [
     ExecutionService,

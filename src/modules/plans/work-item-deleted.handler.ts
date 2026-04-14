@@ -11,16 +11,13 @@ import { PlansService } from "./plans.service.js";
  * `PlansService.deletePlanArtifacts` directly via a
  * `forwardRef(() => PlansService)` injection. Routing the cleanup
  * through an event handler lets RunDispositionService drop the
- * direct dependency and the ExecutionModule's
- * `forwardRef(() => PlansModule)` goes away, dropping the
- * project-wide forwardRef count 8 → 7.
+ * direct dependency and the `ExecutionModule → forwardRef(PlansModule)`
+ * edge goes away, dropping the project-wide forwardRef count 8 → 7.
  *
  * Lives in PlansModule because its target service (`PlansService`)
- * lives there. This handler is the ONE subscriber that actually
- * needs to run — the plan directory on disk is a side effect that
- * can't be recovered without an explicit reconcile pass. That said,
- * `deletePlanArtifacts` is defensive (missing dir = no-op), so a
- * silent handler failure is degraded-but-not-broken behavior.
+ * lives there. `deletePlanArtifacts` is idempotent and defensive
+ * (missing dir = no-op) after Phase 5 — the caller doesn't need to
+ * verify the work item still exists before dispatching the event.
  */
 @EventsHandler(WorkItemDeletedEvent)
 export class WorkItemDeletedHandler implements IEventHandler<WorkItemDeletedEvent> {
@@ -34,12 +31,10 @@ export class WorkItemDeletedHandler implements IEventHandler<WorkItemDeletedEven
     try {
       this.plansService.deletePlanArtifacts(event.workItemId);
     } catch (error) {
-      // PlansService.deletePlanArtifacts currently looks up the
-      // work item via WorkItemsService.get first, which throws if
-      // the work item has already been removed from the graph.
-      // That's the normal case in the post-delete handler — the
-      // delete already finished. Swallow the lookup error; a
-      // future reconcile pass can sweep any orphaned plan dirs.
+      // EventBus swallows handler errors, but logging here gives
+      // an explicit warning if plan-dir removal fails (e.g. fs
+      // permissions). A future reconcile pass can sweep orphaned
+      // plan dirs.
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
         `Failed to delete plan artifacts for ${event.workItemId}: ${message}`,

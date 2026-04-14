@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
+import { EventBus } from "@nestjs/cqrs";
 import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -11,7 +12,7 @@ import type {
 } from "../graph/types.js";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
-import { PlansService } from "../plans/plans.service.js";
+import { WorkItemDeletedEvent } from "./events/work-item-deleted.event.js";
 import { ExecutionService } from "./execution.service.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { RunStore } from "./run-store.service.js";
@@ -67,7 +68,6 @@ export class RunDispositionService {
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
-    @Inject(forwardRef(() => PlansService)) private readonly plansService: PlansService,
     // Phase 4a (#230): forwardRef(ExecutionService) survives ONLY for
     // `getPreview` used in the close/archive response envelopes. The
     // buffer/stream/seam half of the Phase 3 dependency is now served
@@ -75,6 +75,12 @@ export class RunDispositionService {
     // this residual can be unwrapped.
     @Inject(forwardRef(() => ExecutionService)) private readonly executionService: ExecutionService,
     @Inject(RunStore) private readonly runStore: RunStore,
+    // Phase 5 (#225): plan artifact cleanup now runs via
+    // WorkItemDeletedEvent → WorkItemDeletedHandler (in PlansModule).
+    // `PlansService` is no longer injected directly — that removes
+    // the `forwardRef(() => PlansService)` that required
+    // `execution.module.ts` to import `PlansModule`.
+    @Inject(EventBus) private readonly eventBus: EventBus,
   ) {}
 
   async closeMergedPullRequest(workItemId: string): Promise<CloseMergedPullRequestResult> {
@@ -292,8 +298,17 @@ export class RunDispositionService {
       warnings.push(`GitHub issue was not deleted: ${message}`);
     }
 
-    const planCleanup = this.plansService.deletePlanArtifacts(workItemId);
     const graphResult = this.workItemsService.deleteWithConnectedEdges(workItemId, connectedEdges.map((edge) => edge.id));
+
+    // Phase 5 (#225): publish WorkItemDeletedEvent AFTER the graph
+    // delete commits. Subscriber (WorkItemDeletedHandler in
+    // PlansModule) cleans up plan artifacts via PlansService.
+    // Fires post-graph-delete because the handler's PlansService
+    // call internally re-reads the work item to resolve the plan dir;
+    // if the graph delete came first the handler tolerates the
+    // missing-workitem lookup error and warns. Either ordering is
+    // acceptable — the plan dir cleanup is defensive and idempotent.
+    this.eventBus.publish(new WorkItemDeletedEvent(workItemId));
 
     return {
       deleted: true,
@@ -307,7 +322,6 @@ export class RunDispositionService {
       },
       graph: graphResult,
       github_issue: githubIssue,
-      plan_cleanup: planCleanup,
       warnings,
     };
   }
