@@ -17,7 +17,7 @@ import { WorkItemDeletedHandler } from "./work-item-deleted.handler.js";
  * PlansModule, so no forwardRef cycles.
  */
 @Module({
-  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), SettingsModule],
+  imports: [forwardRef(() => GraphModule), GitHubModule, SettingsModule],
   controllers: [PlansController],
   providers: [
     PlansService,
