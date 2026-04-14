@@ -5,19 +5,17 @@ import { getConfig } from "../../config.js";
 import {
   readPlanMetadata,
   runDir,
-  workItemSlug,
   writePlanMetadata,
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
-import { GitHubBatchCache } from "./github-batch-cache.service.js";
+import { PullRequestService } from "./pull-request.service.js";
 import { RunInteractionService } from "./run-interaction.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { WorktreeService } from "./worktree.service.js";
-import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
@@ -32,7 +30,6 @@ import type {
   ExecutionDispatchNodePreview,
   ExecutionDispatchPreview,
   ExecutionLaunchEligibility,
-  ExecutionPullRequestRecord,
   ExecutionRunRecord,
   ExecutionSafetyCheck,
   FollowUpMessageDto,
@@ -57,15 +54,16 @@ export class ExecutionService implements OnModuleInit {
     @Inject(GraphService) private readonly graphService: GraphService,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
-    @Inject(GitHubService) private readonly githubService: GitHubService,
-    @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
     @Inject(RunStore) private readonly runStore: RunStore,
     @Inject(RunInteractionService) private readonly runInteractionService: RunInteractionService,
+    @Inject(PullRequestService) private readonly pullRequestService: PullRequestService,
     @Inject(ScratchpadService) private readonly scratchpadService: ScratchpadService,
     @Inject(WorktreeService) private readonly worktreeService: WorktreeService,
   ) {
-    this.githubService.registerPullRequestTruthRefresher((pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options));
+    // Phase 4e (#234): the truth refresher callback is registered by
+    // PullRequestService in its own constructor. ExecutionService no
+    // longer touches `registerPullRequestTruthRefresher`.
   }
 
   /**
@@ -95,72 +93,6 @@ export class ExecutionService implements OnModuleInit {
         `Failed to hydrate recentRuns from disk: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-  }
-
-  refreshPullRequestTruth(
-    pullRequest: {
-      number: number;
-      url: string;
-      title: string;
-      body: string;
-      state: string;
-      is_draft: boolean;
-      base_ref: string;
-      head_ref: string;
-      merged_at: string | null;
-      merge_commit_sha: string | null;
-    },
-    options: { work_item_ids?: string[] } = {},
-  ): { updated_run_ids: string[] } {
-    const updatedRunIds: string[] = [];
-    const workItemIds = new Set(options.work_item_ids ?? []);
-
-    for (const run of this.runStore.listRecentRuns()) {
-      const matchesByNumber = run.pull_request?.number === pullRequest.number;
-      const matchesByBranch = run.branch === pullRequest.head_ref;
-      const matchesByWorkItem = workItemIds.has(run.work_item_id);
-      if (!matchesByNumber && !matchesByBranch && !matchesByWorkItem) {
-        continue;
-      }
-
-      const nextPullRequest: ExecutionPullRequestRecord = {
-        ...(run.pull_request ?? {}),
-        number: pullRequest.number,
-        url: pullRequest.url,
-        title: pullRequest.title,
-        body: pullRequest.body,
-        base_ref: pullRequest.base_ref,
-        head_ref: pullRequest.head_ref,
-        is_draft: pullRequest.is_draft,
-        created_at: run.pull_request?.created_at ?? this.now(),
-        state: pullRequest.state,
-        merged_at: pullRequest.merged_at,
-        merge_commit_sha: pullRequest.merge_commit_sha,
-      };
-
-      if (this.samePullRequestRecord(run.pull_request, nextPullRequest)) {
-        continue;
-      }
-
-      const nextRun = this.runStore.updateRun(run.run_id, { pull_request: nextPullRequest });
-      if (!nextRun) {
-        continue;
-      }
-
-      this.runStore.appendEvent(nextRun, {
-        type: "pull_request_truth_refreshed",
-        pull_request: {
-          number: nextPullRequest.number,
-          state: nextPullRequest.state,
-          merged_at: nextPullRequest.merged_at,
-          merge_commit_sha: nextPullRequest.merge_commit_sha,
-        },
-      });
-      this.runStore.writeSummary(nextRun);
-      updatedRunIds.push(nextRun.run_id);
-    }
-
-    return { updated_run_ids: updatedRunIds };
   }
 
   getPreview(repo?: string): ExecutionDispatchPreview {
@@ -277,7 +209,7 @@ export class ExecutionService implements OnModuleInit {
         baseRef,
         worktreePath,
         safetyChecks: eligibility.safety_checks,
-        prompt: input.prompt?.trim() || (node ? this.buildPrompt(workItem, node) : ""),
+        prompt: input.prompt?.trim() || (node ? this.runInteractionService.buildPrompt(workItem, node) : ""),
         status: "blocked",
         resultSummary: `Launch blocked: ${blockedReason}`,
         errors: eligibility.safety_checks.filter((check) => check.status === "fail").map((check) => ({ code: check.code, message: check.message })),
@@ -297,7 +229,7 @@ export class ExecutionService implements OnModuleInit {
       baseRef,
       worktreePath: node.worktree_path,
       safetyChecks: eligibility.safety_checks,
-      prompt: input.prompt?.trim() || this.buildPrompt(launchState.workItem, node),
+      prompt: input.prompt?.trim() || this.runInteractionService.buildPrompt(launchState.workItem, node),
       status: "queued",
       resultSummary: undefined,
       errors: [],
@@ -334,236 +266,22 @@ export class ExecutionService implements OnModuleInit {
   }
 
   async createPullRequest(input: CreateExecutionPullRequestDto): Promise<CreateExecutionPullRequestResult> {
-    const runId = input.run_id?.trim();
-    if (!runId) {
-      throw new BadRequestException("run_id is required");
-    }
-
-    const run = this.runStore.getRun(runId);
-    if (!run) {
-      throw new BadRequestException(`Unknown execution run: ${runId}`);
-    }
-    if (run.status !== "completed") {
-      throw new BadRequestException(`Execution run ${runId} must be completed before creating a pull request`);
-    }
-    if (run.pull_request) {
-      return { run, pull_request: run.pull_request };
-    }
-
-    const workItem = this.workItemsService.get(run.work_item_id);
-    const baseRef = input.base_ref?.trim() || run.base_ref || getDefaultWorkingBranch(workItem.repo);
-
-    // Auto-stage and commit if requested and worktree has uncommitted changes
-    if (input.auto_commit !== false) {
-      this.autoStageAndCommit(run, workItem, input.commit_message);
-    }
-
-    // ADR 014 step 6: hard guards at PR creation. These run even when
-    // auto_commit: false (the auto-commit guard is inside an optional
-    // branch) and they cover both the current staged state and the
-    // branch's full committed history relative to the base ref.
-    const prStagedViolations = this.scratchpadService.findStagedScratchpadViolations(run.worktree_path);
-    if (prStagedViolations.length > 0) {
-      this.runStore.appendEvent(run, {
-        type: "scratchpad_commit_blocked",
-        phase: "pull_request",
-        paths: prStagedViolations,
-      });
-      throw new BadRequestException(
-        `pull_request_blocked_by_scratchpad: the following scratchpad files are staged and must not be committed before opening a pull request: ${prStagedViolations.join(", ")}. ` +
-          `Unstage them (git reset HEAD -- <path>) before retrying.`,
-      );
-    }
-
-    const committedViolations = this.scratchpadService.findCommittedScratchpadViolations(run.worktree_path, baseRef);
-    if (committedViolations.length > 0) {
-      this.runStore.appendEvent(run, {
-        type: "scratchpad_commit_blocked",
-        phase: "pull_request_history",
-        paths: committedViolations,
-      });
-      throw new BadRequestException(
-        `pull_request_blocked_by_committed_scratchpad: the following scratchpad files were committed to branch ${run.branch}: ${committedViolations.join(", ")}. ` +
-          `Inspect the history with \`git log ${baseRef}...HEAD -- '${committedViolations[0]}'\` and remove the files from the branch (e.g. \`git rm\` + rewrite) before opening a pull request.`,
-      );
-    }
-
-    const title = input.title?.trim() || this.buildPullRequestTitle(workItem);
-    const body = input.body?.trim() || this.buildPullRequestBody(run, workItem, baseRef);
-    const aheadCount = this.worktreeService.countCommitsAhead(run.worktree_path, baseRef, run.branch);
-    if (aheadCount === 0) {
-      throw new BadRequestException(`Branch ${run.branch} has no commits ahead of ${baseRef}; nothing is ready to open as a pull request`);
-    }
-
-    this.worktreeService.runGitIn(run.worktree_path, ["push", "--set-upstream", "origin", run.branch]);
-    this.worktreeService.runGhIn(run.worktree_path, [
-      "pr",
-      "create",
-      "--base",
-      baseRef,
-      "--head",
-      run.branch,
-      "--title",
-      title,
-      "--body-file",
-      "-",
-      ...(input.draft ? ["--draft"] : []),
-    ], body);
-
-    const pullRequest = this.readPullRequest(run.worktree_path, title, body);
-    const nextRun = this.runStore.updateRun(run.run_id, { pull_request: pullRequest }) ?? run;
-    mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
-    writeFileSync(join(run.artifact_dir, "outputs", "pull-request.json"), JSON.stringify(pullRequest, null, 2), "utf8");
-    this.runStore.appendEvent(nextRun, { type: "pull_request_created", pull_request: pullRequest });
-    this.runStore.writeSummary(nextRun);
-
-    // Update work item: dispatch HSM event for state transition, then
-    // write non-state fields (branch, meta.pull_request) separately.
-    try {
-      const prPayload = {
-        number: pullRequest.number,
-        url: pullRequest.url,
-        title: pullRequest.title,
-        is_draft: pullRequest.is_draft,
-        head_ref: pullRequest.head_ref,
-        base_ref: pullRequest.base_ref,
-        created_at: pullRequest.created_at,
-      };
-      await this.hsmService.dispatch(run.work_item_id, {
-        type: "gh.pr_opened",
-        pull_request: prPayload,
-      });
-      // studio-197: write-through to batch cache so next reconcile sees the PR.
-      if (workItem.repo) {
-        this.githubBatchCache.upsertPullRequest(workItem.repo, {
-          number: pullRequest.number,
-          state: "OPEN",
-          merged_at: null,
-          head_ref: pullRequest.head_ref,
-          base_ref: pullRequest.base_ref,
-          url: pullRequest.url,
-          title: pullRequest.title,
-          is_draft: pullRequest.is_draft ?? false,
-        });
-      }
-      // Write additional meta fields that the HSM doesn't manage.
-      // Branch is now set by the HSM's stampMeta:studio_open_pr_sync action.
-      const existingMeta = this.workItemsService.get(run.work_item_id).meta ?? {};
-      this.workItemsService.update(run.work_item_id, {
-        meta: {
-          ...existingMeta,
-          pull_request: prPayload,
-        },
-      });
-    } catch (updateError) {
-      this.logger.warn(`Failed to update work item ${run.work_item_id} after PR creation: ${this.getErrorMessage(updateError)}`);
-    }
-
-    return { run: nextRun, pull_request: pullRequest };
+    return this.pullRequestService.createPullRequest(input);
   }
 
   async syncMergedPullRequest(input: SyncMergedExecutionDto): Promise<SyncMergedExecutionResult> {
-    const workItemId = input.work_item_id?.trim();
-    if (!workItemId) {
-      throw new BadRequestException("work_item_id is required");
-    }
-
-    const workItem = this.workItemsService.get(workItemId);
-    if (!workItem.repo) {
-      throw new BadRequestException(`Work item ${workItemId} is missing repo metadata required for PR sync`);
-    }
-
-    const pullRequest = input.pull_request_number
-      ? await this.githubService.readPullRequest(workItem.repo, input.pull_request_number)
-      : await this.resolvePullRequestFromWorkItem(workItem);
-
-    if (!pullRequest.merged_at) {
-      throw new BadRequestException(`Pull request #${pullRequest.number} has not been merged yet`);
-    }
-
-    const matchedRun = this.findRecentRunForSync(workItem, pullRequest.number);
-    const actualFilesSelection = this.selectActualFilesForMergeSync(input, workItem, matchedRun);
-    const nextBranch = this.normalizeNullableString(input.branch) ?? workItem.branch ?? (pullRequest.head_ref || null);
-    const nextArchivePath = this.hasOwn(input, "archive_path") ? (input.archive_path ?? null) : workItem.archive_path;
-    const nextMeta = this.buildMergedWorkItemMeta(workItem, pullRequest, matchedRun?.run_id ?? null, actualFilesSelection.source);
-
-    // ADR 014 step 3: post-merge sync lands on 'merged_pr', not 'done'.
-    // 'merged_pr' is a stable resting state that the disposition flow
-    // (ADR 014 step 7) will transition to 'done' after archival completes.
-    // HSM handles the state transition; non-state fields follow separately.
-    await this.hsmService.dispatch(workItem.id, {
-      type: "gh.pr_merged",
-      pull_request: {
-        number: pullRequest.number,
-        url: pullRequest.url,
-        title: pullRequest.title,
-        head_ref: pullRequest.head_ref,
-        base_ref: pullRequest.base_ref,
-        merged_at: pullRequest.merged_at,
-      },
-    });
-    // studio-197: write-through to batch cache so next reconcile sees MERGED.
-    this.githubBatchCache.upsertPullRequest(workItem.repo, {
-      number: pullRequest.number,
-      state: "MERGED",
-      merged_at: pullRequest.merged_at,
-      head_ref: pullRequest.head_ref,
-      base_ref: pullRequest.base_ref,
-      url: pullRequest.url,
-      title: pullRequest.title,
-      is_draft: false,
-    });
-    this.workItemsService.update(workItem.id, {
-      actual_files: actualFilesSelection.files,
-      branch: nextBranch,
-      archive_path: nextArchivePath,
-      meta: nextMeta,
-    });
-
-    const updatedWorkItem = this.workItemsService.get(workItem.id);
-    const managedBlockSync = input.stage_github_sync ? await this.safeStageManagedBlockSync(updatedWorkItem.id) : undefined;
-
-    if (matchedRun) {
-      const nextPullRequest: ExecutionPullRequestRecord = {
-        ...(matchedRun.pull_request ?? this.toExecutionPullRequestRecord(pullRequest)),
-        number: pullRequest.number,
-        url: pullRequest.url,
-        title: pullRequest.title,
-        body: pullRequest.body,
-        base_ref: pullRequest.base_ref,
-        head_ref: pullRequest.head_ref,
-        is_draft: pullRequest.is_draft,
-        state: pullRequest.state,
-        merged_at: pullRequest.merged_at,
-        merge_commit_sha: pullRequest.merge_commit_sha,
-      };
-      const syncedRun = this.runStore.updateRun(matchedRun.run_id, { pull_request: nextPullRequest }) ?? matchedRun;
-      this.runStore.appendEvent(syncedRun, {
-        type: "post_merge_sync_completed",
-        work_item_id: updatedWorkItem.id,
-        pull_request: nextPullRequest,
-        actual_files: actualFilesSelection.files,
-      });
-      this.runStore.writeSummary(syncedRun);
-    }
-
+    // Phase 4e (#234): PullRequestService returns the envelope without
+    // dispatch_preview. ExecutionService composes the preview here
+    // using its existing getPreview helper so PullRequestService stays
+    // free of a GraphService injection.
+    const result = await this.pullRequestService.syncMergedPullRequest(input);
+    // Re-fetch repo to pass into getPreview — the result's work_item
+    // envelope doesn't include repo, but the input has the work_item_id
+    // and the work item lookup is an O(1) Map.get.
+    const workItem = this.workItemsService.get(result.work_item.id);
     return {
-      synced: true,
-      work_item: {
-        id: updatedWorkItem.id,
-        state: updatedWorkItem.state,
-        branch: updatedWorkItem.branch,
-        archive_path: updatedWorkItem.archive_path,
-        actual_files: updatedWorkItem.actual_files,
-        meta: updatedWorkItem.meta,
-        updated_at: updatedWorkItem.updated_at,
-      },
-      pull_request: this.toExecutionPullRequestRecord(pullRequest),
-      matched_run_id: matchedRun?.run_id ?? null,
-      actual_files_source: actualFilesSelection.source,
-      dispatch_preview: this.getPreview(updatedWorkItem.repo ?? undefined),
-      managed_block_sync: managedBlockSync,
-      cleanup: matchedRun ? this.worktreeService.safeCleanupRun(matchedRun) : null,
+      ...result,
+      dispatch_preview: this.getPreview(workItem.repo ?? undefined),
     };
   }
 
@@ -661,24 +379,20 @@ export class ExecutionService implements OnModuleInit {
     this.runStore.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.scratchpadService.emitChecklistIfChanged(run);
 
-    // --- Build prompts + delegate session lifecycle to RunInteractionService ---
-    // Phase 4d (#233): the full session lifecycle — create + subscribe +
-    // setup phase + do-work phase + dispose — now lives in
-    // RunInteractionService.runSession. ExecutionService.executeRun is the
-    // orchestrator that prepares the worktree, builds the prompts, and
-    // handles the post-session completion state. All inline phase bodies
-    // that used to live here moved into runSession.
-    const setupPrompt = hasApprovedPlan
-      ? ""
-      : this.buildSetupPrompt(run, node, workItem, issueBody, projectContext);
-    const doWorkPrompt = this.buildDoWorkPrompt(run, node, workItem, projectContext);
-
+    // --- Delegate session lifecycle to RunInteractionService ---
+    // Phase 4d (#233) + Phase 4e (#234): the full session lifecycle +
+    // prompt construction now lives inside RunInteractionService.runSession.
+    // ExecutionService.executeRun passes the raw materials (node,
+    // workItem, issueBody, projectContext) in the input envelope and
+    // runSession builds its own prompts internally.
     const { assistantText } = await this.runInteractionService.runSession(run, {
+      node,
+      workItem,
       scratchpadPath,
       hasApprovedPlan,
       disambiguate,
-      setupPrompt,
-      doWorkPrompt,
+      issueBody,
+      projectContext,
     });
 
     // Re-fetch the run record — runSession mutated status/progress_message
@@ -882,143 +596,6 @@ export class ExecutionService implements OnModuleInit {
     };
   }
 
-  private buildSetupPrompt(
-    run: ExecutionRunRecord,
-    node: ExecutionDispatchNodePreview,
-    workItem: WorkItemRecord,
-    issueBody: string | null,
-    projectContext: string | null,
-  ): string {
-    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
-    const owned = node.files_owned.length ? node.files_owned.map((p) => `- ${p}`).join("\n") : "- (none predicted)";
-    const shared = node.files_shared.length
-      ? node.files_shared.map((f) => `- ${f.path} (${f.assessment}/${f.confidence})`).join("\n")
-      : "- (none)";
-    const forbidden = node.files_forbidden.length ? node.files_forbidden.map((p) => `- ${p}`).join("\n") : "- (none)";
-
-    const lines = [
-      `# Setup Phase for ${run.work_item_id}: ${run.work_item_name}`,
-      "",
-      "You are an execution agent running inside a dedicated git worktree created by Escapement Studio.",
-      "This is the SETUP PHASE. Do NOT write any code yet.",
-      "",
-      "## Your task",
-      "",
-      "1. Read and understand the issue scope below",
-      "2. Read relevant source files in the codebase to understand the implementation surface",
-      `3. Update ${scratchpadName} with a detailed implementation plan:`,
-      "   - Fill in the Summary section with your understanding",
-      "   - Fill in Acceptance Criteria from the issue",
-      "   - Replace the placeholder Implementation Plan checklist with specific, concrete tasks",
-      "   - Each task should name the files it will touch",
-      "   - Fill in the Affected Files section",
-      "4. Surface any questions or concerns in the Questions / Concerns section",
-      "5. If everything is clear, say so explicitly",
-      "",
-      "## Issue context",
-      "",
-      `Repo: ${workItem.repo ?? "(not set)"}`,
-      `Issue URL: ${workItem.issue_url ?? "(not set)"}`,
-      `Scope hint: ${workItem.scope_hint ?? "(not set)"}`,
-      `Branch: ${node.branch}`,
-      `Base ref: ${node.default_base_ref}`,
-    ];
-
-    if (issueBody) {
-      lines.push("", "### Issue body", "", issueBody);
-    } else {
-      lines.push("", "(Issue body not available — use `gh issue view` or read from the issue URL if needed)");
-    }
-
-    lines.push(
-      "",
-      "## File ownership",
-      "",
-      "Files owned:",
-      owned,
-      "",
-      "Files shared:",
-      shared,
-      "",
-      "Files forbidden (you may READ these for context, but do NOT modify them):",
-      forbidden,
-    );
-
-    if (projectContext) {
-      lines.push("", "## Project conventions (from AGENTS.md / CLAUDE.md)", "", projectContext);
-    }
-
-    lines.push(
-      "",
-      "## Important",
-      "",
-      "- Do NOT start coding. This is setup only.",
-      `- Update ${scratchpadName} with your detailed plan.`,
-      "- The user will review your plan before coding begins.",
-    );
-
-    return lines.join("\n");
-  }
-
-  private buildDoWorkPrompt(
-    run: ExecutionRunRecord,
-    node: ExecutionDispatchNodePreview,
-    workItem: WorkItemRecord,
-    projectContext: string | null,
-  ): string {
-    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
-    const lines = [
-      `# Coding Phase for ${run.work_item_id}: ${run.work_item_name}`,
-      "",
-      `Your implementation plan in ${scratchpadName} has been approved. Now execute it.`,
-      "",
-      "## Workflow",
-      "",
-      `For each unchecked task in the ## Implementation Plan section of ${scratchpadName}:`,
-      "",
-      "1. **Implement** the change",
-      `2. **Update ${scratchpadName}**: check off the task (\`- [x]\`), add a note to ## Work Log`,
-      "3. **Commit** your changes:",
-      `   - Stage specific files (never \`git add .\`, never stage ${scratchpadName})`,
-      "   - Write a descriptive commit message",
-      "   - Use conventional format: `type(scope): description`",
-      "4. **Run quality checks** after each significant change:",
-      "   - `npm run check` (TypeScript)",
-      "   - `npm test` (if tests exist)",
-      "   - `npm run build:web` (if frontend changes)",
-      "5. Move to the next unchecked task",
-      "",
-      "## Rules",
-      "",
-      "- Work through tasks IN ORDER from the scratchpad",
-      "- Commit after each logical task (not everything at the end)",
-      `- NEVER commit or stage ${scratchpadName} — it is a local working document`,
-      "- NEVER use `git add .` or `git add -A` — always stage specific files",
-      "- Stay within your owned/shared files. Do NOT touch forbidden files.",
-      `- If blocked on a task, note it in ${scratchpadName} ## Blockers and move on`,
-      "",
-      "## When finished",
-      "",
-      "After all tasks are complete:",
-      "1. Run final quality checks (type check, tests, build)",
-      `2. Update ${scratchpadName} ## Work Log with a completion summary`,
-      "3. Provide a structured final summary:",
-      "   - What you changed (files and purpose)",
-      "   - Tests/checks you ran and their results",
-      "   - Any remaining blockers or follow-up items",
-    ];
-
-    return lines.join("\n");
-  }
-
-  /** Legacy compat — delegates to buildDoWorkPrompt */
-  private buildPrompt(workItem: WorkItemRecord, node: ExecutionDispatchNodePreview): string {
-    const recent = this.runStore.listRecentRuns();
-    const run = recent[0];
-    if (run) return this.buildDoWorkPrompt(run, node, workItem, null);
-    return `Execute work item ${workItem.id}: ${workItem.name}`;
-  }
-
   /**
    * ADR 014 step 5: record a run ID on the plan metadata.
    *
@@ -1108,106 +685,6 @@ export class ExecutionService implements OnModuleInit {
     };
   }
 
-  private readPullRequest(worktreePath: string, fallbackTitle: string, body: string): ExecutionPullRequestRecord {
-    const raw = this.worktreeService.runGhIn(worktreePath, ["pr", "view", "--json", "number,url,title,body,baseRefName,headRefName,isDraft"]);
-    const parsed = JSON.parse(raw) as {
-      number?: number;
-      url?: string;
-      title?: string;
-      body?: string;
-      baseRefName?: string;
-      headRefName?: string;
-      isDraft?: boolean;
-    };
-
-    if (!Number.isInteger(parsed.number) || !parsed.url || !parsed.baseRefName || !parsed.headRefName) {
-      throw new BadRequestException("Created pull request could not be read back from GitHub safely");
-    }
-
-    return {
-      number: parsed.number!,
-      url: parsed.url,
-      title: parsed.title?.trim() || fallbackTitle,
-      body: parsed.body ?? body,
-      base_ref: parsed.baseRefName!,
-      head_ref: parsed.headRefName!,
-      is_draft: Boolean(parsed.isDraft),
-      created_at: this.now(),
-    };
-  }
-
-  private buildPullRequestTitle(workItem: WorkItemRecord): string {
-    const issuePrefix = workItem.issue_number ? `[#${workItem.issue_number}] ` : "";
-    return `${issuePrefix}${workItem.name}`;
-  }
-
-  private buildPullRequestBody(run: ExecutionRunRecord, workItem: WorkItemRecord, baseRef: string): string {
-    const lines = [
-      "## Summary",
-      run.result_summary ?? run.progress_message ?? `Completed Studio execution run ${run.run_id}.`,
-      "",
-      "## Context",
-      `- Work item: ${workItem.id}`,
-      `- Issue: ${workItem.issue_url ?? "(not linked)"}`,
-      `- Base branch: ${baseRef}`,
-      `- Head branch: ${run.branch}`,
-      `- Artifact dir: ${run.artifact_dir}`,
-      `- Worktree: ${run.worktree_path}`,
-    ];
-
-    if (workItem.scope_hint) {
-      lines.push(`- Scope hint: ${workItem.scope_hint}`);
-    }
-
-    lines.push("", "## Changed files");
-    if (run.changed_files?.length) {
-      lines.push(...run.changed_files.map((path) => `- \`${path}\``));
-    } else {
-      lines.push("- (not recorded)");
-    }
-
-    return lines.join("\n");
-  }
-
-  private autoStageAndCommit(run: ExecutionRunRecord, workItem: WorkItemRecord, commitMessage?: string): void {
-    const status = this.worktreeService.runGitIn(run.worktree_path, ["status", "--porcelain"], { allowFailure: true }).trim();
-    if (!status) {
-      return; // working tree is clean, nothing to commit
-    }
-
-    this.logger.log(`Auto-staging and committing changes in ${run.worktree_path}`);
-    this.worktreeService.runGitIn(run.worktree_path, ["add", "-A"]);
-
-    // ADR 014 step 6: hard guard against committing `SCRATCHPAD_*.md`.
-    // Replaces the silent `.gitignore` trick — disobedience is now visible.
-    const stagedViolations = this.scratchpadService.findStagedScratchpadViolations(run.worktree_path);
-    if (stagedViolations.length > 0) {
-      this.runStore.appendEvent(run, {
-        type: "scratchpad_commit_blocked",
-        phase: "auto_commit",
-        paths: stagedViolations,
-      });
-      throw new BadRequestException(
-        `auto_commit_blocked_by_scratchpad: the following scratchpad files are staged and must not be committed: ${stagedViolations.join(", ")}. ` +
-          `Unstage them (git reset HEAD -- <path>) and retry. The canonical scratchpad lives at plans/<slug>/ and should not enter the worktree's git history.`,
-      );
-    }
-
-    const message = commitMessage?.trim() || this.buildCommitMessage(workItem);
-    this.worktreeService.runGitIn(run.worktree_path, ["commit", "-m", message]);
-
-    // Refresh changed files after commit
-    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
-    if (changedFiles.length > 0) {
-      this.runStore.updateRun(run.run_id, { changed_files: changedFiles });
-    }
-  }
-
-  private buildCommitMessage(workItem: WorkItemRecord): string {
-    const issueRef = workItem.issue_number ? ` (#${workItem.issue_number})` : "";
-    return `${workItem.name}${issueRef}`;
-  }
-
   private syncActualFiles(workItemId: string, changedFiles: string[]): { ok: true; actual_files: string[] } | { ok: false; message: string } {
     try {
       const actualFiles = [...new Set(changedFiles.filter(Boolean))].sort();
@@ -1281,162 +758,6 @@ export class ExecutionService implements OnModuleInit {
     await this.hsmService.dispatch(workItemId, { type: "user.start_draft" });
     return this.workItemsService.get(workItemId);
   }
-
-  private async resolvePullRequestFromWorkItem(workItem: WorkItemRecord) {
-    const branch = workItem.branch?.trim();
-    if (!branch) {
-      throw new BadRequestException(`Work item ${workItem.id} is missing branch metadata required to resolve its pull request`);
-    }
-
-    const pullRequest = await this.githubService.findPullRequestForBranch(workItem.repo ?? "", branch);
-    if (!pullRequest) {
-      throw new BadRequestException(`No pull request was found for branch ${branch}`);
-    }
-
-    return pullRequest;
-  }
-
-  private findRecentRunForSync(workItem: WorkItemRecord, pullRequestNumber: number): ExecutionRunRecord | null {
-    return this.runStore.listRecentRuns().find((run) => {
-      if (run.work_item_id !== workItem.id) {
-        return false;
-      }
-      if (run.pull_request?.number === pullRequestNumber) {
-        return true;
-      }
-      return run.branch === workItem.branch;
-    }) ?? null;
-  }
-
-  private selectActualFilesForMergeSync(
-    input: SyncMergedExecutionDto,
-    workItem: WorkItemRecord,
-    matchedRun: ExecutionRunRecord | null,
-  ): { files: string[]; source: "input" | "work_item" | "run" } {
-    if (Array.isArray(input.actual_files) && input.actual_files.length > 0) {
-      return { files: this.uniqueSorted(input.actual_files), source: "input" };
-    }
-    if (workItem.actual_files.length > 0) {
-      return { files: this.uniqueSorted(workItem.actual_files), source: "work_item" };
-    }
-    if (matchedRun?.changed_files?.length) {
-      return { files: this.uniqueSorted(matchedRun.changed_files), source: "run" };
-    }
-    return { files: [], source: "work_item" };
-  }
-
-  private buildMergedWorkItemMeta(
-    workItem: WorkItemRecord,
-    pullRequest: {
-      number: number;
-      url: string;
-      title: string;
-      state: string;
-      base_ref: string;
-      head_ref: string;
-      merged_at: string | null;
-      merge_commit_sha: string | null;
-    },
-    runId: string | null,
-    actualFilesSource: "input" | "work_item" | "run",
-  ): Record<string, unknown> {
-    return {
-      ...workItem.meta,
-      studio_post_merge_sync: {
-        synced_at: this.now(),
-        run_id: runId,
-        actual_files_source: actualFilesSource,
-        pull_request: {
-          number: pullRequest.number,
-          url: pullRequest.url,
-          title: pullRequest.title,
-          state: pullRequest.state,
-          base_ref: pullRequest.base_ref,
-          head_ref: pullRequest.head_ref,
-          merged_at: pullRequest.merged_at,
-          merge_commit_sha: pullRequest.merge_commit_sha,
-        },
-      },
-    };
-  }
-
-  private async safeStageManagedBlockSync(workItemId: string) {
-    try {
-      const staged = await this.githubService.stageManagedBlockSync(workItemId);
-      return {
-        work_item_id: staged.work_item_id,
-        based_on_body_hash: staged.based_on_body_hash,
-        operations: staged.operations,
-      };
-    } catch (error) {
-      this.logger.warn(`Failed to stage managed block sync for ${workItemId}: ${this.getErrorMessage(error)}`);
-      return null;
-    }
-  }
-
-  private toExecutionPullRequestRecord(pullRequest: {
-    number: number;
-    url: string;
-    title: string;
-    body: string;
-    base_ref: string;
-    head_ref: string;
-    is_draft: boolean;
-    state: string;
-    merged_at: string | null;
-    merge_commit_sha: string | null;
-  }): ExecutionPullRequestRecord {
-    return {
-      number: pullRequest.number,
-      url: pullRequest.url,
-      title: pullRequest.title,
-      body: pullRequest.body,
-      base_ref: pullRequest.base_ref,
-      head_ref: pullRequest.head_ref,
-      is_draft: pullRequest.is_draft,
-      created_at: this.now(),
-      state: pullRequest.state,
-      merged_at: pullRequest.merged_at,
-      merge_commit_sha: pullRequest.merge_commit_sha,
-    };
-  }
-
-  private samePullRequestRecord(left: ExecutionPullRequestRecord | undefined, right: ExecutionPullRequestRecord): boolean {
-    if (!left) {
-      return false;
-    }
-
-    return left.number === right.number
-      && left.url === right.url
-      && left.title === right.title
-      && left.body === right.body
-      && left.base_ref === right.base_ref
-      && left.head_ref === right.head_ref
-      && left.is_draft === right.is_draft
-      && left.state === right.state
-      && (left.merged_at ?? null) === (right.merged_at ?? null)
-      && (left.merge_commit_sha ?? null) === (right.merge_commit_sha ?? null);
-  }
-
-  private normalizeNullableString(value?: string | null): string | null | undefined {
-    if (typeof value === "undefined") {
-      return undefined;
-    }
-    if (value === null) {
-      return null;
-    }
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-
-  private hasOwn<T extends object>(value: T, key: PropertyKey): boolean {
-    return Object.prototype.hasOwnProperty.call(value, key);
-  }
-
-  private uniqueSorted(values: string[]): string[] {
-    return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
-  }
-
 
   private safeGetWorkItem(id: string): WorkItemRecord | null {
     try {

@@ -15,6 +15,7 @@ import { GitHubCacheController } from "./github-cache.controller.js";
 import { GitHubCacheScheduler } from "./github-cache-scheduler.service.js";
 import { ExecutionService } from "./execution.service.js";
 import { HsmActionHandlers } from "./hsm-action-handlers.js";
+import { PullRequestService } from "./pull-request.service.js";
 import { RunDispositionService } from "./run-disposition.service.js";
 import { RunInteractionService } from "./run-interaction.service.js";
 import { RunStore } from "./run-store.service.js";
@@ -31,6 +32,7 @@ import { WorktreeService } from "./worktree.service.js";
     GitHubBatchCache,
     GitHubCacheScheduler,
     HsmActionHandlers,
+    PullRequestService,
     RunDispositionService,
     RunInteractionService,
     RunStore,
@@ -48,6 +50,7 @@ import { WorktreeService } from "./worktree.service.js";
     ExecutionService,
     GitHubBatchCache,
     GitHubCacheScheduler,
+    PullRequestService,
     RunDispositionService,
     RunInteractionService,
     RunStore,
