@@ -3,7 +3,7 @@ import {
   GitHubService,
   type GitHubListedIssue,
   type GitHubListedPullRequest,
-} from "../github/github.service.js";
+} from "./github.service.js";
 
 export interface CachedPullRequest {
   number: number;

@@ -14,7 +14,7 @@ import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { WorkItemDeletedEvent } from "./events/work-item-deleted.event.js";
 import { ExecutionService } from "./execution.service.js";
-import { GitHubBatchCache } from "./github-batch-cache.service.js";
+import { GitHubBatchCache } from "../github/github-batch-cache.service.js";
 import { RunStore } from "./run-store.service.js";
 import { archiveRunArtifactsForWorkItem } from "./run-archiver.js";
 import type {

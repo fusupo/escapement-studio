@@ -4,7 +4,7 @@ import { Cron, CronExpression } from "@nestjs/schedule";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
-import { WorkItemMergedEvent } from "./events/work-item-merged.event.js";
+import { WorkItemMergedEvent } from "../execution/events/work-item-merged.event.js";
 import { GitHubBatchCache, type CachedPullRequest, type CachedIssue } from "./github-batch-cache.service.js";
 
 /**

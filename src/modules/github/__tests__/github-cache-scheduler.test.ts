@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { GitHubCacheScheduler } from "../github-cache-scheduler.service.js";
-import { WorkItemMergedEvent } from "../events/work-item-merged.event.js";
+import { WorkItemMergedEvent } from "../../execution/events/work-item-merged.event.js";
 import type { WorkItemRecord } from "../../graph/types.js";
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
