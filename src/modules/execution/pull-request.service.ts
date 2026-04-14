@@ -63,13 +63,12 @@ export class PullRequestService {
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
   ) {
-    // Phase 4e (#234): take ownership of the PR truth refresher callback.
-    // ExecutionService no longer registers this — the service that owns
-    // the refresh logic owns the registration. Atomic swap with the
-    // ExecutionService rewire commit.
-    this.githubService.registerPullRequestTruthRefresher(
-      (pullRequest, options) => this.refreshRunsForPullRequest(pullRequest, options),
-    );
+    // Phase 5 (#225): the bespoke `registerPullRequestTruthRefresher`
+    // callback handshake is gone. `GitHubService.withPullRequestReconciliation`
+    // now publishes a `PullRequestTruthRefreshedEvent`, and the
+    // `PullRequestTruthRefreshedHandler` (registered in ExecutionModule)
+    // delegates to `this.refreshRunsForPullRequest` via standard CQRS
+    // event dispatch.
   }
 
   // ─── PR truth refresh (GitHubService callback) ───────────────────
