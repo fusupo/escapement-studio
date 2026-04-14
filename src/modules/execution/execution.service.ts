@@ -5,7 +5,6 @@ import { getConfig } from "../../config.js";
 import {
   readPlanMetadata,
   runDir,
-  workItemSlug,
   writePlanMetadata,
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
@@ -210,7 +209,7 @@ export class ExecutionService implements OnModuleInit {
         baseRef,
         worktreePath,
         safetyChecks: eligibility.safety_checks,
-        prompt: input.prompt?.trim() || (node ? this.buildPrompt(workItem, node) : ""),
+        prompt: input.prompt?.trim() || (node ? this.runInteractionService.buildPrompt(workItem, node) : ""),
         status: "blocked",
         resultSummary: `Launch blocked: ${blockedReason}`,
         errors: eligibility.safety_checks.filter((check) => check.status === "fail").map((check) => ({ code: check.code, message: check.message })),
@@ -230,7 +229,7 @@ export class ExecutionService implements OnModuleInit {
       baseRef,
       worktreePath: node.worktree_path,
       safetyChecks: eligibility.safety_checks,
-      prompt: input.prompt?.trim() || this.buildPrompt(launchState.workItem, node),
+      prompt: input.prompt?.trim() || this.runInteractionService.buildPrompt(launchState.workItem, node),
       status: "queued",
       resultSummary: undefined,
       errors: [],
@@ -380,24 +379,20 @@ export class ExecutionService implements OnModuleInit {
     this.runStore.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.scratchpadService.emitChecklistIfChanged(run);
 
-    // --- Build prompts + delegate session lifecycle to RunInteractionService ---
-    // Phase 4d (#233): the full session lifecycle — create + subscribe +
-    // setup phase + do-work phase + dispose — now lives in
-    // RunInteractionService.runSession. ExecutionService.executeRun is the
-    // orchestrator that prepares the worktree, builds the prompts, and
-    // handles the post-session completion state. All inline phase bodies
-    // that used to live here moved into runSession.
-    const setupPrompt = hasApprovedPlan
-      ? ""
-      : this.buildSetupPrompt(run, node, workItem, issueBody, projectContext);
-    const doWorkPrompt = this.buildDoWorkPrompt(run, node, workItem, projectContext);
-
+    // --- Delegate session lifecycle to RunInteractionService ---
+    // Phase 4d (#233) + Phase 4e (#234): the full session lifecycle +
+    // prompt construction now lives inside RunInteractionService.runSession.
+    // ExecutionService.executeRun passes the raw materials (node,
+    // workItem, issueBody, projectContext) in the input envelope and
+    // runSession builds its own prompts internally.
     const { assistantText } = await this.runInteractionService.runSession(run, {
+      node,
+      workItem,
       scratchpadPath,
       hasApprovedPlan,
       disambiguate,
-      setupPrompt,
-      doWorkPrompt,
+      issueBody,
+      projectContext,
     });
 
     // Re-fetch the run record — runSession mutated status/progress_message
@@ -599,143 +594,6 @@ export class ExecutionService implements OnModuleInit {
         `Work item state '${workItem.state}' is not launchable. ` +
         "Expected 'ready' (approved plan) or 'planned' (fallback).",
     };
-  }
-
-  private buildSetupPrompt(
-    run: ExecutionRunRecord,
-    node: ExecutionDispatchNodePreview,
-    workItem: WorkItemRecord,
-    issueBody: string | null,
-    projectContext: string | null,
-  ): string {
-    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
-    const owned = node.files_owned.length ? node.files_owned.map((p) => `- ${p}`).join("\n") : "- (none predicted)";
-    const shared = node.files_shared.length
-      ? node.files_shared.map((f) => `- ${f.path} (${f.assessment}/${f.confidence})`).join("\n")
-      : "- (none)";
-    const forbidden = node.files_forbidden.length ? node.files_forbidden.map((p) => `- ${p}`).join("\n") : "- (none)";
-
-    const lines = [
-      `# Setup Phase for ${run.work_item_id}: ${run.work_item_name}`,
-      "",
-      "You are an execution agent running inside a dedicated git worktree created by Escapement Studio.",
-      "This is the SETUP PHASE. Do NOT write any code yet.",
-      "",
-      "## Your task",
-      "",
-      "1. Read and understand the issue scope below",
-      "2. Read relevant source files in the codebase to understand the implementation surface",
-      `3. Update ${scratchpadName} with a detailed implementation plan:`,
-      "   - Fill in the Summary section with your understanding",
-      "   - Fill in Acceptance Criteria from the issue",
-      "   - Replace the placeholder Implementation Plan checklist with specific, concrete tasks",
-      "   - Each task should name the files it will touch",
-      "   - Fill in the Affected Files section",
-      "4. Surface any questions or concerns in the Questions / Concerns section",
-      "5. If everything is clear, say so explicitly",
-      "",
-      "## Issue context",
-      "",
-      `Repo: ${workItem.repo ?? "(not set)"}`,
-      `Issue URL: ${workItem.issue_url ?? "(not set)"}`,
-      `Scope hint: ${workItem.scope_hint ?? "(not set)"}`,
-      `Branch: ${node.branch}`,
-      `Base ref: ${node.default_base_ref}`,
-    ];
-
-    if (issueBody) {
-      lines.push("", "### Issue body", "", issueBody);
-    } else {
-      lines.push("", "(Issue body not available — use `gh issue view` or read from the issue URL if needed)");
-    }
-
-    lines.push(
-      "",
-      "## File ownership",
-      "",
-      "Files owned:",
-      owned,
-      "",
-      "Files shared:",
-      shared,
-      "",
-      "Files forbidden (you may READ these for context, but do NOT modify them):",
-      forbidden,
-    );
-
-    if (projectContext) {
-      lines.push("", "## Project conventions (from AGENTS.md / CLAUDE.md)", "", projectContext);
-    }
-
-    lines.push(
-      "",
-      "## Important",
-      "",
-      "- Do NOT start coding. This is setup only.",
-      `- Update ${scratchpadName} with your detailed plan.`,
-      "- The user will review your plan before coding begins.",
-    );
-
-    return lines.join("\n");
-  }
-
-  private buildDoWorkPrompt(
-    run: ExecutionRunRecord,
-    node: ExecutionDispatchNodePreview,
-    workItem: WorkItemRecord,
-    projectContext: string | null,
-  ): string {
-    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
-    const lines = [
-      `# Coding Phase for ${run.work_item_id}: ${run.work_item_name}`,
-      "",
-      `Your implementation plan in ${scratchpadName} has been approved. Now execute it.`,
-      "",
-      "## Workflow",
-      "",
-      `For each unchecked task in the ## Implementation Plan section of ${scratchpadName}:`,
-      "",
-      "1. **Implement** the change",
-      `2. **Update ${scratchpadName}**: check off the task (\`- [x]\`), add a note to ## Work Log`,
-      "3. **Commit** your changes:",
-      `   - Stage specific files (never \`git add .\`, never stage ${scratchpadName})`,
-      "   - Write a descriptive commit message",
-      "   - Use conventional format: `type(scope): description`",
-      "4. **Run quality checks** after each significant change:",
-      "   - `npm run check` (TypeScript)",
-      "   - `npm test` (if tests exist)",
-      "   - `npm run build:web` (if frontend changes)",
-      "5. Move to the next unchecked task",
-      "",
-      "## Rules",
-      "",
-      "- Work through tasks IN ORDER from the scratchpad",
-      "- Commit after each logical task (not everything at the end)",
-      `- NEVER commit or stage ${scratchpadName} — it is a local working document`,
-      "- NEVER use `git add .` or `git add -A` — always stage specific files",
-      "- Stay within your owned/shared files. Do NOT touch forbidden files.",
-      `- If blocked on a task, note it in ${scratchpadName} ## Blockers and move on`,
-      "",
-      "## When finished",
-      "",
-      "After all tasks are complete:",
-      "1. Run final quality checks (type check, tests, build)",
-      `2. Update ${scratchpadName} ## Work Log with a completion summary`,
-      "3. Provide a structured final summary:",
-      "   - What you changed (files and purpose)",
-      "   - Tests/checks you ran and their results",
-      "   - Any remaining blockers or follow-up items",
-    ];
-
-    return lines.join("\n");
-  }
-
-  /** Legacy compat — delegates to buildDoWorkPrompt */
-  private buildPrompt(workItem: WorkItemRecord, node: ExecutionDispatchNodePreview): string {
-    const recent = this.runStore.listRecentRuns();
-    const run = recent[0];
-    if (run) return this.buildDoWorkPrompt(run, node, workItem, null);
-    return `Execute work item ${workItem.id}: ${workItem.name}`;
   }
 
   /**

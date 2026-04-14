@@ -13,9 +13,11 @@ import { ScratchpadService } from "./scratchpad.service.js";
 import { WorktreeService } from "./worktree.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { SettingsService } from "../settings/settings.service.js";
+import type { WorkItemRecord } from "../graph/types.js";
 import type {
   ActivityLogEntry,
   ActivityLogEntryKind,
+  ExecutionDispatchNodePreview,
   ExecutionRunRecord,
   FollowUpMessageDto,
   FollowUpMessageResult,
@@ -26,22 +28,28 @@ import type {
 } from "./types.js";
 
 /**
- * Phase 4d (#233): input envelope for `runSession`. ExecutionService
- * builds both prompts via its private `buildSetupPrompt` /
- * `buildDoWorkPrompt` helpers and passes them in as strings so this
- * service doesn't need to understand prompt construction.
+ * Phase 4e (#234): input envelope for `runSession`. RunInteractionService
+ * now owns prompt construction internally — callers pass the raw
+ * materials (node, workItem, issueBody, projectContext) and the
+ * service builds `buildSetupPrompt` / `buildDoWorkPrompt` on demand
+ * inside the phase bodies. Fixes the Phase 4d boundary where callers
+ * had to pre-build prompts as strings.
  */
 export interface RunSessionInput {
+  /** Dispatch node metadata for this run. */
+  node: ExecutionDispatchNodePreview;
+  /** Work item record for prompt context. */
+  workItem: WorkItemRecord;
   /** Worktree path to the scratchpad file (result of `ScratchpadService.writeScratchpad`). */
   scratchpadPath: string;
   /** True when the work item reached `ready` state via an approved plan. */
   hasApprovedPlan: boolean;
   /** False disables the disambiguation gate for both phase paths. */
   disambiguate: boolean;
-  /** Pre-built setup phase prompt. Ignored when `hasApprovedPlan`. */
-  setupPrompt: string;
-  /** Pre-built do-work phase prompt. */
-  doWorkPrompt: string;
+  /** GitHub issue body text for the setup phase prompt. `null` when unavailable. */
+  issueBody: string | null;
+  /** AGENTS.md / CLAUDE.md project context for both phase prompts. `null` when unavailable. */
+  projectContext: string | null;
 }
 
 export interface RunSessionResult {
@@ -317,7 +325,14 @@ export class RunInteractionService {
       this.runStore.appendEvent(run, { type: "setup_phase_started" });
       this.runStore.emitRun("execution_status", run);
 
-      await session.prompt(input.setupPrompt);
+      const setupPrompt = this.buildSetupPrompt(
+        run,
+        input.node,
+        input.workItem,
+        input.issueBody,
+        input.projectContext,
+      );
+      await session.prompt(setupPrompt);
 
       // Sync the agent's scratchpad edits back to the canonical plan file
       // (end of setup phase, before the approval gate).
@@ -367,7 +382,13 @@ export class RunInteractionService {
     run: ExecutionRunRecord,
     input: RunSessionInput,
   ): Promise<ExecutionRunRecord> {
-    await session.prompt(input.doWorkPrompt);
+    const doWorkPrompt = this.buildDoWorkPrompt(
+      run,
+      input.node,
+      input.workItem,
+      input.projectContext,
+    );
+    await session.prompt(doWorkPrompt);
 
     // Sync the agent's final scratchpad state back to canonical
     // (end of do-work phase).
@@ -375,6 +396,167 @@ export class RunInteractionService {
     this.scratchpadService.emitChecklistIfChanged(run);
 
     return run;
+  }
+
+  // ─── Prompt builders (Phase 4e) ───────────────────────────────────
+
+  /**
+   * Phase 4e (#234): setup phase prompt builder lifted from
+   * ExecutionService. Belongs on the agent lifecycle owner — this
+   * service is the only caller and the prompt shape is an
+   * implementation detail of HOW to talk to the agent.
+   */
+  buildSetupPrompt(
+    run: ExecutionRunRecord,
+    node: ExecutionDispatchNodePreview,
+    workItem: WorkItemRecord,
+    issueBody: string | null,
+    projectContext: string | null,
+  ): string {
+    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
+    const owned = node.files_owned.length ? node.files_owned.map((p) => `- ${p}`).join("\n") : "- (none predicted)";
+    const shared = node.files_shared.length
+      ? node.files_shared.map((f) => `- ${f.path} (${f.assessment}/${f.confidence})`).join("\n")
+      : "- (none)";
+    const forbidden = node.files_forbidden.length ? node.files_forbidden.map((p) => `- ${p}`).join("\n") : "- (none)";
+
+    const lines = [
+      `# Setup Phase for ${run.work_item_id}: ${run.work_item_name}`,
+      "",
+      "You are an execution agent running inside a dedicated git worktree created by Escapement Studio.",
+      "This is the SETUP PHASE. Do NOT write any code yet.",
+      "",
+      "## Your task",
+      "",
+      "1. Read and understand the issue scope below",
+      "2. Read relevant source files in the codebase to understand the implementation surface",
+      `3. Update ${scratchpadName} with a detailed implementation plan:`,
+      "   - Fill in the Summary section with your understanding",
+      "   - Fill in Acceptance Criteria from the issue",
+      "   - Replace the placeholder Implementation Plan checklist with specific, concrete tasks",
+      "   - Each task should name the files it will touch",
+      "   - Fill in the Affected Files section",
+      "4. Surface any questions or concerns in the Questions / Concerns section",
+      "5. If everything is clear, say so explicitly",
+      "",
+      "## Issue context",
+      "",
+      `Repo: ${workItem.repo ?? "(not set)"}`,
+      `Issue URL: ${workItem.issue_url ?? "(not set)"}`,
+      `Scope hint: ${workItem.scope_hint ?? "(not set)"}`,
+      `Branch: ${node.branch}`,
+      `Base ref: ${node.default_base_ref}`,
+    ];
+
+    if (issueBody) {
+      lines.push("", "### Issue body", "", issueBody);
+    } else {
+      lines.push("", "(Issue body not available — use `gh issue view` or read from the issue URL if needed)");
+    }
+
+    lines.push(
+      "",
+      "## File ownership",
+      "",
+      "Files owned:",
+      owned,
+      "",
+      "Files shared:",
+      shared,
+      "",
+      "Files forbidden (you may READ these for context, but do NOT modify them):",
+      forbidden,
+    );
+
+    if (projectContext) {
+      lines.push("", "## Project conventions (from AGENTS.md / CLAUDE.md)", "", projectContext);
+    }
+
+    lines.push(
+      "",
+      "## Important",
+      "",
+      "- Do NOT start coding. This is setup only.",
+      `- Update ${scratchpadName} with your detailed plan.`,
+      "- The user will review your plan before coding begins.",
+    );
+
+    return lines.join("\n");
+  }
+
+  /**
+   * Phase 4e (#234): do-work phase prompt builder lifted from
+   * ExecutionService.
+   */
+  buildDoWorkPrompt(
+    run: ExecutionRunRecord,
+    node: ExecutionDispatchNodePreview,
+    workItem: WorkItemRecord,
+    projectContext: string | null,
+  ): string {
+    // `node` and `workItem` + `projectContext` are accepted for symmetry with
+    // buildSetupPrompt and so future iterations of the prompt can reference
+    // scope/file ownership without changing the signature. The current body
+    // only needs `run`.
+    void node;
+    void workItem;
+    void projectContext;
+    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
+    const lines = [
+      `# Coding Phase for ${run.work_item_id}: ${run.work_item_name}`,
+      "",
+      `Your implementation plan in ${scratchpadName} has been approved. Now execute it.`,
+      "",
+      "## Workflow",
+      "",
+      `For each unchecked task in the ## Implementation Plan section of ${scratchpadName}:`,
+      "",
+      "1. **Implement** the change",
+      `2. **Update ${scratchpadName}**: check off the task (\`- [x]\`), add a note to ## Work Log`,
+      "3. **Commit** your changes:",
+      `   - Stage specific files (never \`git add .\`, never stage ${scratchpadName})`,
+      "   - Write a descriptive commit message",
+      "   - Use conventional format: `type(scope): description`",
+      "4. **Run quality checks** after each significant change:",
+      "   - `npm run check` (TypeScript)",
+      "   - `npm test` (if tests exist)",
+      "   - `npm run build:web` (if frontend changes)",
+      "5. Move to the next unchecked task",
+      "",
+      "## Rules",
+      "",
+      "- Work through tasks IN ORDER from the scratchpad",
+      "- Commit after each logical task (not everything at the end)",
+      `- NEVER commit or stage ${scratchpadName} — it is a local working document`,
+      "- NEVER use `git add .` or `git add -A` — always stage specific files",
+      "- Stay within your owned/shared files. Do NOT touch forbidden files.",
+      `- If blocked on a task, note it in ${scratchpadName} ## Blockers and move on`,
+      "",
+      "## When finished",
+      "",
+      "After all tasks are complete:",
+      "1. Run final quality checks (type check, tests, build)",
+      `2. Update ${scratchpadName} ## Work Log with a completion summary`,
+      "3. Provide a structured final summary:",
+      "   - What you changed (files and purpose)",
+      "   - Tests/checks you ran and their results",
+      "   - Any remaining blockers or follow-up items",
+    ];
+
+    return lines.join("\n");
+  }
+
+  /**
+   * Phase 4e (#234): legacy-compat buildPrompt delegating to
+   * buildDoWorkPrompt. Still called from `ExecutionService.launch` to
+   * pre-populate the `run.prompt` field before the session runs. Kept
+   * public so ExecutionService can reach it via the injected service.
+   */
+  buildPrompt(workItem: WorkItemRecord, node: ExecutionDispatchNodePreview): string {
+    const recent = this.runStore.listRecentRuns();
+    const run = recent[0];
+    if (run) return this.buildDoWorkPrompt(run, node, workItem, null);
+    return `Execute work item ${workItem.id}: ${workItem.name}`;
   }
 
   // ─── Activity log push + getters ──────────────────────────────────
