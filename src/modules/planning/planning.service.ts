@@ -20,7 +20,7 @@ import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
 import { ProposalStateService } from "./proposal-state.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
-import { ReconciliationService } from "../reconciliation/reconciliation.service.js";
+import { DriftReportService } from "../drift-report/drift-report.service.js";
 import { SettingsService } from "../settings/settings.service.js";
 import { createPlanningTools } from "./tools/tool-registry.js";
 import type { PlanningToolDeps } from "./tools/types.js";
@@ -63,7 +63,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     @Inject(MemoryService) private readonly memoryService: MemoryService,
     @Inject(SubAgentService) private readonly subAgentService: SubAgentService,
     @Inject(GitHubService) private readonly githubService: GitHubService,
-    @Inject(ReconciliationService) private readonly reconciliationService: ReconciliationService,
+    @Inject(DriftReportService) private readonly driftReportService: DriftReportService,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
     @Inject(ProposalStateService) private readonly proposalState: ProposalStateService,
   ) {}
@@ -336,7 +336,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       memoryService: this.memoryService,
       subAgentService: this.subAgentService,
       githubService: this.githubService,
-      reconciliationService: this.reconciliationService,
+      driftReportService: this.driftReportService,
       proposalState: this.proposalState,
       emitStudioEvent: (eventType, payload) => this.emitStudioEvent(eventType, payload),
       buildProposalDefaults: () => this.buildProposalDefaults(),

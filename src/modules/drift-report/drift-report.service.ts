@@ -4,20 +4,20 @@ import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord } from "../graph/types.js";
 import type { ExecutionRunRecord } from "../execution/types.js";
 import type {
-  ReconciliationDriftPattern,
-  ReconciliationOverlap,
-  ReconciliationReport,
-  ReconciliationRunReference,
+  DriftPattern,
+  DriftOverlap,
+  DriftReport,
+  DriftRunReference,
 } from "./types.js";
 
 @Injectable()
-export class ReconciliationService {
+export class DriftReportService {
   constructor(
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(RunStore) private readonly runStore: RunStore,
   ) {}
 
-  listReports(workItemId?: string): ReconciliationReport[] {
+  listReports(workItemId?: string): DriftReport[] {
     const workItems = workItemId
       ? [this.workItemsService.get(workItemId)]
       : this.workItemsService.list().filter((item) => item.actual_files.length > 0 || item.predicted_files.length > 0);
@@ -34,7 +34,7 @@ export class ReconciliationService {
       });
   }
 
-  getReport(workItemId: string): ReconciliationReport {
+  getReport(workItemId: string): DriftReport {
     return this.listReports(workItemId)[0];
   }
 
@@ -42,7 +42,7 @@ export class ReconciliationService {
     workItem: WorkItemRecord,
     allWorkItems: WorkItemRecord[],
     completedRuns: ExecutionRunRecord[],
-  ): ReconciliationReport {
+  ): DriftReport {
     const predictedFiles = this.uniqueSorted(workItem.predicted_files);
     const actualFiles = this.uniqueSorted(workItem.actual_files);
     const matched = predictedFiles.filter((file) => actualFiles.includes(file));
@@ -86,7 +86,7 @@ export class ReconciliationService {
     workItem: WorkItemRecord,
     allWorkItems: WorkItemRecord[],
     actualFiles: string[],
-  ): ReconciliationOverlap[] {
+  ): DriftOverlap[] {
     return actualFiles
       .map((file) => {
         const overlappingWorkItemIds = allWorkItems
@@ -98,7 +98,7 @@ export class ReconciliationService {
         return {
           file,
           overlapping_work_item_ids: overlappingWorkItemIds,
-        } satisfies ReconciliationOverlap;
+        } satisfies DriftOverlap;
       })
       .filter((item) => item.overlapping_work_item_ids.length > 0);
   }
@@ -109,9 +109,9 @@ export class ReconciliationService {
     matched: string[],
     missed: string[],
     unpredicted: string[],
-    overlapCandidates: ReconciliationOverlap[],
-  ): ReconciliationDriftPattern[] {
-    const patterns: ReconciliationDriftPattern[] = [];
+    overlapCandidates: DriftOverlap[],
+  ): DriftPattern[] {
+    const patterns: DriftPattern[] = [];
 
     if (predictedFiles.length === 0 && actualFiles.length > 0) {
       patterns.push({
@@ -165,7 +165,7 @@ export class ReconciliationService {
     return patterns;
   }
 
-  private toRunReference(run: ExecutionRunRecord): ReconciliationRunReference {
+  private toRunReference(run: ExecutionRunRecord): DriftRunReference {
     return {
       run_id: run.run_id,
       status: run.status,

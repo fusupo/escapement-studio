@@ -18,8 +18,8 @@ export function createReconciliationQueryTool(deps: PlanningToolDeps) {
     }),
     execute: async (_toolCallId, params: ReconciliationQueryToolInput) => {
       const result = params.work_item_id
-        ? deps.reconciliationService.getReport(params.work_item_id)
-        : deps.reconciliationService.listReports();
+        ? deps.driftReportService.getReport(params.work_item_id)
+        : deps.driftReportService.listReports();
 
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

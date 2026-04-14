@@ -7,7 +7,7 @@ import { GraphModule } from "./modules/graph/graph.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { PlanningModule } from "./modules/planning/planning.module.js";
 import { PlansModule } from "./modules/plans/plans.module.js";
-import { ReconciliationModule } from "./modules/reconciliation/reconciliation.module.js";
+import { DriftReportModule } from "./modules/drift-report/drift-report.module.js";
 import { SettingsModule } from "./modules/settings/settings.module.js";
 
 @Module({
@@ -20,7 +20,7 @@ import { SettingsModule } from "./modules/settings/settings.module.js";
     GitHubModule,
     PlanningModule,
     PlansModule,
-    ReconciliationModule,
+    DriftReportModule,
     SettingsModule,
   ],
 })
