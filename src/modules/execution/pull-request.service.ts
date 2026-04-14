@@ -31,7 +31,7 @@ import type {
  * wrappers on `ExecutionService` — matching the Phase 4b/4c/4d
  * cleanupWorktree / getRunChecklist / sendFollowUp passthrough pattern.
  *
- * `refreshPullRequestTruth` is registered with `GitHubService` at
+ * `refreshRunsForPullRequest` is registered with `GitHubService` at
  * construction time. After Phase 4e, `ExecutionService` does not touch
  * `registerPullRequestTruthRefresher` at all.
  *
@@ -68,13 +68,13 @@ export class PullRequestService {
     // the refresh logic owns the registration. Atomic swap with the
     // ExecutionService rewire commit.
     this.githubService.registerPullRequestTruthRefresher(
-      (pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options),
+      (pullRequest, options) => this.refreshRunsForPullRequest(pullRequest, options),
     );
   }
 
   // ─── PR truth refresh (GitHubService callback) ───────────────────
 
-  refreshPullRequestTruth(
+  refreshRunsForPullRequest(
     pullRequest: {
       number: number;
       url: string;

@@ -9,6 +9,7 @@ import { CloseMergedPullRequestHandler } from "./application/commands/close-merg
 import { DeleteWorkItemHandler } from "./application/commands/delete-work-item.handler.js";
 import { TransitionInProgressToDraftingHandler } from "./application/commands/transition-in-progress-to-drafting.handler.js";
 import { TransitionInProgressToReadyHandler } from "./application/commands/transition-in-progress-to-ready.handler.js";
+import { PullRequestTruthRefreshedHandler } from "./events/pull-request-truth-refreshed.handler.js";
 import { ExecutionController } from "./execution.controller.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { GitHubCacheController } from "./github-cache.controller.js";
@@ -45,6 +46,7 @@ import { WorktreeService } from "./worktree.service.js";
     TransitionInProgressToDraftingHandler,
     CloseMergedPullRequestHandler,
     ArchiveAndCloseMergedPullRequestHandler,
+    PullRequestTruthRefreshedHandler,
   ],
   exports: [
     ExecutionService,

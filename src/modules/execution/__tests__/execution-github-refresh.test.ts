@@ -38,9 +38,9 @@ function makeRun(overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecor
   };
 }
 
-describe("PullRequestService.refreshPullRequestTruth", () => {
+describe("PullRequestService.refreshRunsForPullRequest", () => {
   /**
-   * Phase 4e (#234): refreshPullRequestTruth lives on PullRequestService.
+   * Phase 4e (#234): refreshRunsForPullRequest lives on PullRequestService.
    * The harness targets `PullRequestService.prototype` and installs a
    * minimal `runStore` stub so the method body can reach
    * `this.runStore.listRecentRuns / updateRun / appendEvent / writeSummary`.
@@ -79,7 +79,7 @@ describe("PullRequestService.refreshPullRequestTruth", () => {
     (service as any).runStore = runStore;
     (service as any).now = () => "2026-04-09T00:02:00Z";
 
-    const result = service.refreshPullRequestTruth({
+    const result = service.refreshRunsForPullRequest({
       number: 70,
       url: "https://github.com/fusupo/escapement-studio/pull/70",
       title: "Refresh cached GitHub truth",
@@ -130,7 +130,7 @@ describe("PullRequestService.refreshPullRequestTruth", () => {
     (service as any).runStore = runStore;
     (service as any).now = () => "2026-04-09T00:02:00Z";
 
-    const result = service.refreshPullRequestTruth({
+    const result = service.refreshRunsForPullRequest({
       number: 70,
       url: "https://github.com/fusupo/escapement-studio/pull/70",
       title: "Refresh cached GitHub truth",
