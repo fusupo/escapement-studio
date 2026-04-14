@@ -30,6 +30,9 @@ vi.mock("../../reconciliation/reconciliation.service.js", () => ({
 
 import { checkIdAlignment } from "../../graph/types.js";
 import { PlanningService } from "../planning.service.js";
+import { ProposalStateService } from "../proposal-state.service.js";
+import { createGitHubCreateIssueTool } from "../tools/github-create-issue.tool.js";
+import type { PlanningToolDeps } from "../tools/types.js";
 import type { PlanningMutationProposal } from "../types.js";
 
 type CreatedIssue = {
@@ -45,23 +48,49 @@ function makePlanningService(createdIssues: CreatedIssue[]) {
     createIssue.mockResolvedValueOnce(issue);
   }
 
+  const graphService = { getGraph: () => ({ graph_version: "7" }) } as never;
+  const githubService = { createIssue } as never;
+  const memoryService = {} as never;
+  // Phase 7 (#227): proposalState owns the staging/alias state that
+  // PlanningService used to manage inline. Construct a real instance
+  // with the same mocks so the existing assertions about issue-id
+  // alias resolution and grouped staging keep working.
+  const proposalState = new ProposalStateService(graphService, githubService, memoryService);
+
   const service = new PlanningService(
     {} as never,
-    { getGraph: () => ({ graph_version: "7" }) } as never,
+    graphService,
+    {} as never,
+    memoryService,
+    {} as never,
+    githubService,
     {} as never,
     {} as never,
-    {} as never,
-    { createIssue } as never,
-    {} as never,
-    {} as never,
+    proposalState,
   );
 
   (service as any).currentTurnId = "turn_0001";
 
+  // Phase 7 (#227): the github_create_issue tool is now a pure factory
+  // that takes a typed deps bag instead of a method on PlanningService.
+  // Build the bag with the same mocks the service got so the existing
+  // proposal-staging assertions exercise the real tool body.
+  const deps: PlanningToolDeps = {
+    graphService,
+    memoryService,
+    subAgentService: {} as never,
+    githubService,
+    reconciliationService: {} as never,
+    proposalState,
+    emitStudioEvent: () => {},
+    buildProposalDefaults: () => ({ currentTurnId: "turn_0001", sessionId: "planning-root" }),
+    getCurrentTurnId: () => "turn_0001",
+  };
+
   return {
     service,
     createIssue,
-    tool: (service as any).createGitHubCreateIssueTool(),
+    tool: createGitHubCreateIssueTool(deps),
   };
 }
 
