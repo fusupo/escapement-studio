@@ -1,4 +1,4 @@
-import { forwardRef, Module } from "@nestjs/common";
+import { Module } from "@nestjs/common";
 import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
 import { SettingsModule } from "../settings/settings.module.js";
@@ -13,11 +13,12 @@ import { WorkItemDeletedHandler } from "./work-item-deleted.handler.js";
  * ADR 014 step 4 — plan preparation module.
  *
  * Depends on GraphModule (for WorkItemsService) and GitHubModule (for
- * StudioIssueTemplateService). One-directional — nothing else imports
- * PlansModule, so no forwardRef cycles.
+ * StudioIssueTemplateService). Both are direct, non-forwardRef imports
+ * after Phase 9a (#240): Graph has no imports of its own and GitHub
+ * only imports Graph, so no cycle reaches back into Plans.
  */
 @Module({
-  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), SettingsModule],
+  imports: [GraphModule, GitHubModule, SettingsModule],
   controllers: [PlansController],
   providers: [
     PlansService,

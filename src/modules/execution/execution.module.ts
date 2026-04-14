@@ -1,4 +1,4 @@
-import { forwardRef, Module } from "@nestjs/common";
+import { Module } from "@nestjs/common";
 import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
 import { SettingsModule } from "../settings/settings.module.js";
@@ -22,7 +22,7 @@ import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
 import { WorktreeService } from "./worktree.service.js";
 
 @Module({
-  imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), SettingsModule],
+  imports: [GraphModule, GitHubModule, SettingsModule],
   controllers: [ExecutionController, WorkItemReconcilerController],
   providers: [
     ExecutionService,
