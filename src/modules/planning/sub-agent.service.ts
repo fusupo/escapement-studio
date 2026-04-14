@@ -25,6 +25,17 @@ interface RunHooks {
   onResult?: (run: SubAgentRunRecord) => void;
 }
 
+/**
+ * Phase 9b audit (#241): this service's private `upsertRecentRun` /
+ * `writeMetadata` / `writeStatus` / `writeSummary` / `appendEvent`
+ * methods (below) are a parallel implementation of the same
+ * `runs/<id>/` artifact contract that `RunStore` owns in
+ * `src/modules/execution/run-store.service.ts`, operating on
+ * `SubAgentRunRecord` instead of `ExecutionRunRecord`. We deliberately
+ * did NOT extract a generic `RunArtifactStore<T>` base class in
+ * Phase 9 — two consumers is not enough shape evidence. Revisit when a
+ * third consumer shows up or when the two drift. Tracked in #264.
+ */
 @Injectable()
 export class SubAgentService {
   private readonly logger = new Logger(SubAgentService.name);

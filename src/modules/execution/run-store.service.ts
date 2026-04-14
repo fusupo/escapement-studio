@@ -30,6 +30,15 @@ import type {
  * constant (`recentRunLimit`, `streamId`), computed from
  * `getConfig()` (`artifactRoot`), or internal. This keeps Phase 4
  * coupling minimal and lets tests construct RunStore directly.
+ *
+ * Phase 9b audit (#241): `SubAgentService` in `src/modules/planning/`
+ * has a parallel private implementation of the same `runs/<id>/`
+ * artifact contract (`upsertRecentRun`, `writeMetadata`, `writeStatus`,
+ * `writeSummary`, `appendEvent`) for `SubAgentRunRecord`. We
+ * deliberately did NOT extract a generic `RunArtifactStore<T>` base
+ * class in Phase 9 — two consumers is not enough shape evidence and
+ * this is a cleanup pass, not a speculative-abstraction pass. Revisit
+ * if a third consumer shows up or if the two drift. Tracked in #264.
  */
 @Injectable()
 export class RunStore {
