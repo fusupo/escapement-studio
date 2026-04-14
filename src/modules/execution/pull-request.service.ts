@@ -63,11 +63,13 @@ export class PullRequestService {
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
   ) {
-    // Phase 4e (#234) Task 2 will take ownership of the truth refresher
-    // callback registration. During Task 1 the service is dormant — no
-    // registration happens here, so ExecutionService's existing
-    // `githubService.registerPullRequestTruthRefresher(...)` stays live.
-    // The atomic swap lands with the Task 2 rewire commit.
+    // Phase 4e (#234): take ownership of the PR truth refresher callback.
+    // ExecutionService no longer registers this — the service that owns
+    // the refresh logic owns the registration. Atomic swap with the
+    // ExecutionService rewire commit.
+    this.githubService.registerPullRequestTruthRefresher(
+      (pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options),
+    );
   }
 
   // ─── PR truth refresh (GitHubService callback) ───────────────────

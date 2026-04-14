@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ExecutionService } from "../execution.service.js";
+import { PullRequestService } from "../pull-request.service.js";
 import type { ExecutionRunRecord } from "../types.js";
 
 function makeRun(overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecord {
@@ -38,13 +38,18 @@ function makeRun(overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecor
   };
 }
 
-describe("ExecutionService.refreshPullRequestTruth", () => {
+describe("PullRequestService.refreshPullRequestTruth", () => {
   /**
-   * Phase 4a (#230): listRecentRuns / updateRun / appendEvent /
-   * writeSummary all moved from ExecutionService to RunStore. The
-   * harness installs a fake `runStore` on the service with those
-   * methods so the refreshPullRequestTruth body (still on
-   * ExecutionService) can reach them via `this.runStore.X(...)`.
+   * Phase 4e (#234): refreshPullRequestTruth lives on PullRequestService.
+   * The harness targets `PullRequestService.prototype` and installs a
+   * minimal `runStore` stub so the method body can reach
+   * `this.runStore.listRecentRuns / updateRun / appendEvent / writeSummary`.
+   *
+   * No `registerPullRequestTruthRefresher` fires because the harness
+   * bypasses DI via `Object.create` — the service constructor never
+   * runs, so neither the GitHubService injection nor the callback
+   * registration are exercised here. That's exactly what the
+   * Phase 4a/4b/4c/4d prototype-based harness pattern has always done.
    */
   function makeRunStoreStub(runs: ExecutionRunRecord[]) {
     const updateRun = vi.fn((runId: string, patch: Partial<ExecutionRunRecord>) => {
@@ -68,7 +73,7 @@ describe("ExecutionService.refreshPullRequestTruth", () => {
   }
 
   it("refreshes matching recent run snapshots and preserves created_at", () => {
-    const service = Object.create(ExecutionService.prototype) as ExecutionService;
+    const service = Object.create(PullRequestService.prototype) as PullRequestService;
     const runs = [makeRun()];
     const runStore = makeRunStoreStub(runs);
     (service as any).runStore = runStore;
@@ -105,7 +110,7 @@ describe("ExecutionService.refreshPullRequestTruth", () => {
   });
 
   it("skips run updates when the stored truth already matches", () => {
-    const service = Object.create(ExecutionService.prototype) as ExecutionService;
+    const service = Object.create(PullRequestService.prototype) as PullRequestService;
     const runs = [makeRun({
       pull_request: {
         number: 70,

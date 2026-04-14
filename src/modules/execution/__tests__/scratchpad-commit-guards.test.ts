@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BadRequestException } from "@nestjs/common";
-import { ExecutionService } from "../execution.service.js";
+import { PullRequestService } from "../pull-request.service.js";
 import { ScratchpadService } from "../scratchpad.service.js";
 import type { ExecutionRunRecord } from "../types.js";
 import type { WorkItemRecord } from "../../graph/types.js";
@@ -15,7 +15,7 @@ import type { WorkItemRecord } from "../../graph/types.js";
  * (`findStagedScratchpadViolations`, `findCommittedScratchpadViolations`,
  * `isScratchpadPath`) live on ScratchpadService. The pull-request-creation
  * and auto-stage-commit methods that call those guards still live on
- * ExecutionService; they will migrate to PullRequestService in Phase 4e.
+ * PullRequestService (Phase 4e).
  *
  * This file therefore uses two harnesses:
  *   - ScratchpadHarness: Object.create(ScratchpadService.prototype)
@@ -90,7 +90,7 @@ interface ExecutionHarness {
   buildPullRequestBody: (run: ExecutionRunRecord, workItem: WorkItemRecord, baseRef: string) => string;
 
   autoStageAndCommit: (run: ExecutionRunRecord, workItem: WorkItemRecord, commitMessage?: string) => void;
-  createPullRequest: ExecutionService["createPullRequest"];
+  createPullRequest: PullRequestService["createPullRequest"];
 }
 
 function makeRun(overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecord {
@@ -147,7 +147,7 @@ function makeExecutionHarness(params: {
   committedViolations?: string[];
   changedFiles?: string[];
 } = {}): ExecutionHarness {
-  const service = Object.create(ExecutionService.prototype) as ExecutionHarness;
+  const service = Object.create(PullRequestService.prototype) as ExecutionHarness;
   const workItem = params.workItem ?? makeWorkItem();
   const gitResponses = params.gitResponses ?? {};
 
@@ -297,7 +297,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
     });
   });
 
-  describe("ExecutionService.autoStageAndCommit", () => {
+  describe("PullRequestService.autoStageAndCommit", () => {
     it("commits normally when no scratchpad is staged", () => {
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
@@ -365,7 +365,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
     });
   });
 
-  describe("ExecutionService.createPullRequest guards", () => {
+  describe("PullRequestService.createPullRequest guards", () => {
     it("rejects with phase=pull_request when the index contains a scratchpad (auto_commit: false)", async () => {
       const run = makeRun({ worktree_path: worktree });
       const workItem = makeWorkItem();
@@ -428,7 +428,7 @@ describe("ADR 014 step 6: scratchpad commit guards", () => {
 
   describe("no leftover gitignore mutation", () => {
     it("executeRun no longer writes SCRATCHPAD_*.md to the worktree .gitignore", () => {
-      const service = Object.create(ExecutionService.prototype) as Record<string, unknown>;
+      const service = Object.create(PullRequestService.prototype) as Record<string, unknown>;
       expect(service.ensureScratchpadIgnored).toBeUndefined();
       expect(existsSync(join(worktree, ".gitignore"))).toBe(false);
     });
