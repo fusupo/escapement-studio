@@ -20,6 +20,7 @@ import {
 } from "../graph/types.js";
 import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
+import { ProposalStateService } from "./proposal-state.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
 import { ReconciliationService } from "../reconciliation/reconciliation.service.js";
 import { SettingsService } from "../settings/settings.service.js";
@@ -59,10 +60,6 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private readonly streamId = "planning-root";
   private readonly eventSubject = new Subject<MessageEvent>();
   private readonly sessionDir = resolve(process.cwd(), getConfig().planningSessionDir);
-  private readonly proposals = new Map<string, PlanningMutationProposal>();
-  private readonly memoryChanges = new Map<string, PlanningMemoryChange>();
-  private readonly githubSyncs = new Map<string, GitHubSyncProposal>();
-  private readonly issueIdAliases = new Map<string, string>();
 
   private session?: AgentSession;
   private sessionPromise?: Promise<AgentSession>;
@@ -70,13 +67,6 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private eventCounter = 0;
   private turnCounter = 0;
   private currentTurnId: string | null = null;
-  private activeProposalId: string | null = null;
-  private proposalCounter = 0;
-  private lastCommitResult: PlanningGraphCommitResult | null = null;
-  private activeMemoryChangeId: string | null = null;
-  private lastMemoryWriteResult: PlanningMemoryWriteResult | null = null;
-  private activeGitHubSyncId: string | null = null;
-  private lastGitHubSyncResult: GitHubSyncResult | null = null;
 
   constructor(
     @Inject(ContextService) private readonly contextService: ContextService,
@@ -87,6 +77,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(ReconciliationService) private readonly reconciliationService: ReconciliationService,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
+    @Inject(ProposalStateService) private readonly proposalState: ProposalStateService,
   ) {}
 
   async onModuleInit() {
@@ -116,12 +107,12 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       session_file: session.sessionFile,
       is_streaming: session.isStreaming,
       messages: this.projectSessionEntries(session.sessionManager.getEntries()),
-      active_proposal: this.getActiveProposal(),
-      last_commit_result: this.lastCommitResult,
-      active_memory_change: this.getActiveMemoryChange(),
-      last_memory_write_result: this.lastMemoryWriteResult,
-      active_github_sync: this.getActiveGitHubSync(),
-      last_github_sync_result: this.lastGitHubSyncResult,
+      active_proposal: this.proposalState.getActiveProposal(),
+      last_commit_result: this.proposalState.getLastCommitResult(),
+      active_memory_change: this.proposalState.getActiveMemoryChange(),
+      last_memory_write_result: this.proposalState.getLastMemoryWriteResult(),
+      active_github_sync: this.proposalState.getActiveGitHubSync(),
+      last_github_sync_result: this.proposalState.getLastGitHubSyncResult(),
       memory: this.memoryService.read(),
       recent_subagent_runs: this.subAgentService.listRecentRuns(),
     };
@@ -172,13 +163,13 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException("approved_mutation_ids must contain at least one mutation id");
     }
 
-    const proposal = this.proposals.get(proposalId);
+    const proposal = this.proposalState.getProposal(proposalId);
     if (!proposal) {
       throw new BadRequestException(`Unknown proposal: ${proposalId}`);
     }
 
     const selectedMutations = approvedIds.map((id) => {
-      const mutation = proposal.mutations.find((candidate) => candidate.id === id);
+      const mutation = proposal.mutations.find((candidate: PlanningMutationProposalMutation) => candidate.id === id);
       if (!mutation) {
         throw new BadRequestException(`Unknown mutation id for proposal ${proposalId}: ${id}`);
       }
@@ -192,8 +183,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     });
 
     const activeProposal = result.status === "applied"
-      ? this.updateActiveProposalAfterApply(proposal, approvedIds)
-      : this.getActiveProposal();
+      ? this.proposalState.updateActiveProposalAfterApply(proposal, approvedIds)
+      : this.proposalState.getActiveProposal();
 
     const commitResult: PlanningGraphCommitResult = {
       proposal_id: proposal.proposal_id,
@@ -202,7 +193,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       active_proposal: activeProposal,
     };
 
-    this.lastCommitResult = commitResult;
+    this.proposalState.setLastCommitResult(commitResult);
     this.emitStudioEvent("graph_commit_result", commitResult);
 
     return commitResult;
@@ -219,15 +210,15 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException("approved_edit_ids must contain at least one edit id");
     }
 
-    const change = this.memoryChanges.get(changeId);
+    const change = this.proposalState.getMemoryChange(changeId);
     if (!change) {
       throw new BadRequestException(`Unknown memory change: ${changeId}`);
     }
 
     const { result, memory } = this.memoryService.applyChange(change, approvedEditIds);
     const activeMemoryChange = result.status === "applied"
-      ? this.updateActiveMemoryChangeAfterApply(change, approvedEditIds)
-      : this.getActiveMemoryChange();
+      ? this.proposalState.updateActiveMemoryChangeAfterApply(change, approvedEditIds)
+      : this.proposalState.getActiveMemoryChange();
 
     const writeResult: PlanningMemoryWriteResult = {
       change_id: change.change_id,
@@ -237,7 +228,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       memory,
     };
 
-    this.lastMemoryWriteResult = writeResult;
+    this.proposalState.setLastMemoryWriteResult(writeResult);
     this.emitStudioEvent("memory_write_result", writeResult);
     return writeResult;
   }
@@ -253,15 +244,15 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException("approved_operation_ids must contain at least one operation id");
     }
 
-    const proposal = this.githubSyncs.get(syncId);
+    const proposal = this.proposalState.getGitHubSync(syncId);
     if (!proposal) {
       throw new BadRequestException(`Unknown GitHub sync proposal: ${syncId}`);
     }
 
     const { result, issue } = await this.githubService.applySyncProposal(proposal, approvedOperationIds);
     const activeGitHubSync = result.status === "applied"
-      ? this.updateActiveGitHubSyncAfterApply(proposal, approvedOperationIds)
-      : this.getActiveGitHubSync();
+      ? this.proposalState.updateActiveGitHubSyncAfterApply(proposal, approvedOperationIds)
+      : this.proposalState.getActiveGitHubSync();
 
     const syncResult: GitHubSyncResult = {
       sync_id: proposal.sync_id,
@@ -271,7 +262,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       issue,
     };
 
-    this.lastGitHubSyncResult = syncResult;
+    this.proposalState.setLastGitHubSyncResult(syncResult);
     this.emitStudioEvent("github_sync_result", syncResult);
     return syncResult;
   }
@@ -328,7 +319,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
   private handleSessionEvent(event: AgentSessionEvent) {
     if (event.type === "turn_start") {
       this.currentTurnId = `turn_${String(++this.turnCounter).padStart(4, "0")}`;
-      this.issueIdAliases.clear();
+      this.proposalState.resetTurnState();
     }
 
     if (!this.isStreamableEvent(event.type)) {
@@ -353,7 +344,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
 
     if (event.type === "turn_end") {
       this.currentTurnId = null;
-      this.issueIdAliases.clear();
+      this.proposalState.resetTurnState();
     }
   }
 
@@ -436,10 +427,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         })),
       }),
       execute: async (_toolCallId, params: ProposeMutationsToolInput) => {
-        const proposal = this.normalizeProposal(params);
-        this.proposals.set(proposal.proposal_id, proposal);
-        this.activeProposalId = proposal.proposal_id;
-        this.lastCommitResult = null;
+        const proposal = this.proposalState.normalizeProposal(params, this.buildProposalDefaults());
+        this.proposalState.setActiveProposal(proposal);
         this.emitStudioEvent("mutation_proposal", { proposal });
 
         return {
@@ -533,10 +522,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         })),
       }),
       execute: async (_toolCallId, params: ProposeMemoryWriteToolInput) => {
-        const change = this.normalizeMemoryChange(params);
-        this.memoryChanges.set(change.change_id, change);
-        this.activeMemoryChangeId = change.change_id;
-        this.lastMemoryWriteResult = null;
+        const change = this.proposalState.normalizeMemoryChange(params, this.buildProposalDefaults());
+        this.proposalState.setActiveMemoryChange(change);
         this.emitStudioEvent("memory_change_proposal", { change });
 
         return {
@@ -640,16 +627,16 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
           labels: params.labels,
         });
 
-        const existingProposal = this.getActiveProposalForAccumulation();
-        const stagedWorkItemIds = this.getStagedWorkItemIds(existingProposal);
+        const existingProposal = this.proposalState.getActiveProposalForAccumulation(this.currentTurnId);
+        const stagedWorkItemIds = this.proposalState.getStagedWorkItemIds(existingProposal);
         const requestedWorkItemId = params.work_item_id?.trim();
         const workItemId = deriveIssueWorkItemId(created.number);
-        this.rememberIssueIdAlias(requestedWorkItemId, workItemId, stagedWorkItemIds);
+        this.proposalState.rememberIssueIdAlias(requestedWorkItemId, workItemId, stagedWorkItemIds);
 
         const groupId = `issue-${created.number}`;
-        const parentId = this.resolveIssueIdAlias(params.parent_id, stagedWorkItemIds);
+        const parentId = this.proposalState.resolveIssueIdAlias(params.parent_id, stagedWorkItemIds);
         const dependsOnIds = params.depends_on_ids
-          ?.map((depId) => this.resolveIssueIdAlias(depId, stagedWorkItemIds))
+          ?.map((depId) => this.proposalState.resolveIssueIdAlias(depId, stagedWorkItemIds))
           .filter((depId): depId is string => Boolean(depId));
 
         const mutations: ProposeMutationsToolInput["mutations"] = [
@@ -705,23 +692,21 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         let proposal: PlanningMutationProposal;
 
         if (existingProposal) {
-          proposal = this.accumulateMutations(
+          proposal = this.proposalState.accumulateMutations(
             existingProposal,
             mutations,
             `+ GitHub issue #${created.number}: ${created.title}`,
           );
         } else {
-          proposal = this.normalizeProposal({
+          proposal = this.proposalState.normalizeProposal({
             summary: `Graph work item for GitHub issue #${created.number}: ${created.title}`,
             mutations,
-          });
+          }, this.buildProposalDefaults());
         }
 
-        proposal = this.rewriteProposalIssueAliases(proposal);
+        proposal = this.proposalState.rewriteProposalIssueAliases(proposal);
 
-        this.proposals.set(proposal.proposal_id, proposal);
-        this.activeProposalId = proposal.proposal_id;
-        this.lastCommitResult = null;
+        this.proposalState.setActiveProposal(proposal);
         this.emitStudioEvent("mutation_proposal", { proposal });
 
         const summary = `Created GitHub issue #${created.number} (${created.url}) and staged graph proposal ${proposal.proposal_id} with ${proposal.mutations.length} mutation(s) for browser approval.`;
@@ -760,10 +745,8 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         work_item_id: Type.String(),
       }),
       execute: async (_toolCallId, params: GitHubSyncToolInput) => {
-        const sync = await this.normalizeGitHubSync(params);
-        this.githubSyncs.set(sync.sync_id, sync);
-        this.activeGitHubSyncId = sync.sync_id;
-        this.lastGitHubSyncResult = null;
+        const sync = await this.proposalState.normalizeGitHubSync(params, this.buildProposalDefaults());
+        this.proposalState.setActiveGitHubSync(sync);
         this.emitStudioEvent("github_sync_proposal", { sync });
 
         return {
@@ -798,108 +781,6 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
         };
       },
     });
-  }
-
-  private normalizeProposal(input: ProposeMutationsToolInput): PlanningMutationProposal {
-    const graphVersion = input.context?.based_on_graph_version ?? this.graphService.getGraph().graph_version;
-    const proposalId = input.proposal_id?.trim() || `prop_${Date.now()}_${++this.proposalCounter}`;
-    const createdAt = input.created_at?.trim() || this.now();
-
-    return {
-      proposal_id: proposalId,
-      created_at: createdAt,
-      source: {
-        agent: input.source?.agent?.trim() || "root-planner",
-        turn_id: input.source?.turn_id?.trim() || this.currentTurnId,
-        session_id: input.source?.session_id?.trim() || this.session?.sessionId || "planning-root",
-      },
-      context: {
-        ...input.context,
-        based_on_graph_version: graphVersion,
-      },
-      summary: input.summary.trim(),
-      mutations: input.mutations.map((mutation, index) => this.normalizeProposalMutation(mutation, index)),
-    };
-  }
-
-  private normalizeProposalMutation(
-    mutation: ProposeMutationsToolInput["mutations"][number],
-    index: number,
-  ): PlanningMutationProposalMutation {
-    const payload = mutation.payload && typeof mutation.payload === "object"
-      ? { ...(mutation.payload as Record<string, unknown>) }
-      : undefined;
-
-    const entityId = mutation.entity_id
-      ?? (typeof payload?.id === "string" ? payload.id : undefined)
-      ?? (mutation.type === "create_edge" && payload
-        ? `${String(payload.from_id ?? "")}:${String(payload.rel ?? "")}:${String(payload.to_id ?? "")}`
-        : undefined);
-
-    return {
-      id: mutation.id?.trim() || `m${index + 1}`,
-      type: mutation.type,
-      entity_id: entityId,
-      payload,
-      rationale: mutation.rationale.trim(),
-      validation: mutation.validation,
-      group_id: mutation.group_id,
-      depends_on_mutation_ids: mutation.depends_on_mutation_ids,
-    };
-  }
-
-  private normalizeMemoryChange(input: ProposeMemoryWriteToolInput): PlanningMemoryChange {
-    const memory = this.memoryService.read();
-    const changeId = input.change_id?.trim() || `mem_${Date.now()}`;
-    const createdAt = input.created_at?.trim() || this.now();
-
-    return {
-      change_id: changeId,
-      created_at: createdAt,
-      source: {
-        agent: input.source?.agent?.trim() || "root-planner",
-        turn_id: input.source?.turn_id?.trim() || this.currentTurnId,
-        session_id: input.source?.session_id?.trim() || this.session?.sessionId || "planning-root",
-      },
-      summary: input.summary.trim(),
-      based_on_content_hash: memory.content_hash,
-      edits: input.edits.map((edit, index) => this.normalizeMemoryEdit(edit, index)),
-    };
-  }
-
-  private async normalizeGitHubSync(input: GitHubSyncToolInput): Promise<GitHubSyncProposal> {
-    const staged = await this.githubService.stageManagedBlockSync(input.work_item_id);
-    return {
-      sync_id: input.sync_id?.trim() || `ghsync_${Date.now()}`,
-      created_at: input.created_at?.trim() || this.now(),
-      source: {
-        agent: input.source?.agent?.trim() || "root-planner",
-        turn_id: input.source?.turn_id?.trim() || this.currentTurnId,
-        session_id: input.source?.session_id?.trim() || this.session?.sessionId || "planning-root",
-      },
-      summary: input.summary.trim(),
-      issue: {
-        repo: staged.issue.repo,
-        issue_number: staged.issue.number,
-        issue_url: staged.issue.url,
-        title: staged.issue.title,
-      },
-      work_item_id: staged.work_item_id,
-      based_on_body_hash: staged.based_on_body_hash,
-      operations: staged.operations,
-    };
-  }
-
-  private normalizeMemoryEdit(edit: ProposeMemoryWriteToolInput["edits"][number], index: number): PlanningMemoryEdit {
-    return {
-      id: edit.id?.trim() || `e${index + 1}`,
-      kind: edit.kind,
-      summary: edit.summary.trim(),
-      rationale: edit.rationale.trim(),
-      old_text: edit.old_text,
-      new_text: edit.new_text,
-      target_heading: edit.target_heading,
-    };
   }
 
   private toGraphMutation(mutation: PlanningMutationProposalMutation): GraphMutation {
@@ -989,268 +870,25 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private updateActiveProposalAfterApply(
-    proposal: PlanningMutationProposal,
-    approvedIds: string[],
-  ): PlanningMutationProposal | null {
-    const remainingMutations = proposal.mutations.filter((mutation) => !approvedIds.includes(mutation.id));
-
-    if (remainingMutations.length === 0) {
-      this.proposals.delete(proposal.proposal_id);
-      if (this.activeProposalId === proposal.proposal_id) {
-        this.activeProposalId = null;
-      }
-      return null;
-    }
-
-    const nextProposal: PlanningMutationProposal = {
-      ...proposal,
-      summary: `${proposal.summary} (${remainingMutations.length} mutation(s) remaining)`,
-      mutations: remainingMutations,
-    };
-    this.proposals.set(nextProposal.proposal_id, nextProposal);
-    this.activeProposalId = nextProposal.proposal_id;
-    return nextProposal;
-  }
-
-  private updateActiveMemoryChangeAfterApply(
-    change: PlanningMemoryChange,
-    approvedEditIds: string[],
-  ): PlanningMemoryChange | null {
-    const remainingEdits = change.edits.filter((edit) => !approvedEditIds.includes(edit.id));
-
-    if (remainingEdits.length === 0) {
-      this.memoryChanges.delete(change.change_id);
-      if (this.activeMemoryChangeId === change.change_id) {
-        this.activeMemoryChangeId = null;
-      }
-      return null;
-    }
-
-    const nextChange: PlanningMemoryChange = {
-      ...change,
-      summary: `${change.summary} (${remainingEdits.length} edit(s) remaining)`,
-      edits: remainingEdits,
-      based_on_content_hash: this.memoryService.read().content_hash,
-    };
-    this.memoryChanges.set(nextChange.change_id, nextChange);
-    this.activeMemoryChangeId = nextChange.change_id;
-    return nextChange;
-  }
-
-  private updateActiveGitHubSyncAfterApply(
-    proposal: GitHubSyncProposal,
-    approvedOperationIds: string[],
-  ): GitHubSyncProposal | null {
-    const remainingOperations = proposal.operations.filter((operation) => !approvedOperationIds.includes(operation.id));
-
-    if (remainingOperations.length === 0) {
-      this.githubSyncs.delete(proposal.sync_id);
-      if (this.activeGitHubSyncId === proposal.sync_id) {
-        this.activeGitHubSyncId = null;
-      }
-      return null;
-    }
-
-    const nextProposal: GitHubSyncProposal = {
-      ...proposal,
-      summary: `${proposal.summary} (${remainingOperations.length} operation(s) remaining)`,
-      operations: remainingOperations,
-    };
-    this.githubSyncs.set(nextProposal.sync_id, nextProposal);
-    this.activeGitHubSyncId = nextProposal.sync_id;
-    return nextProposal;
-  }
-
   dismissAllProposals(): { dismissed_proposal_ids: string[]; dismissed_memory_change_ids: string[]; dismissed_github_sync_ids: string[] } {
-    const dismissedProposalIds = this.activeProposalId ? [this.activeProposalId] : [];
-    const dismissedMemoryChangeIds = this.activeMemoryChangeId ? [this.activeMemoryChangeId] : [];
-    const dismissedGitHubSyncIds = this.activeGitHubSyncId ? [this.activeGitHubSyncId] : [];
-
-    this.activeProposalId = null;
-    this.lastCommitResult = null;
-    this.activeMemoryChangeId = null;
-    this.lastMemoryWriteResult = null;
-    this.activeGitHubSyncId = null;
-    this.lastGitHubSyncResult = null;
-
-    this.logger.log(`Dismissed proposals: ${dismissedProposalIds.length} mutation, ${dismissedMemoryChangeIds.length} memory, ${dismissedGitHubSyncIds.length} GitHub sync`);
-
-    return {
-      dismissed_proposal_ids: dismissedProposalIds,
-      dismissed_memory_change_ids: dismissedMemoryChangeIds,
-      dismissed_github_sync_ids: dismissedGitHubSyncIds,
-    };
-  }
-
-  private getActiveProposal(): PlanningMutationProposal | null {
-    return this.activeProposalId ? this.proposals.get(this.activeProposalId) ?? null : null;
-  }
-
-  /**
-   * Return the active proposal only if it was created in the current turn
-   * and has not yet been committed — suitable for accumulating additional
-   * mutations from a second github_create_issue call in the same flow.
-   */
-  private getActiveProposalForAccumulation(): PlanningMutationProposal | null {
-    const proposal = this.getActiveProposal();
-    if (!proposal || !this.currentTurnId) {
-      return null;
-    }
-    // Only accumulate when the existing proposal belongs to this turn
-    if (proposal.source.turn_id !== this.currentTurnId) {
-      return null;
-    }
-    return proposal;
-  }
-
-  /**
-   * Append new mutations to an existing proposal, re-numbering their IDs
-   * to avoid collisions. Returns the updated (same-ID) proposal.
-   */
-  private accumulateMutations(
-    existing: PlanningMutationProposal,
-    newMutations: ProposeMutationsToolInput["mutations"],
-    summaryAppendix: string,
-  ): PlanningMutationProposal {
-    // Find the highest existing numeric suffix to avoid ID collisions
-    const maxExistingIndex = existing.mutations.reduce((max, mutation) => {
-      const match = mutation.id.match(/^m(\d+)$/);
-      return match ? Math.max(max, Number(match[1])) : max;
-    }, 0);
-
-    let nextIndex = maxExistingIndex + 1;
-    const normalized = newMutations.map((mutation) =>
-      this.normalizeProposalMutation(
-        { ...mutation, id: `m${nextIndex++}` },
-        0, // index param unused when id is pre-set
-      ),
+    const result = this.proposalState.dismissAll();
+    this.logger.log(
+      `Dismissed proposals: ${result.dismissed_proposal_ids.length} mutation, ${result.dismissed_memory_change_ids.length} memory, ${result.dismissed_github_sync_ids.length} GitHub sync`,
     );
+    return result;
+  }
 
+  /**
+   * Phase 7 (#227): passes the current turn + session context into
+   * ProposalStateService's normalize* helpers so they can stamp the
+   * `source` envelope on new proposals. Grouped in one helper so tool
+   * bodies don't need to know the shape.
+   */
+  private buildProposalDefaults(): { currentTurnId: string | null; sessionId: string } {
     return {
-      ...existing,
-      summary: `${existing.summary} ${summaryAppendix}`,
-      mutations: [...existing.mutations, ...normalized],
+      currentTurnId: this.currentTurnId,
+      sessionId: this.session?.sessionId ?? "planning-root",
     };
-  }
-
-  private rememberIssueIdAlias(
-    requestedId: string | null | undefined,
-    finalId: string,
-    stagedWorkItemIds: ReadonlySet<string> = new Set(),
-  ) {
-    const placeholderId = requestedId?.trim();
-    if (!placeholderId || placeholderId === finalId) {
-      return;
-    }
-    // If the requested ID is already staged as a canonical work item from an
-    // earlier create, or already resolves to one, treat that existing staged ID
-    // as authoritative and do not overwrite the alias chain with a later guess.
-    if (stagedWorkItemIds.has(placeholderId)) {
-      return;
-    }
-    const existingResolvedId = this.resolveIssueIdAlias(placeholderId, stagedWorkItemIds);
-    if (existingResolvedId !== placeholderId && stagedWorkItemIds.has(existingResolvedId)) {
-      return;
-    }
-    this.issueIdAliases.set(placeholderId, finalId);
-  }
-
-  private resolveIssueIdAlias(id: string | null | undefined, stopIds: ReadonlySet<string> = new Set()): string {
-    const trimmed = id?.trim();
-    if (!trimmed) {
-      return "";
-    }
-    if (stopIds.has(trimmed)) {
-      return trimmed;
-    }
-
-    let resolved = trimmed;
-    const seen = new Set<string>();
-
-    while (this.issueIdAliases.has(resolved) && !seen.has(resolved)) {
-      seen.add(resolved);
-      const next = this.issueIdAliases.get(resolved) ?? resolved;
-      resolved = next;
-      if (stopIds.has(resolved)) {
-        break;
-      }
-    }
-
-    return resolved;
-  }
-
-  private getStagedWorkItemIds(proposal: PlanningMutationProposal | null | undefined): Set<string> {
-    const ids = new Set<string>();
-    if (!proposal) {
-      return ids;
-    }
-
-    for (const mutation of proposal.mutations) {
-      if (mutation.type !== "create_work_item") {
-        continue;
-      }
-      if (mutation.entity_id) {
-        ids.add(mutation.entity_id);
-      }
-      if (typeof mutation.payload?.id === "string") {
-        ids.add(mutation.payload.id);
-      }
-    }
-
-    return ids;
-  }
-
-  private rewriteProposalIssueAliases(proposal: PlanningMutationProposal): PlanningMutationProposal {
-    const stagedWorkItemIds = this.getStagedWorkItemIds(proposal);
-    return {
-      ...proposal,
-      mutations: proposal.mutations.map((mutation) => this.rewriteProposalMutationIssueAliases(mutation, stagedWorkItemIds)),
-    };
-  }
-
-  private rewriteProposalMutationIssueAliases(
-    mutation: PlanningMutationProposalMutation,
-    stagedWorkItemIds: ReadonlySet<string>,
-  ): PlanningMutationProposalMutation {
-    const payload = mutation.payload && typeof mutation.payload === "object"
-      ? { ...mutation.payload }
-      : undefined;
-
-    const entityId = mutation.entity_id ? this.resolveIssueIdAlias(mutation.entity_id, stagedWorkItemIds) : mutation.entity_id;
-
-    if (mutation.type === "create_work_item" || mutation.type === "update_work_item") {
-      if (typeof payload?.id === "string") {
-        payload.id = this.resolveIssueIdAlias(payload.id, stagedWorkItemIds);
-      }
-    }
-
-    if (mutation.type === "create_edge") {
-      if (typeof payload?.from_id === "string") {
-        payload.from_id = this.resolveIssueIdAlias(payload.from_id, stagedWorkItemIds);
-      }
-      if (typeof payload?.to_id === "string") {
-        payload.to_id = this.resolveIssueIdAlias(payload.to_id, stagedWorkItemIds);
-      }
-    }
-
-    const rewrittenEntityId = mutation.type === "create_edge" && payload?.from_id && payload?.rel && payload?.to_id
-      ? `${String(payload.from_id)}:${String(payload.rel)}:${String(payload.to_id)}`
-      : entityId;
-
-    return {
-      ...mutation,
-      entity_id: rewrittenEntityId,
-      payload,
-    };
-  }
-
-  private getActiveMemoryChange(): PlanningMemoryChange | null {
-    return this.activeMemoryChangeId ? this.memoryChanges.get(this.activeMemoryChangeId) ?? null : null;
-  }
-
-  private getActiveGitHubSync(): GitHubSyncProposal | null {
-    return this.activeGitHubSyncId ? this.githubSyncs.get(this.activeGitHubSyncId) ?? null : null;
   }
 
   private emitStudioEvent(eventType: string, payload: unknown) {
