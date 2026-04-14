@@ -1,6 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import { GitHubService } from "../github.service.js";
+import { PullRequestTruthRefreshedEvent } from "../../execution/events/pull-request-truth-refreshed.event.js";
 import type { WorkItemRecord } from "../../graph/types.js";
+
+/**
+ * Phase 5 (#225): GitHubService now injects an EventBus and publishes
+ * PullRequestTruthRefreshedEvent instead of invoking the bespoke
+ * `registerPullRequestTruthRefresher` callback. Every test that
+ * constructs GitHubService needs to pass in an EventBus stub as the
+ * third constructor arg.
+ */
+function makeEventBusStub() {
+  const publish = vi.fn();
+  return { publish } as unknown as import("@nestjs/cqrs").EventBus & {
+    publish: ReturnType<typeof vi.fn>;
+  };
+}
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
   return {
@@ -53,7 +68,7 @@ describe("GitHubService reconciliation", () => {
     const service = new GitHubService({ getDb: () => ({}) } as any, {
       listByRepoIssueNumber: vi.fn(() => [workItem]),
       update,
-    } as any);
+    } as any, makeEventBusStub());
 
     (service as any).runGhJson = vi.fn().mockResolvedValue({
       number: 91,
@@ -106,13 +121,12 @@ describe("GitHubService reconciliation", () => {
       return applyPatch(workItem, patch);
     });
 
+    const eventBus = makeEventBusStub();
     const service = new GitHubService({ getDb: () => ({}) } as any, {
       listByRepoPullRequestNumber: vi.fn(() => []),
       listByRepoBranch: vi.fn(() => [workItem]),
       update,
-    } as any);
-
-    service.registerPullRequestTruthRefresher(() => ({ updated_run_ids: ["exec_123"] }));
+    } as any, eventBus);
 
     (service as any).runGhJson = vi.fn().mockResolvedValue({
       number: 70,
@@ -142,9 +156,17 @@ describe("GitHubService reconciliation", () => {
     });
     expect(result.reconciliation).toEqual({
       updated_work_item_ids: ["studio-91"],
-      updated_run_ids: ["exec_123"],
       work_items: [expect.objectContaining({ id: "studio-91", state: "merged_pr" })],
     });
+    // Phase 5 (#225): truth refresh is now event-driven; verify the
+    // event was published with the expected payload. Subscribers run
+    // synchronously via CqrsModule's in-process EventBus.
+    expect(eventBus.publish).toHaveBeenCalledWith(
+      expect.any(PullRequestTruthRefreshedEvent),
+    );
+    const publishedEvent = eventBus.publish.mock.calls[0]?.[0] as PullRequestTruthRefreshedEvent;
+    expect(publishedEvent.workItemIds).toEqual(["studio-91"]);
+    expect(publishedEvent.pullRequest.number).toBe(70);
   });
 
   describe("merged PR state advancement", () => {
@@ -172,13 +194,13 @@ describe("GitHubService reconciliation", () => {
         expect(id).toBe(workItem.id);
         return applyPatch(workItem, patch);
       });
+      const eventBus = makeEventBusStub();
       const service = new GitHubService({ getDb: () => ({}) } as any, {
         listByRepoPullRequestNumber: vi.fn(() => []),
         listByRepoBranch: vi.fn(() => [workItem]),
         update,
-      } as any);
-      service.registerPullRequestTruthRefresher(() => ({ updated_run_ids: [] }));
-      return { service, update };
+      } as any, eventBus);
+      return { service, update, eventBus };
     }
 
     function mockMergedPr(service: GitHubService, mergedAt: string | null) {
@@ -274,7 +296,7 @@ describe("GitHubService reconciliation", () => {
 
 describe("GitHubService issue closing", () => {
   it("closes an issue without posting a comment by default", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     const runGh = vi.fn().mockReturnValue("");
     const readIssueResult = {
       repo: "fusupo/escapement-studio",
@@ -305,7 +327,7 @@ describe("GitHubService issue closing", () => {
   });
 
   it("posts a comment before closing when one is provided", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     const runGh = vi.fn().mockReturnValue("");
     const readIssueResult = {
       repo: "fusupo/escapement-studio",
@@ -342,14 +364,14 @@ describe("GitHubService issue closing", () => {
   });
 
   it("rejects closeIssue when repo or issue_number are invalid", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
 
     await expect(service.closeIssue("", 136)).rejects.toThrow("repo is required");
     await expect(service.closeIssue("fusupo/escapement-studio", 0)).rejects.toThrow("issue_number must be a positive integer");
   });
 
   it("stops before close when posting the comment fails", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     const runGh = vi.fn(() => {
       throw new Error("gh command failed: comment nope");
     });
@@ -360,7 +382,7 @@ describe("GitHubService issue closing", () => {
   });
 
   it("propagates close failures after posting the comment", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     const runGh = vi.fn()
       .mockReturnValueOnce("")
       .mockImplementationOnce(() => {
@@ -375,7 +397,7 @@ describe("GitHubService issue closing", () => {
 
 describe("GitHubService issue deletion", () => {
   it("deletes an issue with gh issue delete --yes", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     const runGh = vi.fn().mockReturnValue("");
     (service as any).runGh = runGh;
 
@@ -395,14 +417,14 @@ describe("GitHubService issue deletion", () => {
   });
 
   it("rejects deleteIssue when repo or issue_number are invalid", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
 
     await expect(service.deleteIssue("", 137)).rejects.toThrow("repo is required");
     await expect(service.deleteIssue("fusupo/escapement-studio", 0)).rejects.toThrow("issue_number must be a positive integer");
   });
 
   it("propagates gh delete failures", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     (service as any).runGh = vi.fn(() => {
       throw new Error("gh command failed: nope");
     });
@@ -413,7 +435,7 @@ describe("GitHubService issue deletion", () => {
 
 describe("GitHubService batch list methods", () => {
   it("lists pull requests with normalized fields and commands", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     const runGhJson = vi.fn().mockResolvedValue([
       {
         number: 194,
@@ -458,7 +480,7 @@ describe("GitHubService batch list methods", () => {
   });
 
   it("lists issues with normalized closed_at fields and empty responses", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     const runGhJson = vi.fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
@@ -498,7 +520,7 @@ describe("GitHubService batch list methods", () => {
   });
 
   it("warns when batch list results hit the hard limits", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     const logger = { warn: vi.fn() };
     (service as any).logger = logger;
     (service as any).runGhJson = vi.fn()
@@ -527,7 +549,7 @@ describe("GitHubService batch list methods", () => {
   });
 
   it("propagates batch list failures", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any);
+    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
     (service as any).runGhJson = vi.fn().mockRejectedValue(new Error("gh failed"));
 
     await expect(service.listPullRequests("fusupo/escapement-studio")).rejects.toThrow("gh failed");

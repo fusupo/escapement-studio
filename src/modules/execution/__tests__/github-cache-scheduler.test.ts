@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { GitHubCacheScheduler } from "../github-cache-scheduler.service.js";
+import { WorkItemMergedEvent } from "../events/work-item-merged.event.js";
 import type { WorkItemRecord } from "../../graph/types.js";
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
@@ -54,17 +55,21 @@ function makeService(stubs: {
       rejected: false,
     })),
   };
+  // Phase 5 (#225): the scheduler now injects EventBus and publishes
+  // WorkItemMergedEvent after a successful gh.pr_merged dispatch.
+  const eventBus = { publish: vi.fn() };
 
   const scheduler = Object.create(GitHubCacheScheduler.prototype) as GitHubCacheScheduler;
   (scheduler as unknown as { cache: typeof cache }).cache = cache;
   (scheduler as unknown as { workItemsService: typeof workItemsService }).workItemsService = workItemsService;
   (scheduler as unknown as { hsmService: typeof hsmService }).hsmService = hsmService;
+  (scheduler as unknown as { eventBus: typeof eventBus }).eventBus = eventBus;
   (scheduler as unknown as { logger: { log: () => void; warn: () => void } }).logger = {
     log: vi.fn(),
     warn: vi.fn(),
   };
 
-  return { scheduler, cache, workItemsService, hsmService };
+  return { scheduler, cache, workItemsService, hsmService, eventBus };
 }
 
 describe("GitHubCacheScheduler", () => {
@@ -99,7 +104,7 @@ describe("GitHubCacheScheduler", () => {
       title: "PR title",
       is_draft: false,
     }]]);
-    const { scheduler, hsmService } = makeService({
+    const { scheduler, hsmService, eventBus } = makeService({
       workItems: [makeWorkItem({ state: "open_pr" })],
       prMap,
     });
@@ -108,6 +113,16 @@ describe("GitHubCacheScheduler", () => {
       type: "gh.pr_merged",
     }));
     expect(results[0].dispatched).toBe(1);
+
+    // Phase 5 (#225): verify the WorkItemMergedEvent fired with the
+    // expected payload after the HSM dispatch committed.
+    expect(eventBus.publish).toHaveBeenCalledTimes(1);
+    const published = eventBus.publish.mock.calls[0]?.[0] as WorkItemMergedEvent;
+    expect(published).toBeInstanceOf(WorkItemMergedEvent);
+    expect(published.workItemId).toBe("studio-100");
+    expect(published.pullRequest.number).toBe(100);
+    expect(published.pullRequest.merged_at).toBe("2026-04-11T01:00:00.000Z");
+    expect(published.source).toBe("scheduler");
   });
 
   it("dispatches gh.issue_closed when merged_pr item has a closed issue", async () => {

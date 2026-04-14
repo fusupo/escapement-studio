@@ -1,7 +1,9 @@
 import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
+import { EventBus } from "@nestjs/cqrs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
+import { PullRequestTruthRefreshedEvent } from "../execution/events/pull-request-truth-refreshed.event.js";
 import { SQLiteService } from "../graph/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { UpdateWorkItemDto, WorkItemRecord } from "../graph/types.js";
@@ -101,30 +103,19 @@ export interface GitHubPullRequestDetails {
   merge_commit_sha: string | null;
   reconciliation?: {
     updated_work_item_ids: string[];
-    updated_run_ids: string[];
     work_items: WorkItemRecord[];
   };
-}
-
-interface PullRequestTruthRefreshResult {
-  updated_run_ids: string[];
 }
 
 @Injectable()
 export class GitHubService {
   private readonly logger = new Logger(GitHubService.name);
-  private pullRequestTruthRefresher?: (pullRequest: GitHubPullRequestDetails, options?: { work_item_ids?: string[] }) => PullRequestTruthRefreshResult;
 
   constructor(
     @Inject(SQLiteService) private readonly sqlite: SQLiteService,
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
+    @Inject(EventBus) private readonly eventBus: EventBus,
   ) {}
-
-  registerPullRequestTruthRefresher(
-    refresher: (pullRequest: GitHubPullRequestDetails, options?: { work_item_ids?: string[] }) => PullRequestTruthRefreshResult,
-  ) {
-    this.pullRequestTruthRefresher = refresher;
-  }
 
   private get db(): DatabaseType {
     return this.sqlite.getDb();
@@ -565,15 +556,24 @@ export class GitHubService {
       return this.workItems.update(workItem.id, updatePatch);
     });
 
-    const refreshResult = this.pullRequestTruthRefresher?.(pullRequest, {
-      work_item_ids: nextWorkItems.map((workItem) => workItem.id),
-    }) ?? { updated_run_ids: [] };
+    // Phase 5 (#225): publish a PullRequestTruthRefreshedEvent so
+    // PullRequestService (via PullRequestTruthRefreshedHandler) can
+    // update the run store. Replaces the previous
+    // `registerPullRequestTruthRefresher` callback handshake.
+    // EventBus is synchronous in-process, so the handler runs before
+    // `publish` returns — the semantics match the old direct callback
+    // from this caller's point of view.
+    this.eventBus.publish(
+      new PullRequestTruthRefreshedEvent(
+        pullRequest,
+        nextWorkItems.map((workItem) => workItem.id),
+      ),
+    );
 
     return {
       ...pullRequest,
       reconciliation: {
         updated_work_item_ids: updatedWorkItemIds,
-        updated_run_ids: refreshResult.updated_run_ids,
         work_items: nextWorkItems,
       },
     };

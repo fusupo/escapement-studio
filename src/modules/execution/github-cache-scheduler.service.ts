@@ -1,8 +1,10 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
+import { EventBus } from "@nestjs/cqrs";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
+import { WorkItemMergedEvent } from "./events/work-item-merged.event.js";
 import { GitHubBatchCache, type CachedPullRequest, type CachedIssue } from "./github-batch-cache.service.js";
 
 /**
@@ -24,6 +26,7 @@ export class GitHubCacheScheduler {
     @Inject(GitHubBatchCache) private readonly cache: GitHubBatchCache,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
+    @Inject(EventBus) private readonly eventBus: EventBus,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -93,6 +96,33 @@ export class GitHubCacheScheduler {
             this.logger.log(
               `Sweep dispatched ${event.type} for ${workItem.id}: ${result.prev_state} → ${result.next_state}`,
             );
+
+            // Phase 5 (#225): publish WorkItemMergedEvent when the
+            // sweep successfully transitions a work item into
+            // merged_pr. Fired after the HSM dispatch commits so
+            // subscribers see the post-transition state.
+            if (event.type === "gh.pr_merged") {
+              const pr = event.pull_request as Record<string, unknown> | undefined;
+              const prNumber = typeof pr?.number === "number" ? pr.number : null;
+              const prUrl = typeof pr?.url === "string" ? pr.url : null;
+              const prTitle = typeof pr?.title === "string" ? pr.title : null;
+              const mergedAt = typeof pr?.merged_at === "string" ? pr.merged_at : null;
+              if (prNumber != null && prUrl && prTitle && mergedAt) {
+                this.eventBus.publish(
+                  new WorkItemMergedEvent(
+                    workItem.id,
+                    {
+                      number: prNumber,
+                      url: prUrl,
+                      title: prTitle,
+                      merged_at: mergedAt,
+                      merge_commit_sha: null,
+                    },
+                    "scheduler",
+                  ),
+                );
+              }
+            }
           }
         } catch (error) {
           this.logger.warn(

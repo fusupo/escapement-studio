@@ -1,7 +1,9 @@
 import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
+import { EventBus } from "@nestjs/cqrs";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDefaultWorkingBranch } from "./default-working-branches.js";
+import { WorkItemMergedEvent } from "./events/work-item-merged.event.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
@@ -31,7 +33,7 @@ import type {
  * wrappers on `ExecutionService` — matching the Phase 4b/4c/4d
  * cleanupWorktree / getRunChecklist / sendFollowUp passthrough pattern.
  *
- * `refreshPullRequestTruth` is registered with `GitHubService` at
+ * `refreshRunsForPullRequest` is registered with `GitHubService` at
  * construction time. After Phase 4e, `ExecutionService` does not touch
  * `registerPullRequestTruthRefresher` at all.
  *
@@ -62,19 +64,19 @@ export class PullRequestService {
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
+    @Inject(EventBus) private readonly eventBus: EventBus,
   ) {
-    // Phase 4e (#234): take ownership of the PR truth refresher callback.
-    // ExecutionService no longer registers this — the service that owns
-    // the refresh logic owns the registration. Atomic swap with the
-    // ExecutionService rewire commit.
-    this.githubService.registerPullRequestTruthRefresher(
-      (pullRequest, options) => this.refreshPullRequestTruth(pullRequest, options),
-    );
+    // Phase 5 (#225): the bespoke `registerPullRequestTruthRefresher`
+    // callback handshake is gone. `GitHubService.withPullRequestReconciliation`
+    // now publishes a `PullRequestTruthRefreshedEvent`, and the
+    // `PullRequestTruthRefreshedHandler` (registered in ExecutionModule)
+    // delegates to `this.refreshRunsForPullRequest` via standard CQRS
+    // event dispatch.
   }
 
   // ─── PR truth refresh (GitHubService callback) ───────────────────
 
-  refreshPullRequestTruth(
+  refreshRunsForPullRequest(
     pullRequest: {
       number: number;
       url: string;
@@ -339,6 +341,23 @@ export class PullRequestService {
       archive_path: nextArchivePath,
       meta: nextMeta,
     });
+
+    // Phase 5 (#225): publish WorkItemMergedEvent after the HSM
+    // dispatch + work-item update have both committed. No subscribers
+    // land in this phase; the event exists for future consumers.
+    this.eventBus.publish(
+      new WorkItemMergedEvent(
+        workItem.id,
+        {
+          number: pullRequest.number,
+          url: pullRequest.url,
+          title: pullRequest.title,
+          merged_at: pullRequest.merged_at!,
+          merge_commit_sha: pullRequest.merge_commit_sha ?? null,
+        },
+        "sync_merged_api",
+      ),
+    );
 
     const updatedWorkItem = this.workItemsService.get(workItem.id);
     const managedBlockSync = input.stage_github_sync ? await this.safeStageManagedBlockSync(updatedWorkItem.id) : undefined;

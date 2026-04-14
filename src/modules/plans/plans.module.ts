@@ -7,6 +7,7 @@ import { ReopenPlanHandler } from "./application/commands/reopen-plan.handler.js
 import { PlanDrafterService } from "./plan-drafter.service.js";
 import { PlansController } from "./plans.controller.js";
 import { PlansService } from "./plans.service.js";
+import { WorkItemDeletedHandler } from "./work-item-deleted.handler.js";
 
 /**
  * ADR 014 step 4 — plan preparation module.
@@ -18,7 +19,13 @@ import { PlansService } from "./plans.service.js";
 @Module({
   imports: [forwardRef(() => GraphModule), forwardRef(() => GitHubModule), forwardRef(() => SettingsModule)],
   controllers: [PlansController],
-  providers: [PlansService, PlanDrafterService, PreparePlanHandler, ReopenPlanHandler],
+  providers: [
+    PlansService,
+    PlanDrafterService,
+    PreparePlanHandler,
+    ReopenPlanHandler,
+    WorkItemDeletedHandler,
+  ],
   exports: [PlansService, PlanDrafterService],
 })
 export class PlansModule {}

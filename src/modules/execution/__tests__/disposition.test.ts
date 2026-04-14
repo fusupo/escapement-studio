@@ -57,8 +57,11 @@ interface HarnessService {
     invalidate: ReturnType<typeof vi.fn>;
     invalidateAll: ReturnType<typeof vi.fn>;
   };
-  plansService: {
-    deletePlanArtifacts: ReturnType<typeof vi.fn>;
+  // Phase 5 (#225): plans cleanup now runs via WorkItemDeletedEvent
+  // published through EventBus. RunDispositionService no longer
+  // injects PlansService directly.
+  eventBus: {
+    publish: ReturnType<typeof vi.fn>;
   };
 
   // Phase 4a: the run buffer lives on RunStore. RunDispositionService uses
@@ -166,7 +169,6 @@ function makeService(params: {
   githubDeleteIssue?: ReturnType<typeof vi.fn>;
   connectedEdges?: Array<{ id: number; from_id: string; rel: string; to_id: string }>;
   deleteWithConnectedEdges?: ReturnType<typeof vi.fn>;
-  deletePlanArtifacts?: ReturnType<typeof vi.fn>;
   updateImpl?: (id: string, patch: Partial<WorkItemRecord>) => WorkItemRecord;
   hsmDispatch?: ReturnType<typeof vi.fn>;
 }): HarnessService {
@@ -314,9 +316,7 @@ function makeService(params: {
     invalidate: vi.fn(),
     invalidateAll: vi.fn(),
   };
-  (service as unknown as { plansService: { deletePlanArtifacts: ReturnType<typeof vi.fn> } }).plansService = {
-    deletePlanArtifacts: params.deletePlanArtifacts ?? vi.fn(() => ({ removed: false, path: null })),
-  };
+  service.eventBus = { publish: vi.fn() };
 
   return service;
 }
@@ -393,15 +393,13 @@ describe("ADR 014 step 7: disposition flow", () => {
   });
 
   describe("deleteWorkItem", () => {
-    it("deletes an eligible issue-backed work item, cleans plan artifacts, and removes connected edges", async () => {
-      const deletePlanArtifacts = vi.fn(() => ({ removed: true, path: "/tmp/plans/studio-157" }));
+    it("deletes an eligible issue-backed work item, publishes WorkItemDeletedEvent, and removes connected edges", async () => {
       const service = makeService({
         artifactRoot: tmpRoot,
         workItem: makeWorkItem({ state: "drafting" }),
         connectedEdges: [
           { id: 11, from_id: "studio-157", rel: "depends_on", to_id: "studio-200" },
         ],
-        deletePlanArtifacts,
       });
 
       const result = await service.deleteWorkItem({
@@ -411,13 +409,17 @@ describe("ADR 014 step 7: disposition flow", () => {
       });
 
       expect(service.githubService.deleteIssue).toHaveBeenCalledWith("fusupo/escapement-studio", 157);
-      expect(deletePlanArtifacts).toHaveBeenCalledWith("studio-157");
       expect(service.workItemsService.deleteWithConnectedEdges).toHaveBeenCalledWith("studio-157", [11]);
+      // Phase 5 (#225): plans cleanup now runs via
+      // WorkItemDeletedEvent → WorkItemDeletedHandler in PlansModule.
+      // The disposition service no longer calls PlansService directly.
+      expect(service.eventBus.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ workItemId: "studio-157" }),
+      );
       expect(result).toMatchObject({
         deleted: true,
         graph: { deleted: true, removed_edge_ids: [11] },
         github_issue: { attempted: true, deleted: true, fallback_used: false, message: null },
-        plan_cleanup: { removed: true, path: "/tmp/plans/studio-157" },
         warnings: [],
       } satisfies Partial<DeleteWorkItemResult>);
     });
