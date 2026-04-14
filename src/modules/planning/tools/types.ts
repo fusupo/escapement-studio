@@ -2,7 +2,7 @@ import type { GitHubService } from "../../github/github.service.js";
 import type { GraphService } from "../../graph/graph.service.js";
 import type { MemoryService } from "../memory.service.js";
 import type { ProposalStateService } from "../proposal-state.service.js";
-import type { ReconciliationService } from "../../reconciliation/reconciliation.service.js";
+import type { DriftReportService } from "../../drift-report/drift-report.service.js";
 import type { SubAgentService } from "../sub-agent.service.js";
 
 /**
@@ -20,7 +20,7 @@ export interface PlanningToolDeps {
   memoryService: MemoryService;
   subAgentService: SubAgentService;
   githubService: GitHubService;
-  reconciliationService: ReconciliationService;
+  driftReportService: DriftReportService;
   proposalState: ProposalStateService;
 
   // PlanningService-owned hooks (callbacks so the SSE stream + counter

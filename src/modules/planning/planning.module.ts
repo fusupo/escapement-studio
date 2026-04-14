@@ -8,10 +8,10 @@ import { PlanningController } from "./planning.controller.js";
 import { PlanningService } from "./planning.service.js";
 import { ProposalStateService } from "./proposal-state.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
-import { ReconciliationModule } from "../reconciliation/reconciliation.module.js";
+import { DriftReportModule } from "../drift-report/drift-report.module.js";
 
 @Module({
-  imports: [GraphModule, GitHubModule, ReconciliationModule, SettingsModule],
+  imports: [GraphModule, GitHubModule, DriftReportModule, SettingsModule],
   controllers: [PlanningController],
   providers: [PlanningService, ContextService, MemoryService, ProposalStateService, SubAgentService],
   exports: [PlanningService, ContextService, MemoryService, ProposalStateService, SubAgentService],

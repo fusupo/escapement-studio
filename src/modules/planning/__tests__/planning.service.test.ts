@@ -24,8 +24,8 @@ vi.mock("../sub-agent.service.js", () => ({
   SubAgentService: class {},
 }));
 
-vi.mock("../../reconciliation/reconciliation.service.js", () => ({
-  ReconciliationService: class {},
+vi.mock("../../drift-report/drift-report.service.js", () => ({
+  DriftReportService: class {},
 }));
 
 import { checkIdAlignment } from "../../graph/types.js";
@@ -80,7 +80,7 @@ function makePlanningService(createdIssues: CreatedIssue[]) {
     memoryService,
     subAgentService: {} as never,
     githubService,
-    reconciliationService: {} as never,
+    driftReportService: {} as never,
     proposalState,
     emitStudioEvent: () => {},
     buildProposalDefaults: () => ({ currentTurnId: "turn_0001", sessionId: "planning-root" }),
