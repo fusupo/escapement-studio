@@ -22,23 +22,25 @@ captures why migration vs rebuild, what smells exist with line
 pointers, and how phases map to current code. The phase docs assume
 that context.
 
-| # | Phase | Proposal doc | Net outcome | fwdRef |
-|---|---|---|---|---:|
-| 0 | Platform bus (`@nestjs/cqrs`) | [`phase-0-platform-bus.md`](phase-0-platform-bus.md) | Command + event bus infrastructure via the Nest-native CQRS package. No production code touched. | 0 |
-| 1 | Kill the HSM shadow vocabulary | [`phase-1-hsm-action-handlers.md`](phase-1-hsm-action-handlers.md) | Move `HsmActionHandlers` to ExecutionModule, rewrite to runtime signature, delete `HsmGuardHandlers` + `createRunRecord` action + `kickOffPlanDrafter` shadow. Named, testable, single-sourced. | −1 |
-| 2 | Route `WorkItemsController` through the command bus | [`phase-2-work-items-controller-command-bus.md`](phase-2-work-items-controller-command-bus.md) | Six commands for cancel/delete/transition/prepare/reopen. Controller injects only `CommandBus` + same-module services. | −2 |
-| 3 | Extract `RunDispositionService` | [`phase-3-run-disposition-service.md`](phase-3-run-disposition-service.md) | Merged-PR close / archive-and-close / cancel / delete clusters move out of the god class into a dedicated sub-service. God class drops ~800 lines. | 0 |
-| 4 | Carve remaining sub-services out of `ExecutionService` | [`phase-4-execution-sub-services.md`](phase-4-execution-sub-services.md) | `RunStore`, `WorktreeService`, `ScratchpadService`, `RunInteractionService`, `PullRequestService`. God class drops from ~2500 to ~500. | 0 |
-| 5 | Event-driven cross-context calls (picked per event) | [`phase-5-event-driven-cross-context.md`](phase-5-event-driven-cross-context.md) | `WorkItemMergedEvent`, `RunCompletedEvent`, `PullRequestTruthRefreshedEvent`, `WorkItemDeletedEvent`. Bespoke callback handshake retired. | −1 |
-| 6 | `PlatformModule` for `SQLiteService` + move `GitHubBatchCache` to `GitHubModule` | [`phase-6-platform-module.md`](phase-6-platform-module.md) | Infrastructure out of GraphModule. External-state caching home-moved. Transitive cycles through Graph collapse. | −3 |
-| 7 | Planner tool registry | [`phase-7-planner-tool-registry.md`](phase-7-planner-tool-registry.md) | 10 planner tools move to per-file factories. `ProposalStateService` owns staging state. `PlanningService` drops from ~1380 to ~500. | 0 |
-| 8 | Delete dead code + rename reconciliation | [`phase-8-delete-dead-code.md`](phase-8-delete-dead-code.md) | Delete `GitModule`, four legacy Svelte components, orphaned `createHsmRunRecord`. Rename `ReconciliationService` → `DriftReportService` (URL preserved for compat). | −1 |
-| 9 | Review pass | [`phase-9-review-pass.md`](phase-9-review-pass.md) | Unwrap residual forwardRefs, dedup run scaffolding audit, ratify service-size convention in CLAUDE.md. | −1 to −3 |
+| # | Phase | Proposal doc | Net outcome | fwdRef | Status |
+|---|---|---|---|---:|---|
+| 0 | Platform bus (`@nestjs/cqrs`) | [`phase-0-platform-bus.md`](phase-0-platform-bus.md) | Command + event bus infrastructure via the Nest-native CQRS package. No production code touched. | 0 | landed |
+| 1 | Kill the HSM shadow vocabulary | [`phase-1-hsm-action-handlers.md`](phase-1-hsm-action-handlers.md) | Move `HsmActionHandlers` to ExecutionModule, rewrite to runtime signature, delete `HsmGuardHandlers` + `createRunRecord` action + `kickOffPlanDrafter` shadow. Named, testable, single-sourced. | −1 | landed |
+| 2 | Route `WorkItemsController` through the command bus | [`phase-2-work-items-controller-command-bus.md`](phase-2-work-items-controller-command-bus.md) | Six commands for cancel/delete/transition/prepare/reopen. Controller injects only `CommandBus` + same-module services. | −2 | landed |
+| 3 | Extract `RunDispositionService` | [`phase-3-run-disposition-service.md`](phase-3-run-disposition-service.md) | Merged-PR close / archive-and-close / cancel / delete clusters move out of the god class into a dedicated sub-service. God class drops ~800 lines. | 0 | landed |
+| 4 | Carve remaining sub-services out of `ExecutionService` | [`phase-4-execution-sub-services.md`](phase-4-execution-sub-services.md) | `RunStore`, `WorktreeService`, `ScratchpadService`, `RunInteractionService`, `PullRequestService`. God class drops from ~2500 to ~500. | 0 | landed |
+| 5 | Event-driven cross-context calls (picked per event) | [`phase-5-event-driven-cross-context.md`](phase-5-event-driven-cross-context.md) | `WorkItemMergedEvent`, `RunCompletedEvent`, `PullRequestTruthRefreshedEvent`, `WorkItemDeletedEvent`. Bespoke callback handshake retired. | −1 | landed |
+| 6 | `PlatformModule` for `SQLiteService` + move `GitHubBatchCache` to `GitHubModule` | [`phase-6-platform-module.md`](phase-6-platform-module.md) | Infrastructure out of GraphModule. External-state caching home-moved. Transitive cycles through Graph collapse. | −3 | landed |
+| 7 | Planner tool registry | [`phase-7-planner-tool-registry.md`](phase-7-planner-tool-registry.md) | 10 planner tools move to per-file factories. `ProposalStateService` owns staging state. `PlanningService` drops from ~1380 to ~500. | 0 | landed |
+| 8 | Delete dead code + rename reconciliation | [`phase-8-delete-dead-code.md`](phase-8-delete-dead-code.md) | Delete `GitModule`, four legacy Svelte components, orphaned `createHsmRunRecord`. Rename `ReconciliationService` → `DriftReportService` (URL preserved for compat). | −1 | landed |
+| 9 | Review pass | [`phase-9-review-pass.md`](phase-9-review-pass.md) | Unwrap residual forwardRefs (4 → 0), defer run-scaffolding dedup to #264, verify PR-truth event timing, skip rename + inline wrappers, delete dead `user.resolve_disambiguation` transition, add service-size convention to `CLAUDE.md`. | −4 | landed |
 
 **Starting forwardRef count:** 11 (verified by
 `grep -c 'forwardRef(' src/modules/*/*.module.ts` as of
 2026-04-12).
-**Target after Phase 9:** 0–1.
+**Final forwardRef count after Phase 9:** **0** — every module-level
+wrapper in `src/modules/*/*.module.ts` is gone. The migration
+exceeded the original 0–1 target.
 
 ## How to read the proposals
 
