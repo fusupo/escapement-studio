@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
+import { EventBus } from "@nestjs/cqrs";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -10,6 +11,7 @@ import {
 import { fetchIssueBody } from "../../lib/github-cli.js";
 import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-working-branches.js";
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
+import { RunCompletedEvent } from "./events/run-completed.event.js";
 import { PullRequestService } from "./pull-request.service.js";
 import { RunInteractionService } from "./run-interaction.service.js";
 import { RunStore } from "./run-store.service.js";
@@ -60,6 +62,7 @@ export class ExecutionService implements OnModuleInit {
     @Inject(PullRequestService) private readonly pullRequestService: PullRequestService,
     @Inject(ScratchpadService) private readonly scratchpadService: ScratchpadService,
     @Inject(WorktreeService) private readonly worktreeService: WorktreeService,
+    @Inject(EventBus) private readonly eventBus: EventBus,
   ) {
     // Phase 4e (#234): the truth refresher callback is registered by
     // PullRequestService in its own constructor. ExecutionService no
@@ -422,6 +425,21 @@ export class ExecutionService implements OnModuleInit {
     this.runStore.writeSummary(run, node);
     this.runStore.appendEvent(run, { type: "run_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
     this.runStore.emitRun("execution_result", run);
+
+    // Phase 5 (#225): publish RunCompletedEvent so future consumers
+    // (drift reports, notifications, etc.) can react without editing
+    // executeRun. No subscribers land in Phase 5. `pullRequest` is
+    // null at this point because PR creation is a separate later
+    // step — most freshly-completed runs don't have a PR yet.
+    this.eventBus.publish(
+      new RunCompletedEvent(
+        run.run_id,
+        run.work_item_id,
+        changedFiles,
+        assistantText,
+        run.pull_request ?? null,
+      ),
+    );
   }
 
   getRunActivityLog(runId: string): ActivityLogEntry[] {

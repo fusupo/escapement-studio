@@ -1,7 +1,9 @@
 import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
+import { EventBus } from "@nestjs/cqrs";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDefaultWorkingBranch } from "./default-working-branches.js";
+import { WorkItemMergedEvent } from "./events/work-item-merged.event.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
@@ -62,6 +64,7 @@ export class PullRequestService {
     @Inject(GitHubService) private readonly githubService: GitHubService,
     @Inject(GitHubBatchCache) private readonly githubBatchCache: GitHubBatchCache,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
+    @Inject(EventBus) private readonly eventBus: EventBus,
   ) {
     // Phase 5 (#225): the bespoke `registerPullRequestTruthRefresher`
     // callback handshake is gone. `GitHubService.withPullRequestReconciliation`
@@ -338,6 +341,23 @@ export class PullRequestService {
       archive_path: nextArchivePath,
       meta: nextMeta,
     });
+
+    // Phase 5 (#225): publish WorkItemMergedEvent after the HSM
+    // dispatch + work-item update have both committed. No subscribers
+    // land in this phase; the event exists for future consumers.
+    this.eventBus.publish(
+      new WorkItemMergedEvent(
+        workItem.id,
+        {
+          number: pullRequest.number,
+          url: pullRequest.url,
+          title: pullRequest.title,
+          merged_at: pullRequest.merged_at!,
+          merge_commit_sha: pullRequest.merge_commit_sha ?? null,
+        },
+        "sync_merged_api",
+      ),
+    );
 
     const updatedWorkItem = this.workItemsService.get(workItem.id);
     const managedBlockSync = input.stage_github_sync ? await this.safeStageManagedBlockSync(updatedWorkItem.id) : undefined;
