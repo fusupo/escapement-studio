@@ -147,7 +147,6 @@ describe("WorkItemHsmService", () => {
     ["pre_pr.in_progress", { type: "run.error", run_id: "r1", reason: "boom" }, "pre_pr.run_errored"],
     ["pre_pr.run_errored", { type: "user.retry" }, "pre_pr.in_progress"],
     ["pre_pr.run_errored", { type: "user.investigate" }, "pre_pr.ready"],
-    ["pre_pr.run_errored", { type: "user.resolve_disambiguation" }, "pre_pr.ready"],
     ["pre_pr.in_progress", { type: "run.completed", run_id: "r2", pr_exists: false }, "merged_pr"],
     ["pre_pr.ready", { type: "user.defer" }, "deferred"],
     ["pre_pr.ready", { type: "user.cancel" }, "cancelled"],

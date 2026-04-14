@@ -210,7 +210,6 @@ export type WorkItemHsmEvent =
   | { type: "user.cancel" }
   | { type: "user.defer" }
   | { type: "user.undefer" }
-  | { type: "user.resolve_disambiguation" }
   | { type: "run.completed"; run_id: string; pr_exists: boolean }
   | { type: "run.error"; run_id: string; reason: string }
   | { type: "gh.pr_opened"; pull_request: Record<string, unknown> }
