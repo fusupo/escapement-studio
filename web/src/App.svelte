@@ -176,11 +176,11 @@
   $: completedTodayCount = (() => {
     const todayPrefix = new Date().toISOString().slice(0, 10);
     return executionRuns.filter(
-      (r) => r.status === "completed" && r.completed_at?.startsWith(todayPrefix)
+      (r) => r.status === "completed" && r.terminal_outcome?.severity !== "warn" && r.completed_at?.startsWith(todayPrefix)
     ).length;
   })();
   $: successRate = (() => {
-    const completed = executionRuns.filter((r) => r.status === "completed").length;
+    const completed = executionRuns.filter((r) => r.status === "completed" && r.terminal_outcome?.severity !== "warn").length;
     const errored = executionRuns.filter((r) => r.status === "error").length;
     const total = completed + errored;
     return total > 0 ? Math.round((completed / total) * 100) : null;

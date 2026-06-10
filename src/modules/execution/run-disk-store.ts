@@ -7,6 +7,7 @@ import type {
   ExecutionRunRecord,
   ExecutionRunStatus,
   ExecutionSafetyCheck,
+  ExecutionTerminalOutcome,
 } from "./types.js";
 
 /**
@@ -304,6 +305,7 @@ export function coerceRecord(raw: unknown): ExecutionRunRecord | null {
     ? record.errors.map(coerceRunError).filter((entry): entry is NonNullable<ExecutionRunRecord["errors"]>[number] => entry != null)
     : undefined;
   const pullRequest = coercePullRequestRecord(record.pull_request);
+  const terminalOutcome = coerceTerminalOutcome(record.terminal_outcome);
 
   return {
     ...record,
@@ -322,6 +324,7 @@ export function coerceRecord(raw: unknown): ExecutionRunRecord | null {
     session_id: typeof record.session_id === "string" ? record.session_id : undefined,
     progress_message: typeof record.progress_message === "string" ? record.progress_message : undefined,
     result_summary: typeof record.result_summary === "string" ? record.result_summary : undefined,
+    terminal_outcome: terminalOutcome,
     activity_log: activityLog,
     safety_checks: safetyChecks,
     changed_files: changedFiles,
@@ -367,6 +370,35 @@ function coerceRunError(raw: unknown): NonNullable<ExecutionRunRecord["errors"]>
     return null;
   }
   return { code: error.code, message: error.message };
+}
+
+function coerceTerminalOutcome(raw: unknown): ExecutionTerminalOutcome | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const outcome = raw as Record<string, unknown>;
+  if (
+    typeof outcome.code !== "string"
+    || typeof outcome.severity !== "string"
+    || typeof outcome.label !== "string"
+    || typeof outcome.detail !== "string"
+    || typeof outcome.changed_file_count !== "number"
+    || typeof outcome.summary_present !== "boolean"
+  ) {
+    return undefined;
+  }
+  if (
+    !["success", "no_changes", "missing_summary", "no_changes_and_missing_summary"].includes(outcome.code)
+    || !["success", "warn"].includes(outcome.severity)
+  ) {
+    return undefined;
+  }
+  return {
+    code: outcome.code as ExecutionTerminalOutcome["code"],
+    severity: outcome.severity as ExecutionTerminalOutcome["severity"],
+    label: outcome.label,
+    detail: outcome.detail,
+    changed_file_count: outcome.changed_file_count,
+    summary_present: outcome.summary_present,
+  };
 }
 
 function coercePullRequestRecord(raw: unknown): ExecutionPullRequestRecord | undefined {

@@ -124,6 +124,14 @@ describe("loadRunRecordsFromDisk", () => {
   it("sanitizes optional persisted fields while preserving completed-run metadata", () => {
     writeRunStatus(runsDir, makeRun("run_completed", {
       result_summary: "Finished successfully.",
+      terminal_outcome: {
+        code: "success",
+        severity: "success",
+        label: "completed",
+        detail: "Execution run completed with 2 changed file(s) and an assistant summary.",
+        changed_file_count: 2,
+        summary_present: true,
+      },
       changed_files: ["src/a.ts", 123 as unknown as string, "src/b.ts"],
       activity_log: [
         { timestamp: "2026-04-10T00:00:00.000Z", kind: "agent_message", message: "hello" },
@@ -147,6 +155,11 @@ describe("loadRunRecordsFromDisk", () => {
 
     const [record] = loadRunRecordsFromDisk(runsDir);
     expect(record.result_summary).toBe("Finished successfully.");
+    expect(record.terminal_outcome).toMatchObject({
+      code: "success",
+      changed_file_count: 2,
+      summary_present: true,
+    });
     expect(record.changed_files).toEqual(["src/a.ts", "src/b.ts"]);
     expect(record.activity_log).toEqual([
       { timestamp: "2026-04-10T00:00:00.000Z", kind: "agent_message", message: "hello", detail: undefined },

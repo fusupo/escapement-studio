@@ -79,9 +79,10 @@
 
   $: activeRuns = runs.filter((run) => ["queued", "preparing", "running", "disambiguating"].includes(run.status));
   $: disambiguatingRuns = runs.filter((run) => run.status === "disambiguating");
-  $: completedRuns = runs.filter((run) => run.status === "completed");
+  $: completedRuns = runs.filter((run) => run.status === "completed" && run.terminal_outcome?.severity !== "warn");
+  $: suspectRuns = runs.filter((run) => run.terminal_outcome?.severity === "warn");
   $: blockedRuns = runs.filter((run) => run.status === "blocked");
-  $: failedRuns = runs.filter((run) => run.status === "error");
+  $: failedRuns = runs.filter((run) => run.status === "error" && run.terminal_outcome?.severity !== "warn");
 
   $: dispatchNodes = preview?.groups?.flatMap((group) =>
     group.nodes.map((node) => ({
@@ -360,12 +361,13 @@
 
   // Activity log delivered via SSE — no polling needed
 
-  function runStatusTone(status) {
-    if (status === "completed") return "healthy";
-    if (["running", "preparing", "queued"].includes(status)) return "info";
-    if (status === "disambiguating") return "disambiguating";
-    if (status === "blocked") return "warn";
-    if (status === "error") return "danger";
+  function runStatusTone(run) {
+    if (run?.terminal_outcome?.severity === "warn") return "warn";
+    if (run?.status === "completed") return "healthy";
+    if (["running", "preparing", "queued"].includes(run?.status)) return "info";
+    if (run?.status === "disambiguating") return "disambiguating";
+    if (run?.status === "blocked") return "warn";
+    if (run?.status === "error") return "danger";
     return "";
   }
 
@@ -490,6 +492,9 @@
         <span class="exec-stat">{preview.summary.dispatchable_now} dispatchable</span>
         <span class="exec-stat">{activeRuns.length} active</span>
         <span class="exec-stat">{completedRuns.length} done</span>
+        {#if suspectRuns.length > 0}
+          <span class="exec-stat warn">{suspectRuns.length} suspect</span>
+        {/if}
         {#if blockedRuns.length + failedRuns.length > 0}
           <span class="exec-stat warn">{blockedRuns.length + failedRuns.length} failed</span>
         {/if}
@@ -573,7 +578,7 @@
                 on:click={() => selectRun(run.run_id)}
                 title={reconciled?.rationale || `${run.work_item_id} — ${run.status}`}
               >
-                <span class="run-pill-dot {runStatusTone(run.status)}"></span>
+                <span class="run-pill-dot {runStatusTone(run)}"></span>
                 <span class="run-pill-label">{run.work_item_id}</span>
                 {#if showReconciledBadge}
                   <span class="run-pill-next-action" data-next-action={nextAction}>{nextAction.replace("_", " ")}</span>
@@ -600,7 +605,7 @@
                 <h3>{run.work_item_id}</h3>
                 <span class="muted">{run.work_item_name}</span>
               </div>
-              <span class="status-pill {runStatusTone(run.status)}">{run.status}</span>
+              <span class="status-pill {runStatusTone(run)}">{run.terminal_outcome?.label || run.status}</span>
             </div>
 
             {#if run.progress_message}
@@ -672,6 +677,16 @@
                 {/each}
 
                 <!-- Pinned summary cards at end of feed -->
+                {#if run.terminal_outcome}
+                  <div class="feed-pinned-card" class:feed-pinned-error={run.terminal_outcome.severity === "warn"}>
+                    <div class="feed-pinned-hdr">Outcome</div>
+                    <ul class="feed-pinned-list">
+                      <li><strong>{run.terminal_outcome.label}</strong> — {run.terminal_outcome.detail}</li>
+                      <li>Changed files: {run.terminal_outcome.changed_file_count}</li>
+                      <li>Summary present: {run.terminal_outcome.summary_present ? "yes" : "no"}</li>
+                    </ul>
+                  </div>
+                {/if}
                 {#if run.result_summary}
                   <div class="feed-pinned-card">
                     <div class="feed-pinned-hdr">Result summary</div>

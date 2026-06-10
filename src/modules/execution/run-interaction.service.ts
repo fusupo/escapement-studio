@@ -12,6 +12,7 @@ import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
 import { WorktreeService } from "./worktree.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
+import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { SettingsService } from "../settings/settings.service.js";
 import type { WorkItemRecord } from "../graph/types.js";
 import type {
@@ -26,6 +27,7 @@ import type {
   RunChatHistory,
   RunChatMessage,
 } from "./types.js";
+import { classifyExecutionTerminalOutcome } from "./run-outcome.js";
 
 /**
  * Phase 4e (#234): input envelope for `runSession`. RunInteractionService
@@ -53,7 +55,7 @@ export interface RunSessionInput {
 }
 
 export interface RunSessionResult {
-  assistantText: string;
+  assistantText: string | null;
   reasoningSummary: string | null;
 }
 
@@ -91,6 +93,7 @@ export class RunInteractionService {
     @Inject(WorktreeService) private readonly worktreeService: WorktreeService,
     @Inject(ScratchpadService) private readonly scratchpadService: ScratchpadService,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
+    @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(SettingsService) private readonly settingsService: SettingsService,
   ) {}
 
@@ -211,8 +214,8 @@ export class RunInteractionService {
     }
 
     // --- Post-phase completion (session still holds the final text) ---
-    const assistantText = session.getLastAssistantText()?.trim() ?? "Execution run completed.";
-    const reasoningSummary = this.extractReasoningSummary(assistantText);
+    const assistantText = session.getLastAssistantText()?.trim() || null;
+    const reasoningSummary = assistantText ? this.extractReasoningSummary(assistantText) : null;
     if (reasoningSummary) {
       this.pushActivity(run.run_id, "reasoning", reasoningSummary);
     }
@@ -823,24 +826,47 @@ export class RunInteractionService {
       session.dispose();
     }
 
-    const assistantText = session.getLastAssistantText()?.trim() ?? "Follow-up turn completed without a summary.";
-    this.pushActivity(run.run_id, "agent_message", assistantText);
+    const assistantText = session.getLastAssistantText()?.trim() || null;
+    if (assistantText) {
+      this.pushActivity(run.run_id, "agent_message", assistantText);
+    }
 
     const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
+    const outcome = classifyExecutionTerminalOutcome({
+      phase: "follow_up",
+      assistantText,
+      changedFiles,
+    });
 
-    this.pushActivity(run.run_id, "follow_up", `Follow-up turn completed. ${changedFiles.length} file(s) changed.`);
+    this.pushActivity(run.run_id, "follow_up", outcome.activityMessage);
     const nextRun = this.runStore.updateRun(run.run_id, {
-      status: "completed",
+      status: outcome.status,
       completed_at: this.now(),
-      progress_message: "Follow-up turn completed.",
-      result_summary: assistantText,
+      progress_message: outcome.progressMessage,
+      result_summary: outcome.resultSummary,
+      terminal_outcome: outcome.terminalOutcome,
       changed_files: changedFiles,
+      errors: outcome.errors,
     });
     if (nextRun) {
       this.runStore.writeSummary(nextRun);
-      this.runStore.appendEvent(nextRun, { type: "follow_up_turn_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
-      this.runStore.emitRun("execution_result", nextRun);
+      this.runStore.appendEvent(nextRun, {
+        type: outcome.eventType,
+        changed_files: changedFiles,
+        actual_files_sync: actualFilesSync,
+        terminal_outcome: outcome.terminalOutcome,
+      });
+      if (outcome.dispatchRunError) {
+        const workItem = this.workItemsService.get(run.work_item_id);
+        if (workItem.state === "in_progress") {
+          await this.hsmService.dispatch(run.work_item_id, {
+            type: "run.error",
+            run_id: run.run_id,
+            reason: outcome.terminalOutcome.detail,
+          });
+        }
+      }
     }
   }
 
