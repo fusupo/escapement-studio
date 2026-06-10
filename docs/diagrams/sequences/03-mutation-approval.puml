@@ -1,0 +1,75 @@
+@startuml mutation-approval
+title Graph mutation proposal — stage / review / approve
+
+skinparam shadowing false
+
+actor User
+participant "PlannerChatAdapter\n(browser)" as UI
+participant "PlanningController" as Ctrl
+participant "PlanningService" as Svc
+participant "ContextService" as Ctx
+participant "pi AgentSession\n(root planner)" as Pi
+participant "propose_mutations\ntool" as Tool
+participant "ProposalStateService" as State
+participant "GraphWriterService" as Writer
+queue "SSE /api/agent/stream" as Sse
+
+== Stage ==
+User -> UI : type message\n"plan the auth track"
+UI -> Ctrl : POST /api/agent/message\n{ message, context? }
+Ctrl -> Svc : sendMessage
+Svc -> Ctx : assemble(graph_mode, repo, track)
+Ctx --> Svc : PlanningContext\n(STUDIO_*.md + memory +\ngraph triples + conv window)
+Svc -> Svc : formatForPrompt\n(wraps in <studio_context>\n+ <user_message>)
+Svc -> Pi : prompt(formatted)
+
+loop turn
+  Pi --> Svc : agent_start / message_update / ...
+  Svc --> Sse : envelope(event_type, payload)
+end
+
+Pi -> Tool : call propose_mutations(\n  summary, mutations[])
+Tool -> State : normalizeProposal(input, defaults)
+Tool -> State : setActiveProposal(proposal)
+Tool -> Svc : emitStudioEvent("mutation_proposal",\n{ proposal })
+Svc --> Sse : mutation_proposal
+Sse --> UI : render reviewable card\nwith per-mutation checkboxes
+
+Pi --> Svc : turn_end
+Svc --> Sse : turn_end
+
+== Approve ==
+User -> UI : select subset + click Approve
+UI -> Ctrl : POST /api/agent/proposals/approve\n{ proposal_id, approved_mutation_ids }
+Ctrl -> Svc : approveProposal
+Svc -> State : getProposal(id)
+Svc -> Svc : toGraphMutation()\nper selected mutation
+Svc -> Writer : apply({ proposal_id, mutations,\nbased_on_graph_version })
+
+Writer -> Writer : normalize order +\nvalidate whole batch\n(missing_entity / duplicate /\ninvalid_relation / unsafe_delete /\nmalformed_payload)
+
+alt applied
+  Writer --> Svc : { status: "applied",\nprevious_/new_graph_version }
+  Svc -> State : updateActiveProposalAfterApply\n(removes approved mutations,\nclears proposal if empty)
+else validation_failed
+  Writer --> Svc : { status: "validation_failed",\nerrors[] }
+else stale
+  Writer --> Svc : { status: "stale",\nprevious_/current_graph_version }
+end
+
+Svc -> State : setLastCommitResult
+Svc --> Sse : graph_commit_result
+Svc --> Ctrl : PlanningGraphCommitResult
+Ctrl --> UI : 200
+
+note over UI
+  Same flow shape is reused for
+  memory changes (memory_write tool
+  → memory_change_proposal SSE →
+  approveMemoryChange) and GitHub
+  syncs (github_sync tool →
+  github_sync_proposal SSE →
+  approveGitHubSync).
+end note
+
+@enduml

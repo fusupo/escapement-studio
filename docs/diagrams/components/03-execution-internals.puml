@@ -1,0 +1,98 @@
+@startuml execution-internals
+title ExecutionModule — internal structure
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+component "ExecutionController\n/api/execution/*" as Ctrl
+component "WorkItemReconcilerController\n/api/work-items/reconciled" as ReconCtrl
+
+package "Orchestrators" {
+  component "ExecutionService\n~811 lines\n- getPreview / launch\n- executeRun (async)\n- syncMergedPullRequest\n- archives listing" as ExecSvc
+  component "RunDispositionService\n- closeMergedPullRequest\n- archiveAndCloseMergedPR\n- cancelWorkItem\n- deleteWorkItem\n- archiveRunArtifactsAction" as Dispo
+  component "HsmActionHandlers\n(onModuleInit)\nregisters:\n- closeGhIssue\n- runArchiver" as Hsm
+}
+
+package "Core sub-services" {
+  component "RunStore\n- recentRuns (cap 16)\n- runs/<id>/status.json\n- events.jsonl\n- SSE stream\n- disposeRunsForWorkItem" as Store
+  component "RunInteractionService\n- pi AgentSession lifecycle\n- disambiguation gate\n- runSession(setup+doWork)\n- follow-up turns\n- prompt builders" as Inter
+  component "WorktreeService\n- runGit/runGh shell\n- createWorktree\n- installDependencies\n- safety checks\n- cleanup" as Tree
+  component "ScratchpadService\n- writeScratchpad\n- syncScratchpadToCanonical\n- checklist parse + SSE\n- commit guards" as Scratch
+  component "PullRequestService\n- createPullRequest\n- syncMergedPullRequest\n- refreshRunsForPullRequest" as PR
+}
+
+package "Pure helpers (no Nest)" {
+  component "run-disk-store.ts\nload / coerce /\ndetectAndMarkOrphans" as DiskStore
+  component "run-archiver.ts\narchiveRunArtifactsForWorkItem" as Archiver
+  component "archive-reader.ts\nlistArchivedRunBundles" as ArchiveReader
+}
+
+package "CQRS handlers" {
+  component "CancelWorkItemHandler" as CH1
+  component "DeleteWorkItemHandler" as CH2
+  component "CloseMergedPullRequestHandler" as CH3
+  component "ArchiveAndCloseMergedPRHandler" as CH4
+  component "TransitionInProgressToReadyHandler" as CH5
+  component "TransitionInProgressToDraftingHandler" as CH6
+}
+
+component "WorkItemReconcilerService\n- runStartupReconcile\n- reconcile (graph + disk +\n  PR cache + worktree)\n- produces ReconciledWorkItem\n  with next_action + enabled_events" as Reconciler
+component "PullRequestTruthRefreshedHandler" as PRH
+
+component "CommandBus" as Bus
+component "GraphService\n(GraphModule)" as GraphSvc
+component "WorkItemHsmService\n(GraphModule)" as HsmSvc
+component "GitHubService\n(GitHubModule)" as GhSvc
+component "GitHubBatchCache" as GhCache
+
+Ctrl --> ExecSvc
+Ctrl --> Store
+Ctrl ..> Bus
+Bus --> CH1
+Bus --> CH2
+Bus --> CH3
+Bus --> CH4
+Bus --> CH5
+Bus --> CH6
+CH1 --> Dispo
+CH2 --> Dispo
+CH3 --> Dispo
+CH4 --> Dispo
+CH5 --> ExecSvc
+CH6 --> ExecSvc
+
+ExecSvc --> Store
+ExecSvc --> Inter
+ExecSvc --> Tree
+ExecSvc --> Scratch
+ExecSvc --> PR
+ExecSvc --> Reconciler
+
+Inter --> Store
+Inter --> Tree
+Inter --> Scratch
+
+PR --> Store
+PR --> Tree
+PR --> Scratch
+
+Dispo --> Store
+Dispo ..> ExecSvc : forwardRef\n(getPreview)
+Hsm --> Dispo
+
+PRH --> PR
+
+Store ..> DiskStore
+Dispo ..> Archiver
+ExecSvc ..> ArchiveReader
+Reconciler ..> DiskStore
+
+ExecSvc ..> GraphSvc : getPlan
+ExecSvc ..> HsmSvc : dispatch(user.*)
+Hsm ..> HsmSvc : registerActionHandler
+PR ..> GhSvc
+Dispo ..> GhSvc
+Hsm ..> GhSvc
+Reconciler ..> GhCache
+
+@enduml

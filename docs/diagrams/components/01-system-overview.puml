@@ -2,163 +2,74 @@
 title Escapement Studio — System Overview
 
 skinparam componentStyle rectangle
-skinparam roundcorner 8
-skinparam defaultFontName sans-serif
+skinparam defaultFontName "Fira Sans"
 skinparam shadowing false
-skinparam ArrowColor #555555
-skinparam componentBackgroundColor #F8FAFC
-skinparam componentBorderColor #334155
-skinparam databaseBackgroundColor #EFF6FF
-skinparam databaseBorderColor #2563EB
-skinparam cloudBackgroundColor #FDF4FF
-skinparam cloudBorderColor #A855F7
 
-actor "Operator" as user
+actor "Human\nplanner" as User
 
-package "Browser (Svelte + Vite)" as browser {
-  [App.svelte] as app
-  [PlannerChatAdapter] as chat
-  [GraphView + D3] as graph
-  [ExecutionDispatchPanel] as exec
-  [Sidebar / ReconciliationPanel /\nSettingsPanel] as panels
-  [api.js REST client] as api_client
-  [planner-chat.js SSE] as sse_client
+package "Browser (Svelte 5 + Vite)" as Browser {
+  [App.svelte\n(Planning / Execute /\nReconcile / Settings tabs)] as App
+  [PlannerChatAdapter] as Chat
+  [GraphView\n(d3 + dagre-d3)] as Graph
+  [ExecutionDispatchPanel] as Exec
+  [ReconciliationPanel] as Recon
+  [SettingsPanel] as Sett
+  [lib/api.js\nREST client] as ApiLib
+  [lib/planner-chat.js\nSSE subscriber] as SseLib
 }
 
-package "Server (NestJS, Node 22)" as server {
-  package "HTTP + SSE controllers" as http_layer {
-    [PlanningController\n/api/agent/*] as plan_ctrl
-    [ExecutionController\n/api/execution/*] as exec_ctrl
-    [GraphController\n/api/graph/*] as graph_ctrl
-    [PlansController\n/api/plans/*] as plans_ctrl
-    [GitHubController\n/api/github/*] as gh_ctrl
-    [WorkItemsController\n/api/work-items/*] as wi_ctrl
-    [SettingsController\n/api/settings/*] as set_ctrl
-    [ReconciliationController\n/api/reconciliation/*] as rec_ctrl
-    [HealthController /health] as health_ctrl
-  }
-
-  package "Service layer" as services {
-    [PlanningService\n(+ root pi session)] as plan_svc
-    [ExecutionService] as exec_svc
-    [PlansService] as plans_svc
-    [PlanDrafterService] as drafter
-    [SubAgentService] as sub_svc
-    [WorkItemHsmService\n(SCION SCXML)] as hsm
-    [GraphWriterService] as writer
-    [GitHubService\n(gh CLI wrapper)] as gh_svc
-    [GitHubBatchCache] as cache
-    [GitHubCacheScheduler\n@Cron(1m)] as cron
-    [WorkItemReconcilerService] as reconciler
-    [ReconciliationService] as rec_svc
-    [ContextService] as ctx_svc
-    [MemoryService] as mem_svc
-    [SettingsService] as set_svc
-  }
+package "Escapement Studio API\n(NestJS + @nestjs/cqrs)" as Api {
+  [GraphController\n/api/graph, /api/work-items,\n/api/edges, /api/frontier, /api/plan] as GraphCtrl
+  [PlanningController\n/api/agent/*] as PlanCtrl
+  [PlansController\n/api/plans/*] as PlansCtrl
+  [ExecutionController\n/api/execution/*] as ExecCtrl
+  [GitHubController\n/api/github/*] as GhCtrl
+  [GitHubCacheController\n/api/github-cache/refresh] as GhCacheCtrl
+  [WorkItemReconcilerController\n/api/work-items/reconciled] as ReconCtrl
+  [DriftReportController\n/api/reconciliation/reports] as DriftCtrl
+  [SettingsController\n/api/settings/*] as SettCtrl
+  [HealthController\n/health] as HealthCtrl
 }
 
-database "SQLite manifest\n.manifest/manifest.db" as manifest
-database "Context root\nplans/ runs/\nworktrees/ archives/" as ctxroot
-file "PLANNING_MEMORY.md" as memory_file
-file "Pi session JSONL\n.studio/planning/sessions/" as pi_session
+database "SQLite\n.manifest/manifest.db\nwork_items + edges\n+ studio_metadata" as DB
 
-cloud "GitHub\n(via gh CLI)" as github
-cloud "Local git\n(worktrees, remotes)" as git
-cloud "Anthropic / OpenAI / etc.\nvia @mariozechner/pi-coding-agent" as llm
+folder "Context root\n(default: /home/marc/escapement-studio-ctx)" as Ctx {
+  [plans/<slug>/] as Plans
+  [runs/<id>/] as Runs
+  [worktrees/<branch>/] as Worktrees
+  [archives/<slug>/] as Archives
+}
 
-user --> app : clicks, keystrokes
+folder "Repo files" {
+  [PLANNING_MEMORY.md] as Memory
+  [STUDIO_OVERVIEW.md\nSTUDIO_ARCHITECTURE.md] as Docs
+  [.studio/planning/sessions/\npi session JSONL] as PiSession
+  [.github/ISSUE_TEMPLATE/] as IssueTemplates
+}
 
-app --> chat
-app --> graph
-app --> exec
-app --> panels
+cloud "External" {
+  [GitHub via gh CLI] as GH
+  [git worktree] as Git
+  [pi-coding-agent\n(Anthropic / OpenAI / ...)] as Pi
+  [SCION-CORE\n(SCXML interpreter)] as Scion
+}
 
-chat --> api_client
-chat --> sse_client
-graph --> api_client
-exec --> api_client
-panels --> api_client
+User --> App
+App --> ApiLib
+App --> SseLib
+ApiLib --> Api : REST
+SseLib --> Api : SSE\n/api/agent/stream\n/api/execution/stream\n/api/graph/stream
 
-api_client --> http_layer : REST
-sse_client --> plan_ctrl : SSE /api/agent/stream
-exec --> exec_ctrl : SSE /api/execution/stream
-app --> graph_ctrl : SSE /api/graph/stream
+Api --> DB
+Api --> Ctx
+Api --> Memory
+Api --> Docs
+Api --> PiSession
+Api --> IssueTemplates
 
-plan_ctrl --> plan_svc
-exec_ctrl --> exec_svc
-graph_ctrl --> writer
-plans_ctrl --> plans_svc
-gh_ctrl --> gh_svc
-wi_ctrl --> hsm
-wi_ctrl --> exec_svc
-wi_ctrl --> plans_svc
-set_ctrl --> set_svc
-rec_ctrl --> rec_svc
-health_ctrl --> manifest
-
-plan_svc --> ctx_svc
-plan_svc --> mem_svc
-plan_svc --> sub_svc
-plan_svc --> writer : via proposals
-plan_svc --> gh_svc : github_* tools
-plan_svc --> rec_svc : reconciliation_query
-plan_svc --> llm : pi SDK session
-
-plans_svc --> drafter
-plans_svc --> hsm
-drafter --> llm : one-shot pi session
-
-exec_svc --> hsm : dispatch user.*, run.*
-exec_svc --> writer : metadata updates
-exec_svc --> reconciler : onModuleInit startup
-exec_svc --> cache : write-through updates
-exec_svc --> gh_svc : PR read / close
-exec_svc --> llm : execution pi session
-exec_svc --> git : git worktree add / status
-
-hsm --> writer : single atomic mutation
-hsm --> gh_svc : closeGhIssue action
-writer --> manifest : transaction
-
-cron --> cache : invalidate + fetch
-cron --> hsm : gh.* dispatch
-cache --> gh_svc
-reconciler --> manifest : list work items
-reconciler --> ctxroot : scan runs/*/status.json
-reconciler --> cache : batch lookups
-
-gh_svc --> github : gh issue/pr/*
-gh_svc --> manifest : reconcile work item meta
-
-ctx_svc --> manifest : read triples
-ctx_svc --> memory_file : read planning memory
-mem_svc --> memory_file : read/write
-
-plan_svc --> pi_session : session history
-sub_svc --> ctxroot : runs/sub_*/
-exec_svc --> ctxroot : plans/ runs/ worktrees/ archives/
-plans_svc --> ctxroot : plans/<slug>/
-set_svc --> manifest : studio_metadata row
-
-note right of llm
-  Every LLM-hosted session
-  (root planner, sub-agent,
-  plan drafter, execution
-  agent) runs through
-  pi-coding-agent, which
-  is what actually talks
-  to the model provider.
-end note
-
-note bottom of manifest
-  Studio-owned tables:
-  - work_items (HSM state)
-  - edges
-  - studio_metadata
-    (graph_version, settings)
-  Extended from escapement-pi
-  manifest-core via
-  src/lib/manifest-core.ts
-end note
+Api --> GH : execFileSync("gh", ...)
+Api --> Git : execFileSync("git", ...)
+Api ..> Pi : createAgentSession
+Api ..> Scion : work-item.scxml
 
 @enduml

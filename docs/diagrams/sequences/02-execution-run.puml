@@ -1,194 +1,100 @@
 @startuml execution-run
-title Execution Run — Launch → Setup → Do-Work → Complete → Open PR
+title Execution run — launch to completion
 
-skinparam defaultFontName sans-serif
 skinparam shadowing false
-skinparam sequence {
-  ArrowColor #475569
-  LifeLineBorderColor #334155
-  ParticipantBackgroundColor #F8FAFC
-  ParticipantBorderColor #334155
-  ActorBackgroundColor #F8FAFC
-}
 
-actor Operator
-participant "Execute tab\n(Dispatch panel)" as UI
-participant "ExecutionController\n/api/execution/*" as Ctrl
-participant "ExecutionService" as Exec
-participant "GraphService\n(dispatch plan)" as Graph
-participant "WorkItemHsmService" as HSM
-participant "GraphWriterService" as Writer
-participant "git CLI\n(worktree add)" as Git
-participant "pi AgentSession\n(coding tools)" as Pi
-participant "FS:\nplans/runs/worktrees" as FS
-database "SQLite" as DB
-queue "SSE\n/api/execution/stream" as SSE
+actor User
+participant "ExecutionController" as Ctrl
+participant "ExecutionService" as Svc
+participant "WorkItemHsmService" as Hsm
+participant "WorktreeService" as Tree
+participant "ScratchpadService" as Scratch
+participant "RunStore" as Store
+participant "RunInteractionService" as Inter
+participant "pi AgentSession" as Pi
+participant "WorkItemsService" as Items
+participant "EventBus" as Bus
+queue "SSE\n/api/execution/stream" as Sse
 
 == Launch ==
-Operator -> UI : click "Launch" on dispatch node
-UI -> Ctrl : POST /api/execution/launch\n  {work_item_id, disambiguate: true}
-activate Ctrl
-Ctrl -> Exec : launch(dto)
-activate Exec
+User -> Ctrl : POST /api/execution/launch\n{ work_item_id, disambiguate? }
+Ctrl -> Svc : launch(input)
+Svc -> Svc : resolveLaunchEligibility\n(plan, safety checks,\nlaunchable state)
 
-Exec -> Exec : resolveLaunchEligibility(workItem)
-Exec -> Graph : getPlan(repo)
-Graph --> Exec : DispatchPlan
-Exec -> Exec : findPlannedNode +\n  evaluateSafety + checkLaunchableState
-
-alt not launchable
-  Exec -> Exec : createRunRecord(\n  status: "blocked", errors)
-  Exec -> FS : mkdir runs/exec_<ts>/\n  write metadata.json + status.json
-  Exec -> SSE : emit execution_result\n  (status: blocked)
-  Exec --> Ctrl : {accepted: false, run}
-  Ctrl --> UI : 200
-  note over UI : show blocked reason
+alt eligibility.can_launch == false
+  Svc -> Store : persistRun(status=blocked)
+  Store --> Sse : execution_result (blocked)
+  Svc --> Ctrl : { accepted: false, run }
+  Ctrl --> User : 200
+else ok
+  Svc -> Hsm : dispatch(user.dispatch)
+  Hsm -> Svc : next_state = pre_pr.in_progress
+  Svc -> Store : persistRun(queued)
+  Store --> Sse : execution_status
+  Svc ->> Svc : executeRun(...) async
+  Svc --> Ctrl : { accepted: true, run }
+  Ctrl --> User : 200
 end
 
-Exec -> HSM : dispatch("studio-42", {type: "user.dispatch"})
-HSM -> Writer : apply({state: "pre_pr.in_progress"})
-Writer -> DB : transaction
-HSM --> Exec : DispatchResult
-
-Exec -> Exec : createRunRecord(\n  status: "queued")
-Exec -> FS : mkdir runs/exec_<ts>/outputs/\n  metadata.json + status.json
-Exec -> Exec : appendRunIdToPlanMetadata(\n  workItemId, runId)
-Exec -> FS : update plans/<slug>/metadata.json\n  (non-fatal)
-Exec -> SSE : emit execution_status
-Exec --> Ctrl : {accepted: true, run}
-deactivate Exec
-Ctrl --> UI : 200
-deactivate Ctrl
-note over UI : Execute tab switches,\nrun appears in pill strip
-
-== Background executeRun() ==
-Exec -> Exec : void executeRun(run, node,\n  disambiguate=true).catch(...)
-activate Exec
-
-Exec -> Exec : updateRun(status: "preparing")
-Exec -> SSE : emit execution_status
-Exec -> Git : git worktree add\n  <worktreeRoot>/<branch> -b <branch> <base>
-note right : Isolated worktree under\nARTIFACT_ROOT/worktrees/
-Exec -> Exec : pushActivity "Worktree created"
-
-alt package.json present
-  Exec -> Git : npm ci --ignore-scripts\n(or npm install fallback)
-end
-
-Exec -> Exec : fetchIssueBody + readProjectContext\n(AGENTS.md / CLAUDE.md)
-
-Exec -> FS : writeScratchpad(run, node)
-note right
-  Resolves canonical plan state:
-  - ready: copy canonical verbatim
-    → source = "canonical_ready"
-  - null/drafting (legacy): carry forward
-  - missing: synthesize skeleton
-  Writes worktree copy as
-  SCRATCHPAD_<slug>.md.
+== executeRun (async) ==
+Svc -> Store : updateRun(preparing)
+Store --> Sse : execution_status
+Svc -> Tree : createWorktree(branch, base_ref, path)
+Svc -> Tree : installDependencies(path)
+Svc -> Scratch : writeScratchpad(run, node)
+note right of Scratch
+  source =
+  canonical_ready | carried_forward |
+  synthesized. Skips setup phase
+  when plan was approved.
 end note
+Svc -> Inter : runSession({ node, workItem,\nscratchpadPath, hasApprovedPlan,\ndisambiguate, issueBody,\nprojectContext })
 
-Exec -> Pi : createAgentSession(\n  cwd: worktreePath,\n  tools: createCodingTools(...))
-Pi --> Exec : session
+Inter -> Pi : createAgentSession (worktree cwd)
+Inter -> Store : updateRun(running, session_id)
 
-Exec -> Exec : updateRun(status: "running",\n  session_id)
-Exec -> SSE : emit execution_status
+== Setup phase ==
+alt disambiguate && !hasApprovedPlan
+  Inter -> Pi : prompt(setupPrompt)
+  Pi --> Inter : tool events + assistant text
+  Inter -> Scratch : syncScratchpadToCanonical
+  Inter -> Store : updateRun(disambiguating)
+  Store --> Sse : execution_status
+  Inter -> Inter : await disambiguationGate
 
-== PHASE 1: Setup (skipped if canonical_ready\nand no open items) ==
-opt shouldRunSetupPhase
-  Exec -> SSE : emit execution_status\n(progress: "Setup phase")
-  Exec -> Pi : session.prompt(setupPrompt)
-  note right : agent edits SCRATCHPAD\n(Implementation Plan,\nAcceptance Criteria, ...)
-  Pi --> Exec : (turn ends)
-  Exec -> FS : syncScratchpadToCanonical(run)\n(worktree → plans/<slug>/)
-  Exec -> Exec : updateRun(status: "disambiguating")
-  Exec -> SSE : emit execution_status
-  note over UI : operator reviews plan\n+ optionally adds context
+  User -> Ctrl : POST /api/execution/resolve-disambiguation\n{ run_id, additional_context? }
+  Ctrl -> Inter : resolveDisambiguation
+  Inter -> Inter : gate.resolve(additional_context)
+
+  alt additional_context
+    Inter -> Pi : prompt(feedback + update plan)
+    Inter -> Scratch : syncScratchpadToCanonical
+  end
+
+  Inter -> Store : updateRun(running)
 end
 
-opt approved-plan had open clarifications/blockers
-  note right of Exec : Same disambiguation gate fires\neven when canonical_ready
+== Do-work phase ==
+Inter -> Pi : prompt(doWorkPrompt)
+loop turns
+  Pi --> Inter : tool_execution_start/end,\nmessage_end
+  Inter -> Store : appendActivityLog\n+ emitRun(execution_status)
+  Inter -> Scratch : emitChecklistIfChanged
 end
-
-== User resolves gate (optional) ==
-Operator -> UI : click "Proceed to coding"\n(+ optional context)
-UI -> Ctrl : POST /api/execution/resolve-disambiguation\n  {run_id, additional_context}
-Ctrl -> Exec : resolveDisambiguation(dto)
-Exec -> Exec : disambiguationGates\n  .get(runId).resolve(context)
-
-alt additional context provided
-  Exec -> Pi : session.prompt("user provided feedback...\n + context")
-  Pi --> Exec : (turn ends)
-  Exec -> FS : syncScratchpadToCanonical(run)
-end
-
-Exec -> Exec : updateRun(status: "running")
-
-== PHASE 2: Do-work ==
-Exec -> Pi : session.prompt(doWorkPrompt)
-note right : agent implements tasks,\ncommits per task\n(never commits SCRATCHPAD)
-
-loop per task
-  Pi -> Pi : Read, Edit, Bash,\nrun tests, git commit
-  Pi --> Exec : message_end events → SSE
-end
-
-Pi --> Exec : (prompt resolves)
-Exec -> FS : syncScratchpadToCanonical(run)
-Exec -> Pi : session.dispose()
-note right : activeSessions delete
+Inter -> Scratch : syncScratchpadToCanonical
+Inter --> Svc : { assistantText }
 
 == Completion ==
-Exec -> Exec : listChangedFiles(worktreePath)\n(git status --short)
-Exec -> Exec : syncActualFiles(workItemId,\n  changedFiles)
-note right : workItemsService.update(\n  {actual_files: sorted unique})
-Exec -> FS : runs/<id>/outputs/response.json
-Exec -> Exec : updateRun(status: "completed",\n  result_summary, changed_files)
-Exec -> SSE : emit execution_result
-deactivate Exec
+Svc -> Tree : listChangedFiles(worktree)
+Svc -> Items : update(actual_files = changedFiles)
+Svc -> Store : updateRun(completed,\nchanged_files, result_summary)
+Store --> Sse : execution_result
+Svc -> Bus : publish RunCompletedEvent
 
-== Open pull request ==
-Operator -> UI : click "Open PR"
-UI -> Ctrl : POST /api/execution/pull-request\n  {run_id, auto_commit: true}
-activate Ctrl
-Ctrl -> Exec : createPullRequest(dto)
-activate Exec
-alt auto_commit and worktree dirty
-  Exec -> Git : git add -A
-  Exec -> Exec : findStagedScratchpadViolations
-  alt violations
-    Exec -> SSE : emit scratchpad_commit_blocked
-    Exec --> Ctrl : BadRequestException
-    Ctrl --> UI : 400
-  end
-  Exec -> Git : git commit -m "..."
-end
-
-Exec -> Exec : findCommittedScratchpadViolations\n(base...HEAD)
-alt committed violations
-  Exec --> Ctrl : BadRequestException
-end
-
-Exec -> Git : countCommitsAhead(base, branch)
-alt 0 commits ahead
-  Exec --> Ctrl : BadRequestException
-end
-
-Exec -> Git : git push --set-upstream origin <branch>
-Exec -> Git : gh pr create --base <base>\n  --head <branch> --title ... --body-file -
-Exec -> Git : gh pr view --json ...
-Exec -> Exec : updateRun(pull_request)
-Exec -> FS : runs/<id>/outputs/pull-request.json
-
-Exec -> HSM : dispatch({type: "gh.pr_opened",\n  pull_request})
-HSM -> Writer : apply({state: "open_pr"})\n  + stampMeta:studio_open_pr_sync
-Writer -> DB : transaction
-
-Exec -> "GitHubBatchCache" as Cache : upsertPullRequest\n(write-through)
-Exec --> Ctrl : {run, pull_request}
-deactivate Exec
-Ctrl --> UI : 200
-deactivate Ctrl
-UI -> UI : refresh runs
+note over Svc
+  PR creation is a separate later
+  step via POST /api/execution/pull-request
+  (see PullRequestService).
+end note
 
 @enduml

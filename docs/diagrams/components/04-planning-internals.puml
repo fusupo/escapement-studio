@@ -1,0 +1,100 @@
+@startuml planning-internals
+title PlanningModule — internal structure
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+component "PlanningController\n/api/agent/*" as Ctrl
+
+component "PlanningService\n- persistent root pi session\n- SSE stream\n- approveProposal\n- approveMemoryChange\n- approveGitHubSync\n- buildToolDeps" as Svc
+
+component "ContextService\n- STUDIO_OVERVIEW.md\n- STUDIO_ARCHITECTURE.md\n- PLANNING_MEMORY.md\n- graph triples\n  (default / focused / full)\n- conversation window" as Ctx
+
+component "ProposalStateService\n- active mutation proposal\n- active memory change\n- active GitHub sync\n- issue-id alias chain\n- normalize / accumulate /\n  updateAfterApply" as State
+
+component "MemoryService\n- read + sha1 hash\n- applyChange\n  (replace / insert / delete)" as Mem
+
+component "SubAgentService\n- ephemeral pi sessions\n- runs/<id>/ subagent artifacts\n- parse JSON envelope" as Sub
+
+package "tool-registry (10 custom tools)" as Tools {
+  component "graph_query" as T1
+  component "propose_mutations" as T2
+  component "graph_mutate (stub)" as T3
+  component "memory_read" as T4
+  component "memory_write" as T5
+  component "delegate_subagent" as T6
+  component "github_read" as T7
+  component "github_create_issue" as T8
+  component "github_sync" as T9
+  component "reconciliation_query" as T10
+}
+
+cloud "pi-coding-agent\n(AgentSession)" as Pi
+
+component "GraphService\n(GraphModule)" as GraphSvc
+component "GraphWriterService" as Writer
+component "GitHubService\n(GitHubModule)" as GhSvc
+component "DriftReportService\n(DriftReportModule)" as DriftSvc
+component "SettingsService" as SettSvc
+component "WorkItemsService" as Items
+component "EdgesService" as Edges
+component "SQLiteService" as Sqlite
+component "StudioIssueTemplateService" as TemplateSvc
+
+Ctrl --> Svc
+
+Svc --> Ctx
+Svc --> State
+Svc --> Mem
+Svc --> Sub
+Svc ..> Tools : createPlanningTools(deps)\nat session start
+
+Svc ..> Pi : persistent root session
+Sub ..> Pi : ephemeral sessions
+
+T1 ..> GraphSvc
+T2 --> State
+T4 --> Mem
+T5 --> State
+T5 --> Mem
+T6 --> Sub
+T7 ..> GhSvc
+T8 ..> GhSvc
+T8 --> State
+T9 --> State
+T9 ..> GhSvc
+T10 ..> DriftSvc
+
+Svc ..> Writer : approveProposal →\napply mutations
+Svc ..> GhSvc : approveGitHubSync →\napplySyncProposal
+
+State ..> GraphSvc : getGraph / graph_version
+State ..> GhSvc : stageManagedBlockSync
+
+Ctx ..> Items
+Ctx ..> Edges
+Ctx ..> Sqlite
+Ctx ..> TemplateSvc
+Ctx ..> Mem
+
+Sub ..> SettSvc : getSelectedModel
+Svc ..> SettSvc : getSelectedModel
+
+note right of Tools
+  Tools never inject Nest
+  services directly — they
+  receive a PlanningToolDeps
+  bag from PlanningService,
+  so they stay pure factories
+  and are trivial to unit-test.
+end note
+
+note bottom of State
+  issue-id alias chain lets
+  github_create_issue stage a
+  placeholder id that later
+  resolves to the canonical
+  studio-<n> id before commit.
+end note
+
+@enduml

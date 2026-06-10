@@ -1,0 +1,83 @@
+@startuml merged-pr-disposition
+title Merged-PR disposition — close vs archive-and-close
+
+skinparam shadowing false
+
+actor User
+participant "ExecutionController" as Ctrl
+participant "CommandBus" as Bus
+participant "CloseMergedPullRequestHandler" as Handler
+participant "RunDispositionService" as Dispo
+participant "WorkItemHsmService" as Hsm
+participant "HsmActionHandlers" as Actions
+participant "GitHubService" as Gh
+participant "GitHubBatchCache" as Cache
+participant "WorkItemsService" as Items
+participant "GraphWriterService" as Writer
+participant "RunStore" as Store
+participant "ExecutionService" as Exec
+queue "SSE /api/execution/stream" as Sse
+
+== POST /close-merged ==
+User -> Ctrl : POST /api/execution/close-merged\n{ work_item_id }
+Ctrl -> Bus : execute(CloseMergedPullRequestCommand)
+Bus -> Handler : execute(cmd)
+Handler -> Dispo : closeMergedPullRequest(id)
+
+Dispo -> Dispo : assertNoActiveRunForWorkItem\n(refuses if any queued/preparing/\ndisambiguating/running)
+
+Dispo -> Hsm : dispatch(user.finalize)
+
+== HSM dispatch (synchronous action handler) ==
+Hsm -> Hsm : select transition\nmerged_pr --> done [user.finalize]\naction = closeGhIssue
+Hsm -> Actions : closeGhIssue(workItem, event, ctx)
+Actions -> Gh : closeIssue(repo, issue_number)
+Gh --> Actions : GitHubIssueDetails
+Actions -> Actions : ctx.handler_data.closed_issue = {...}
+Actions --> Hsm : resolved
+
+Hsm -> Writer : apply([update_work_item\nstate = done, meta = ...])
+Hsm -> Hsm : emit work_item_state_changed
+Hsm --> Dispo : DispatchResult\n(handler_data includes closed_issue)
+
+== Finalize + dispose runs ==
+Dispo -> Items : get(id)
+Dispo -> Cache : upsertIssue(repo,\n{ state: closed, ... })
+Dispo -> Store : disposeRunsForWorkItem(id, now)
+note right of Store
+  Walk recentRuns back-to-front,
+  splice matching, stamp
+  disposed_at on runs/<id>/
+  status.json (ENOENT tolerated),
+  then scan disk for runs not in
+  the buffer and stamp those too.
+end note
+Store --> Sse : execution_result\n(per disposed run)
+
+Dispo -> Exec : getPreview(repo) (via forwardRef)
+Dispo --> Handler : CloseMergedPullRequestResult\n{ work_item, closed_issue,\nremoved_run_ids, dispatch_preview }
+Handler --> Bus : result
+Bus --> Ctrl
+Ctrl --> User : 200
+
+== archive-and-close variant ==
+note over Dispo
+  POST /archive-and-close-merged runs the same
+  flow, but dispatches user.archive_and_finalize.
+  The matching transition runs TWO actions:
+    1. closeGhIssue
+    2. runArchiver → RunDispositionService
+       .archiveRunArtifactsAction, which:
+       - captureRunSnapshotForWorkItem (merge
+         recentRuns + disk scan)
+       - movePlanDirToArchives (renameSync
+         plans/<slug>/ → archives/<slug>/)
+       - archiveRunArtifactsForWorkItem (move
+         terminal runs into archives/<slug>/runs/
+         and write README.md)
+       - stamps ctx.meta.studio_archive +
+         ctx.patch_overrides.archive_path
+  Result envelope adds an archive block.
+end note
+
+@enduml

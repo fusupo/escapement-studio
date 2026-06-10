@@ -1,128 +1,124 @@
 @startuml backend-modules
-title Escapement Studio — NestJS Module Graph
+title Escapement Studio — Backend modules (NestJS)
 
-skinparam componentStyle rectangle
-skinparam roundcorner 8
-skinparam defaultFontName sans-serif
+skinparam packageStyle rectangle
 skinparam shadowing false
-skinparam packageBackgroundColor #F8FAFC
-skinparam packageBorderColor #334155
-skinparam ArrowColor #475569
 
-note as legend
-  Arrows: A → B means "A imports B"
-  Dashed arrow = forwardRef()
-    (resolves a declared circular dependency)
-  GitModule is **defined** (src/modules/git/)
-  but is NOT imported by AppModule — it is
-  vestigial as of the current codebase.
-end note
-
-package "AppModule\nsrc/app.module.ts" as app {
-}
-
-package "ScheduleModule\n@nestjs/schedule" as schedule {
-}
-
-package "GraphModule" as graph {
+package "@Global PlatformModule" as Platform {
   [SQLiteService]
+  [CqrsModule\nCommandBus / EventBus / QueryBus]
+}
+
+package GraphModule {
   [WorkItemsService]
   [EdgesService]
   [GraphService]
   [GraphWriterService]
+  [WorkItemHsmService\n(SCION)]
   [GraphEventsService]
-  [WorkItemHsmService]
-  [HsmActionHandlers]
-  [HsmGuardHandlers]
-  [WorkItemsController]
-  [EdgesController]
-  [GraphController]
 }
 
-package "ExecutionModule" as execution {
-  [ExecutionService]
-  [GitHubBatchCache]
-  [GitHubCacheScheduler]
-  [WorkItemReconcilerService]
-  [ExecutionController]
-  [GitHubCacheController]
-  [WorkItemReconcilerController]
+package GitHubModule {
+  [GitHubService]
+  [GitHubBatchCache\n(60s TTL)]
+  [GitHubCacheScheduler\n@Cron EVERY_MINUTE]
+  [StudioIssueTemplateService]
 }
 
-package "PlanningModule" as planning {
+package SettingsModule {
+  [SettingsService]
+  [ModelRegistryService]
+}
+
+package PlansModule {
+  [PlansService]
+  [PlanDrafterService]
+  [WorkItemDeletedHandler]
+}
+
+package PlanningModule {
   [PlanningService]
   [ContextService]
   [MemoryService]
+  [ProposalStateService]
   [SubAgentService]
-  [PlanningController]
+  [tool-registry\n(10 custom tools)]
 }
 
-package "PlansModule" as plans {
-  [PlansService]
-  [PlanDrafterService]
-  [PlansController]
+package ExecutionModule {
+  [ExecutionService]
+  [RunStore]
+  [WorktreeService]
+  [ScratchpadService]
+  [RunInteractionService]
+  [PullRequestService]
+  [RunDispositionService]
+  [HsmActionHandlers]
+  [WorkItemReconcilerService]
+  [CQRS command handlers]
+  [PullRequestTruthRefreshedHandler]
 }
 
-package "GitHubModule" as github {
-  [GitHubService]
-  [StudioIssueTemplateService]
-  [GitHubController]
+package DriftReportModule {
+  [DriftReportService]
 }
 
-package "ReconciliationModule" as recon {
-  [ReconciliationService]
-  [ReconciliationController]
-}
-
-package "SettingsModule" as settings {
-  [SettingsService]
-  [ModelRegistryService]
-  [SettingsController]
-}
-
-package "HealthModule" as health {
+package HealthModule {
   [HealthService]
-  [HealthController]
 }
 
-package "(GitModule — not imported)" as git_module_unused #FFF7ED {
-  [GitService]
-}
+' Global platform is implicitly available everywhere
+Platform <.. GraphModule : global
+Platform <.. GitHubModule : global
+Platform <.. SettingsModule : global
+Platform <.. PlansModule : global
+Platform <.. PlanningModule : global
+Platform <.. ExecutionModule : global
+Platform <.. DriftReportModule : global
+Platform <.. HealthModule : global
 
-' --- AppModule imports ---
-app --> schedule
-app --> execution
-app --> graph
-app --> health
-app --> github
-app --> planning
-app --> plans
-app --> recon
-app --> settings
+' Direct @Module imports
+GitHubModule --> GraphModule
+PlansModule --> GraphModule
+PlansModule --> GitHubModule
+PlansModule --> SettingsModule
+PlanningModule --> GraphModule
+PlanningModule --> GitHubModule
+PlanningModule --> SettingsModule
+PlanningModule --> DriftReportModule
+ExecutionModule --> GraphModule
+ExecutionModule --> GitHubModule
+ExecutionModule --> SettingsModule
+DriftReportModule --> GraphModule
+DriftReportModule --> ExecutionModule
 
-' --- forwardRef circular deps ---
-graph .left.> execution : forwardRef
-graph .left.> github : forwardRef
-graph .left.> plans : forwardRef
+note right of ExecutionModule
+  HsmActionHandlers registers
+  closeGhIssue + runArchiver
+  against WorkItemHsmService
+  on module init.
 
-execution .right.> graph : forwardRef
-execution .right.> github : forwardRef
-execution .right.> plans : forwardRef
-execution .right.> settings : forwardRef
+  CQRS handlers route to
+  RunDispositionService and
+  ExecutionService.
+end note
 
-plans ..> graph : forwardRef
-plans ..> github : forwardRef
-plans ..> settings : forwardRef
+note left of PlanningModule
+  No direct ExecutionModule dep.
+  Drift reports reach RunStore via
+  DriftReportModule, which does
+  import ExecutionModule.
 
-' --- Straight imports ---
-github --> graph
-planning --> graph
-planning --> github
-planning --> recon
-planning --> settings
-recon --> graph
-recon --> execution
-health --> graph
-settings ..> graph : forwardRef
+  Root planner tools read graph,
+  memory, GitHub, drift, and
+  delegate sub-agents.
+end note
+
+note bottom of PlansModule
+  WorkItemDeletedHandler
+  subscribes to WorkItemDeletedEvent
+  (published from RunDispositionService)
+  to clean up plans/<slug>/.
+end note
 
 @enduml

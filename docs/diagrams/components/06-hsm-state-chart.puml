@@ -1,110 +1,85 @@
 @startuml hsm-state-chart
-title Work Item HSM — src/modules/graph/work-item.scxml
+title Work item lifecycle — src/modules/graph/work-item.scxml (ADR 015)
 
-skinparam defaultFontName sans-serif
 skinparam shadowing false
-skinparam state {
-  BackgroundColor #F8FAFC
-  BorderColor #334155
-  FontColor #0F172A
-}
-skinparam ArrowColor #475569
 
-legend top
-  Canonical source: src/modules/graph/work-item.scxml
-  Parsed + interpreted by WorkItemHsmService via @scion-scxml/core.
-  Persisted as dotted leaf paths for pre_pr substates
-  (e.g. pre_pr.in_progress). All other states persist as-is.
-endlegend
-
-[*] --> pre_pr
 state pre_pr {
   [*] --> planned
 
-  note bottom of pre_pr
-    Shared transitions (inherited
-    by every pre_pr substate):
-      gh.pr_opened → open_pr
-      user.cancel → cancelled
-      user.defer → deferred
-        (action: rememberHistory)
-  end note
+  state planned
+  state drafting
+  state ready
+  state in_progress
+  state run_errored
 
-  state planned : dispatchable once\nplan is prepared
-  state drafting : plan is being\nauthored
-  state ready : plan approved,\nlaunchable
-  state in_progress : execution run\nactive
-  state run_errored : most recent run\nfailed, needs triage
-
-  state "H[*]" as history <<history>>
-
-  planned -[#2563EB]-> drafting : user.start_draft
-  planned -[#2563EB]-> in_progress : user.dispatch\n(action: createRunRecord)
-  drafting -[#2563EB]-> ready : draft.completed
-  drafting -[#EF4444]-> run_errored : draft.failed
-  ready -[#2563EB]-> drafting : user.start_draft
-  ready -[#2563EB]-> in_progress : user.dispatch\n(action: createRunRecord)
-  in_progress -[#16A34A]-> open_pr : run.completed\n[pr_exists]
-  in_progress -[#16A34A]-> merged_pr : run.completed\n[!pr_exists]
-  in_progress -[#EF4444]-> run_errored : run.error
-  in_progress -[#2563EB]-> ready : user.investigate
-  in_progress -[#2563EB]-> drafting : user.start_draft
-  run_errored -[#2563EB]-> in_progress : user.retry\n(action: createRunRecord)
-  run_errored -[#2563EB]-> ready : user.investigate
-  run_errored -[#2563EB]-> ready : user.resolve_disambiguation
+  planned --> drafting : user.start_draft
+  planned --> in_progress : user.dispatch
+  drafting --> ready : draft.completed
+  drafting --> run_errored : draft.failed
+  ready --> drafting : user.start_draft
+  ready --> in_progress : user.dispatch
+  in_progress --> open_pr : run.completed [pr_exists]
+  in_progress --> merged_pr : run.completed [!pr_exists]
+  in_progress --> run_errored : run.error
+  in_progress --> ready : user.investigate
+  in_progress --> drafting : user.start_draft
+  run_errored --> in_progress : user.retry
+  run_errored --> ready : user.investigate
 }
 
-state deferred : paused, can resume\nvia pre_pr shallow history
-state open_pr : PR exists,\nawaiting outcome\n(onEntry: stampMeta:studio_open_pr_sync)
-state merged_pr : PR merged,\nawaiting finalize\n(onEntry: stampMeta:studio_post_merge_sync)
-state closed : issue closed\nwithout merge\n(onEntry: stampMeta:studio_issue_close_sync)
-
+state deferred
+state open_pr : onEntry stampMeta:\nstudio_open_pr_sync
+state merged_pr : onEntry stampMeta:\nstudio_post_merge_sync
+state closed : onEntry stampMeta:\nstudio_issue_close_sync
 state done <<end>>
 state archived <<end>>
 state cancelled <<end>>
 
-pre_pr -[#64748B]-> deferred : user.defer\n(rememberHistory)
-deferred -[#64748B]-> history : user.undefer\n(targets pre_pr_history)
-
-open_pr -[#16A34A]-> merged_pr : gh.pr_merged
-open_pr -[#EF4444]-> closed : gh.issue_closed
-
-merged_pr -[#16A34A]-> done : user.finalize\n(action: closeGhIssue)
-merged_pr -[#16A34A]-> archived : user.archive_and_finalize\n(actions: closeGhIssue,\nrunArchiver)
-
-closed -[#16A34A]-> done : user.finalize
-closed -[#16A34A]-> archived : user.archive_and_finalize\n(action: runArchiver)
-
+' Inherited transitions on the pre_pr composite
+pre_pr --> open_pr : gh.pr_opened
 pre_pr --> cancelled : user.cancel
+pre_pr --> deferred : user.defer / rememberHistory
 
-note right of merged_pr
-  Disposition endpoints:
-  - POST /api/execution/close-merged
-    → dispatch user.finalize
-  - POST /api/execution/
-    archive-and-close-merged
-    → dispatch user.archive_and_finalize
+deferred --> pre_pr : user.undefer\n(via shallow history\npre_pr_history)
 
-  Both are guarded by
-  assertNoActiveRunForWorkItem
-  before the HSM dispatch.
+open_pr --> merged_pr : gh.pr_merged
+open_pr --> closed : gh.issue_closed
+
+merged_pr --> done : user.finalize /\ncloseGhIssue
+merged_pr --> archived : user.archive_and_finalize /\ncloseGhIssue, runArchiver
+
+closed --> done : user.finalize
+closed --> archived : user.archive_and_finalize /\nrunArchiver
+
+note right of pre_pr
+  Composite parent; shared
+  transitions declared once
+  and inherited by every
+  substate. A shallow
+  <history> node restores the
+  exact substate after
+  user.undefer.
 end note
 
-note right of deferred
-  SCXML shallow history
-  (pre_pr_history) restores
-  the exact pre_pr substate
-  the work item was in
-  when user.defer fired.
+note bottom of merged_pr
+  Action handlers registered by
+  HsmActionHandlers:
+  - closeGhIssue (gh issue close)
+  - runArchiver (move plan +
+    terminal runs → archives/)
+  Actions mutate an
+  HsmActionHandlerContext and
+  run BEFORE the state write.
 end note
 
-note bottom of cancelled
-  cancel path is routed
-  through ExecutionService
-  .cancelWorkItem so the
-  plan dir is moved to
-  archives/<slug>/ before
-  the HSM write.
+note left of in_progress
+  Run status (queued, preparing,
+  running, disambiguating,
+  completed, error, blocked)
+  lives on ExecutionRunRecord.
+  Only terminal run events cross
+  into the HSM as run.completed
+  / run.error.
 end note
 
 @enduml

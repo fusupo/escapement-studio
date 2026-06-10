@@ -1,0 +1,72 @@
+@startuml cache-sweep-hsm
+title GitHub cache sweep → HSM gh.* dispatch
+
+skinparam shadowing false
+
+participant "@Cron EVERY_MINUTE" as Cron
+participant "GitHubCacheScheduler" as Sched
+participant "GitHubBatchCache\n(60s TTL)" as Cache
+participant "GitHubService" as Gh
+participant "WorkItemsService" as Items
+participant "WorkItemHsmService" as Hsm
+participant "GraphWriterService" as Writer
+participant "EventBus" as Bus
+
+Cron -> Sched : handleTick()
+Sched -> Sched : discoverTrackedRepos\n(distinct repo values\nacross work_items)
+
+loop per tracked repo
+  Sched -> Cache : invalidate(repo)
+  Sched -> Cache : listPullRequests(repo)
+  Cache -> Gh : execFileSync gh pr list\n(only when stale or empty)
+  Gh --> Cache : GitHubListedPullRequest[]
+  Cache --> Sched : Map<number, CachedPullRequest>
+
+  Sched -> Cache : listIssues(repo)
+  Cache -> Gh : execFileSync gh issue list\n(when stale)
+  Gh --> Cache : GitHubListedIssue[]
+  Cache --> Sched : Map<number, CachedIssue>
+
+  Sched -> Items : list({}) filter repo\n+ DISPATCH_SOURCE_STATES\n(in_progress / pre_pr.in_progress /\nopen_pr / merged_pr)
+
+  loop per candidate work item
+    Sched -> Sched : detectStateAdvances\n(normalize state leaf +\ncompare vs cached PRs/issues)
+
+    alt in_progress & PR for branch exists
+      Sched -> Hsm : dispatch(gh.pr_opened, pr)
+      Hsm -> Writer : apply([update_work_item\nstate = open_pr,\nmeta.studio_open_pr_sync,\nbranch = pr.head_ref])
+      Hsm -> Hsm : emit work_item_state_changed
+    end
+
+    alt open_pr & PR for branch is MERGED
+      Sched -> Hsm : dispatch(gh.pr_merged, pr)
+      Hsm -> Writer : apply([update_work_item\nstate = merged_pr,\nmeta.studio_post_merge_sync])
+      Sched -> Bus : publish WorkItemMergedEvent\n("scheduler")
+    end
+
+    alt merged_pr & linked issue is closed
+      Sched -> Hsm : dispatch(gh.issue_closed, issue)
+      Hsm -> Writer : apply([update_work_item\nstate = closed,\nmeta.studio_issue_close_sync])
+    end
+  end
+end
+
+Sched --> Cron : { repos, prs, issues, dispatched }
+
+note right of Gh
+  Separate PR truth reconciliation path:
+  GitHubService.withPullRequestReconciliation
+  runs on every readPullRequest / findPullRequestForBranch
+  and publishes PullRequestTruthRefreshedEvent.
+  PullRequestTruthRefreshedHandler then calls
+  PullRequestService.refreshRunsForPullRequest
+  to update run.pull_request on matching runs.
+end note
+
+note left of Sched
+  The same sweep logic is exposed via
+  POST /api/github-cache/refresh?repo=... for
+  on-demand sync from the UI.
+end note
+
+@enduml
