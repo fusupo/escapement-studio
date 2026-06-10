@@ -2,7 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionService } from "../execution.service.js";
 import { RunInteractionService } from "../run-interaction.service.js";
-import type { ExecutionDispatchNodePreview, ExecutionSafetyCheck } from "../types.js";
+import type { ExecutionDispatchNodePreview, ExecutionRunRecord, ExecutionSafetyCheck } from "../types.js";
 import type { WorkItemRecord, WorkItemState } from "../../graph/types.js";
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
@@ -55,6 +55,28 @@ function makeDispatchNode(workItem: WorkItemRecord): ExecutionDispatchNodePrevie
     issue_backed: workItem.kind === "issue",
     launch_unavailable_code: null,
     launch_unavailable_reason: null,
+  };
+}
+
+function makeRecentRun(overrides: Partial<ExecutionRunRecord> = {}): ExecutionRunRecord {
+  return {
+    run_id: "exec_recent",
+    run_type: "execution",
+    work_item_id: "studio-136",
+    work_item_name: "Cancel work items by closing the GitHub issue",
+    status: "completed",
+    created_at: "2026-06-09T00:00:00.000Z",
+    updated_at: "2026-06-09T00:00:00.000Z",
+    repo: "fusupo/escapement-studio",
+    issue_url: "https://github.com/fusupo/escapement-studio/issues/136",
+    branch: "studio-136-branch",
+    base_ref: "main",
+    worktree_path: "/tmp/studio-136-branch",
+    artifact_dir: "/tmp/runs/exec_recent",
+    prompt: "# Coding Phase for studio-136: Cancel work items by closing the GitHub issue",
+    activity_log: [],
+    safety_checks: [],
+    ...overrides,
   };
 }
 
@@ -111,7 +133,7 @@ function makeService(params: {
 
 function makeLaunchHarness(
   workItem: WorkItemRecord,
-  options: { canLaunch?: boolean; includeBlockedNode?: boolean } = {},
+  options: { canLaunch?: boolean; includeBlockedNode?: boolean; recentRuns?: ExecutionRunRecord[] } = {},
 ) {
   const service = Object.create(ExecutionService.prototype) as ExecutionService;
   const updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }> = [];
@@ -216,6 +238,9 @@ function makeLaunchHarness(
   // Phase 4d (#233): pushActivity lives on RunInteractionService.
   // Use the real prompt provenance helpers and stub only activity logging.
   const runInteractionService = Object.create(RunInteractionService.prototype) as RunInteractionService;
+  (runInteractionService as any).runStore = {
+    listRecentRuns: () => options.recentRuns ?? [],
+  };
   (runInteractionService as any).pushActivity = vi.fn((_runId: string, _kind: string, message: string) => {
     executionOrder.push(`activity:${message}`);
   });
@@ -383,6 +408,22 @@ describe("launch eligibility", () => {
     expect(result.run.prompt).toContain("# Coding Phase for studio-215: Persist launch prompts for the correct work item");
     expect(result.run.prompt).toContain("SCRATCHPAD_studio_215.md");
     expect(result.run.prompt).not.toContain("studio-136");
+  });
+
+  it("ignores stale recent runs when building the persisted launch prompt", async () => {
+    const workItem = makeWorkItem({
+      id: "studio-215",
+      name: "Persist launch prompts for the correct work item",
+      branch: "studio-215-branch",
+    });
+    const harness = makeLaunchHarness(workItem, { recentRuns: [makeRecentRun()] });
+
+    const result = await harness.service.launch({ work_item_id: workItem.id });
+
+    expect(result.accepted).toBe(true);
+    expect(result.run.prompt).toContain("# Coding Phase for studio-215: Persist launch prompts for the correct work item");
+    expect(result.run.prompt).toContain("SCRATCHPAD_studio_215.md");
+    expect(result.run.prompt).not.toContain("# Coding Phase for studio-136");
   });
 
   it("builds blocked run prompts from the target work item when a dispatch node is available", async () => {
