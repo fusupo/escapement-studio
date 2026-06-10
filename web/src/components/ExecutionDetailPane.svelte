@@ -26,12 +26,13 @@
 
   const dispatch = createEventDispatcher();
 
-  function statusTone(status) {
-    if (status === "completed") return "healthy";
-    if (["running", "preparing", "queued"].includes(status)) return "info";
-    if (status === "disambiguating") return "disambiguating";
-    if (status === "blocked") return "warn";
-    if (status === "error") return "danger";
+  function statusTone(runStatus, outcome) {
+    if (outcome?.severity === "warn") return "warn";
+    if (runStatus === "completed") return "healthy";
+    if (["running", "preparing", "queued"].includes(runStatus)) return "info";
+    if (runStatus === "disambiguating") return "disambiguating";
+    if (runStatus === "blocked") return "warn";
+    if (runStatus === "error") return "danger";
     return "";
   }
 
@@ -55,7 +56,7 @@
     <div class="detail-card">
       <div class="detail-card-hdr">
         <h3>CONTEXT</h3>
-        <span class="status-pill {statusTone(run.status)}">{run.status}</span>
+        <span class="status-pill {statusTone(run.status, run.terminal_outcome)}">{run.terminal_outcome?.label || run.status}</span>
       </div>
       <div class="detail-kv-list">
         <div class="detail-kv"><span class="muted">Branch</span><code>{run.branch}</code></div>
@@ -88,7 +89,7 @@
       <div class="detail-card-hdr"><h3>PR</h3></div>
       {#if pullRequest}
         <a class="detail-link" href={pullRequest.url} target="_blank" rel="noreferrer">PR #{pullRequest.number}</a>
-      {:else if run.status === "completed"}
+      {:else if run.status === "completed" && run.terminal_outcome?.severity !== "warn"}
         <button on:click={() => dispatch("openpr")} disabled={openingPr}>
           {openingPr ? "Opening..." : "Open PR"}
         </button>
@@ -137,6 +138,19 @@
         </div>
       </details>
     </div>
+
+    {#if run.terminal_outcome}
+      <div class="detail-card">
+        <div class="detail-card-hdr"><h3>OUTCOME</h3></div>
+        <div class="detail-kv-list">
+          <div class="detail-kv"><span class="muted">Code</span><code>{run.terminal_outcome.code}</code></div>
+          <div class="detail-kv"><span class="muted">Severity</span><span>{run.terminal_outcome.severity}</span></div>
+          <div class="detail-kv"><span class="muted">Changed files</span><span>{run.terminal_outcome.changed_file_count}</span></div>
+          <div class="detail-kv"><span class="muted">Summary present</span><span>{run.terminal_outcome.summary_present ? "yes" : "no"}</span></div>
+        </div>
+        <p class="muted">{run.terminal_outcome.detail}</p>
+      </div>
+    {/if}
 
     <!-- Safety -->
     <div class="detail-card">
