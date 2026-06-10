@@ -1,6 +1,8 @@
+import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionService } from "../execution.service.js";
-import type { ExecutionSafetyCheck } from "../types.js";
+import { RunInteractionService } from "../run-interaction.service.js";
+import type { ExecutionDispatchNodePreview, ExecutionSafetyCheck } from "../types.js";
 import type { WorkItemRecord, WorkItemState } from "../../graph/types.js";
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
@@ -32,6 +34,27 @@ function makePlanNode(id: string, name: string, branch: string) {
     files_owned: ["src/example.ts"],
     files_shared: [],
     files_forbidden: ["src/forbidden.ts"],
+  };
+}
+
+function makeDispatchNode(workItem: WorkItemRecord): ExecutionDispatchNodePreview {
+  return {
+    id: workItem.id,
+    name: workItem.name,
+    repo: workItem.repo,
+    branch: workItem.branch ?? `${workItem.id}-branch`,
+    issue_url: workItem.issue_url ?? undefined,
+    scope_hint: workItem.scope_hint,
+    default_base_ref: "develop",
+    files_owned: ["src/example.ts"],
+    files_shared: [],
+    files_forbidden: [],
+    worktree_path: `/tmp/studio-worktrees/${workItem.branch ?? `${workItem.id}-branch`}`,
+    safety_checks: [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }],
+    can_launch: true,
+    issue_backed: workItem.kind === "issue",
+    launch_unavailable_code: null,
+    launch_unavailable_reason: null,
   };
 }
 
@@ -86,7 +109,10 @@ function makeService(params: {
   return service;
 }
 
-function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: boolean } = {}) {
+function makeLaunchHarness(
+  workItem: WorkItemRecord,
+  options: { canLaunch?: boolean; includeBlockedNode?: boolean } = {},
+) {
   const service = Object.create(ExecutionService.prototype) as ExecutionService;
   const updateCalls: Array<{ id: string; patch: Partial<WorkItemRecord> }> = [];
   const executionOrder: string[] = [];
@@ -112,13 +138,14 @@ function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: bool
   };
 
   (service as any).resolveLaunchEligibility = () => {
+    const dispatchNode = makeDispatchNode(currentWorkItem);
     if (options.canLaunch === false) {
       return {
         can_launch: false,
         safety_checks: [{ code: "not_dispatchable", status: "fail", message: "Blocked" }],
         launch_unavailable_code: "not_dispatchable",
         launch_unavailable_reason: "Blocked",
-        dispatch_node: null,
+        dispatch_node: options.includeBlockedNode ? dispatchNode : null,
       };
     }
 
@@ -127,24 +154,7 @@ function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: bool
       safety_checks: [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }],
       launch_unavailable_code: null,
       launch_unavailable_reason: null,
-      dispatch_node: {
-        id: currentWorkItem.id,
-        name: currentWorkItem.name,
-        repo: currentWorkItem.repo,
-        branch: currentWorkItem.branch ?? `${currentWorkItem.id}-branch`,
-        issue_url: currentWorkItem.issue_url ?? undefined,
-        scope_hint: currentWorkItem.scope_hint,
-        default_base_ref: "develop",
-        files_owned: ["src/example.ts"],
-        files_shared: [],
-        files_forbidden: [],
-        worktree_path: `/tmp/studio-worktrees/${currentWorkItem.branch ?? `${currentWorkItem.id}-branch`}`,
-        safety_checks: [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }],
-        can_launch: true,
-        issue_backed: currentWorkItem.kind === "issue",
-        launch_unavailable_code: null,
-        launch_unavailable_reason: null,
-      },
+      dispatch_node: dispatchNode,
     };
   };
 
@@ -204,17 +214,15 @@ function makeLaunchHarness(workItem: WorkItemRecord, options: { canLaunch?: bool
     writeSummary: vi.fn(),
   };
   // Phase 4d (#233): pushActivity lives on RunInteractionService.
-  // The harness stubs a scratchpadService-style runInteractionService
-  // field that captures activity-log calls into executionOrder.
-  (service as any).runInteractionService = {
-    pushActivity: vi.fn((_runId: string, _kind: string, message: string) => {
-      executionOrder.push(`activity:${message}`);
-    }),
-  };
+  // Use the real prompt provenance helpers and stub only activity logging.
+  const runInteractionService = Object.create(RunInteractionService.prototype) as RunInteractionService;
+  (runInteractionService as any).pushActivity = vi.fn((_runId: string, _kind: string, message: string) => {
+    executionOrder.push(`activity:${message}`);
+  });
+  (service as any).runInteractionService = runInteractionService;
   (service as any).executeRun = vi.fn(async () => {
     executionOrder.push("executeRun");
   });
-  (service as any).buildPrompt = vi.fn(() => "prompt");
 
   return {
     service,
@@ -358,6 +366,54 @@ describe("launch eligibility", () => {
     expect(result.run.status).toBe("blocked");
     expect(harness.updateCalls).toEqual([]);
     expect(harness.getCurrentWorkItem().state).toBe("planned");
+    expect(harness.executionOrder).toEqual([]);
+  });
+
+  it("builds queued run prompts from the target work item when no override is supplied", async () => {
+    const workItem = makeWorkItem({
+      id: "studio-215",
+      name: "Persist launch prompts for the correct work item",
+      branch: "studio-215-branch",
+    });
+    const harness = makeLaunchHarness(workItem);
+
+    const result = await harness.service.launch({ work_item_id: workItem.id });
+
+    expect(result.accepted).toBe(true);
+    expect(result.run.prompt).toContain("# Coding Phase for studio-215: Persist launch prompts for the correct work item");
+    expect(result.run.prompt).toContain("SCRATCHPAD_studio_215.md");
+    expect(result.run.prompt).not.toContain("studio-136");
+  });
+
+  it("builds blocked run prompts from the target work item when a dispatch node is available", async () => {
+    const workItem = makeWorkItem({
+      id: "studio-215",
+      name: "Persist launch prompts for the correct work item",
+      branch: "studio-215-branch",
+    });
+    const harness = makeLaunchHarness(workItem, { canLaunch: false, includeBlockedNode: true });
+
+    const result = await harness.service.launch({ work_item_id: workItem.id });
+
+    expect(result.accepted).toBe(false);
+    expect(result.run.status).toBe("blocked");
+    expect(result.run.prompt).toContain("# Coding Phase for studio-215: Persist launch prompts for the correct work item");
+    expect(result.run.prompt).toContain("SCRATCHPAD_studio_215.md");
+    expect(result.run.prompt).not.toContain("studio-136");
+  });
+
+  it("rejects explicit prompt overrides whose coding header targets a different work item", async () => {
+    const workItem = makeWorkItem({ id: "studio-215", branch: "studio-215-branch" });
+    const harness = makeLaunchHarness(workItem);
+
+    await expect(
+      harness.service.launch({
+        work_item_id: workItem.id,
+        prompt: "# Coding Phase for studio-136: Wrong item\n\nDo unrelated work.",
+      }),
+    ).rejects.toThrowError(BadRequestException);
+
+    expect((harness.service as any).runStore.persistRun).not.toHaveBeenCalled();
     expect(harness.executionOrder).toEqual([]);
   });
 

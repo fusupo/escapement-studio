@@ -560,6 +560,30 @@ export class RunInteractionService {
     return this.buildDoWorkPrompt(runPreview, node, workItem, null);
   }
 
+  extractPromptWorkItemId(prompt: string): string | null {
+    const match = prompt.match(/^# Coding Phase for ([^:\n]+):/m);
+    return match?.[1]?.trim() || null;
+  }
+
+  buildLaunchPrompt(
+    workItem: WorkItemRecord,
+    node: ExecutionDispatchNodePreview | null | undefined,
+    promptOverride?: string | null,
+  ): string {
+    const trimmedPrompt = promptOverride?.trim();
+    if (trimmedPrompt) {
+      const promptWorkItemId = this.extractPromptWorkItemId(trimmedPrompt);
+      if (promptWorkItemId && promptWorkItemId !== workItem.id) {
+        throw new BadRequestException(
+          `Prompt work item id ${promptWorkItemId} does not match launch target ${workItem.id}`,
+        );
+      }
+      return trimmedPrompt;
+    }
+
+    return node ? this.buildPrompt(workItem, node) : "";
+  }
+
   // ─── Activity log push + getters ──────────────────────────────────
 
   pushActivity(runId: string, kind: ActivityLogEntryKind, message: string, detail?: string): void {
