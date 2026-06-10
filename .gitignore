@@ -6,3 +6,6 @@ web-dist/
 *.db
 SCRATCHPAD.md
 SCRATCHPAD_*.md
+.claude/
+.codex
+SESSION_LOG_*.jsonl
