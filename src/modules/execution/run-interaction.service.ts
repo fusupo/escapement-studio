@@ -553,10 +553,35 @@ export class RunInteractionService {
    * public so ExecutionService can reach it via the injected service.
    */
   buildPrompt(workItem: WorkItemRecord, node: ExecutionDispatchNodePreview): string {
-    const recent = this.runStore.listRecentRuns();
-    const run = recent[0];
-    if (run) return this.buildDoWorkPrompt(run, node, workItem, null);
-    return `Execute work item ${workItem.id}: ${workItem.name}`;
+    const runPreview = {
+      work_item_id: workItem.id,
+      work_item_name: workItem.name,
+    } as Pick<ExecutionRunRecord, "work_item_id" | "work_item_name"> as ExecutionRunRecord;
+    return this.buildDoWorkPrompt(runPreview, node, workItem, null);
+  }
+
+  extractPromptWorkItemId(prompt: string): string | null {
+    const match = prompt.match(/^# Coding Phase for ([^:\n]+):/m);
+    return match?.[1]?.trim() || null;
+  }
+
+  buildLaunchPrompt(
+    workItem: WorkItemRecord,
+    node: ExecutionDispatchNodePreview | null | undefined,
+    promptOverride?: string | null,
+  ): string {
+    const trimmedPrompt = promptOverride?.trim();
+    if (trimmedPrompt) {
+      const promptWorkItemId = this.extractPromptWorkItemId(trimmedPrompt);
+      if (promptWorkItemId && promptWorkItemId !== workItem.id) {
+        throw new BadRequestException(
+          `Prompt work item id ${promptWorkItemId} does not match launch target ${workItem.id}`,
+        );
+      }
+      return trimmedPrompt;
+    }
+
+    return node ? this.buildPrompt(workItem, node) : "";
   }
 
   // ─── Activity log push + getters ──────────────────────────────────
