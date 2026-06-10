@@ -13,6 +13,7 @@ import { getDefaultWorkingBranch, listDefaultWorkingBranches } from "./default-w
 import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.js";
 import { RunCompletedEvent } from "./events/run-completed.event.js";
 import { PullRequestService } from "./pull-request.service.js";
+import { classifyExecutionTerminalOutcome } from "./run-outcome.js";
 import { RunInteractionService } from "./run-interaction.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
@@ -414,32 +415,63 @@ export class ExecutionService implements OnModuleInit {
     // post-run snapshot — synced above at each phase boundary. No separate
     // scratchpad-final.md is written under the run artifact dir anymore.
 
-    this.runInteractionService.pushActivity(run.run_id, "status_change", `Execution completed. ${changedFiles.length} file(s) changed.`);
+    const outcome = classifyExecutionTerminalOutcome({
+      phase: "initial",
+      assistantText,
+      changedFiles,
+    });
+    const resultSummary = actualFilesSync.ok
+      ? `${outcome.resultSummary}\n\nactual_files synced: ${changedFiles.length} file(s).`
+      : outcome.resultSummary;
+    const progressMessage = actualFilesSync.ok && outcome.status === "completed"
+      ? "Execution run completed. actual_files updated on the work item."
+      : outcome.progressMessage;
+
+    this.runInteractionService.pushActivity(run.run_id, "status_change", outcome.activityMessage);
     run = this.runStore.updateRun(initialRun.run_id, {
-      status: "completed",
+      status: outcome.status,
       completed_at: this.now(),
-      progress_message: actualFilesSync.ok ? "Execution run completed. actual_files updated on the work item." : "Execution run completed.",
-      result_summary: actualFilesSync.ok ? `${assistantText}\n\nactual_files synced: ${changedFiles.length} file(s).` : assistantText,
+      progress_message: progressMessage,
+      result_summary: resultSummary,
+      terminal_outcome: outcome.terminalOutcome,
       changed_files: changedFiles,
+      errors: outcome.errors,
     })!;
     this.runStore.writeSummary(run, node);
-    this.runStore.appendEvent(run, { type: "run_completed", changed_files: changedFiles, actual_files_sync: actualFilesSync });
-    this.runStore.emitRun("execution_result", run);
+    this.runStore.appendEvent(run, {
+      type: outcome.eventType,
+      changed_files: changedFiles,
+      actual_files_sync: actualFilesSync,
+      terminal_outcome: outcome.terminalOutcome,
+    });
 
-    // Phase 5 (#225): publish RunCompletedEvent so future consumers
-    // (drift reports, notifications, etc.) can react without editing
-    // executeRun. No subscribers land in Phase 5. `pullRequest` is
-    // null at this point because PR creation is a separate later
-    // step — most freshly-completed runs don't have a PR yet.
-    this.eventBus.publish(
-      new RunCompletedEvent(
-        run.run_id,
-        run.work_item_id,
-        changedFiles,
-        assistantText,
-        run.pull_request ?? null,
-      ),
-    );
+    if (outcome.dispatchRunError) {
+      const workItem = this.workItemsService.get(run.work_item_id);
+      if (workItem.state === "in_progress") {
+        await this.hsmService.dispatch(run.work_item_id, {
+          type: "run.error",
+          run_id: run.run_id,
+          reason: outcome.terminalOutcome.detail,
+        });
+      }
+    }
+
+    if (outcome.publishCompletedEvent) {
+      // Phase 5 (#225): publish RunCompletedEvent so future consumers
+      // (drift reports, notifications, etc.) can react without editing
+      // executeRun. No subscribers land in Phase 5. `pullRequest` is
+      // null at this point because PR creation is a separate later
+      // step — most freshly-completed runs don't have a PR yet.
+      this.eventBus.publish(
+        new RunCompletedEvent(
+          run.run_id,
+          run.work_item_id,
+          changedFiles,
+          assistantText ?? outcome.resultSummary,
+          run.pull_request ?? null,
+        ),
+      );
+    }
   }
 
   getRunActivityLog(runId: string): ActivityLogEntry[] {

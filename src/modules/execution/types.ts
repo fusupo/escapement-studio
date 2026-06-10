@@ -1,5 +1,7 @@
 export type ExecutionRunStatus = "queued" | "blocked" | "preparing" | "disambiguating" | "running" | "completed" | "error";
 export type ExecutionSafetyStatus = "pass" | "warn" | "fail";
+export type ExecutionTerminalOutcomeCode = "success" | "no_changes" | "missing_summary" | "no_changes_and_missing_summary";
+export type ExecutionTerminalOutcomeSeverity = "success" | "warn";
 export type ActivityLogEntryKind = "status_change" | "tool_start" | "tool_end" | "turn_start" | "turn_end" | "reasoning" | "error" | "info" | "follow_up" | "agent_message" | "user_message";
 
 export interface ActivityLogEntry {
@@ -13,6 +15,15 @@ export interface ExecutionSafetyCheck {
   code: string;
   status: ExecutionSafetyStatus;
   message: string;
+}
+
+export interface ExecutionTerminalOutcome {
+  code: ExecutionTerminalOutcomeCode;
+  severity: ExecutionTerminalOutcomeSeverity;
+  label: string;
+  detail: string;
+  changed_file_count: number;
+  summary_present: boolean;
 }
 
 export interface ExecutionDispatchNodePreview {
@@ -124,6 +135,7 @@ export interface ExecutionRunRecord {
   prompt: string;
   progress_message?: string;
   result_summary?: string;
+  terminal_outcome?: ExecutionTerminalOutcome;
   activity_log: ActivityLogEntry[];
   changed_files?: string[];
   pull_request?: ExecutionPullRequestRecord;
