@@ -18,7 +18,10 @@ import {
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { PlanDrafterService } from "./plan-drafter.service.js";
-import { PlanPreparationService } from "./plan-preparation.service.js";
+import {
+  PlanPreparationService,
+  renderPlanPreparationSection,
+} from "./plan-preparation.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ApprovePlanDto,
@@ -384,29 +387,7 @@ export class PlansService {
         ? workItem.predicted_files.map((p) => `- ${p}`)
         : ["- (none predicted yet — populate during plan review)"];
 
-    const parallelPreparationSection = preparation
-      ? [
-          "## Parallel Preparation",
-          "",
-          `Two bounded specialists contributed to final synthesis${preparation.degraded ? " (degraded)" : ""}.`,
-          "",
-          ...preparation.contributors.flatMap((contributor) => [
-            `### ${contributor.task.agent_type}`,
-            "",
-            `- **Run ID:** ${contributor.run_id}`,
-            `- **Status:** ${contributor.status}${contributor.degraded ? " (degraded)" : ""}`,
-            `- **Confidence:** ${contributor.confidence}`,
-            `- **Task:** ${contributor.task.task}`,
-            `- **Repo:** ${contributor.task.repo ?? "(not set)"}`,
-            `- **Work items:** ${contributor.task.work_item_ids.join(", ")}`,
-            `- **Focus paths:** ${contributor.task.focus_paths.length ? contributor.task.focus_paths.join(", ") : "(none — bounded fallback used)"}`,
-            `- **Summary:** ${contributor.summary}`,
-            `- **Open questions:** ${contributor.open_questions.length ? contributor.open_questions.join(" | ") : "(none)"}`,
-            `- **Errors:** ${contributor.errors.length ? contributor.errors.map((error) => `${error.code}: ${error.message}`).join(" | ") : "(none)"}`,
-            "",
-          ]),
-        ]
-      : [];
+    const parallelPreparationSection = renderPlanPreparationSection(preparation);
 
     const affectedFilesSection = [
       "## Affected Files",

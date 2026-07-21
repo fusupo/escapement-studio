@@ -13,6 +13,7 @@ import type {
   PlanPreparationAggregate,
 } from "./types.js";
 import { SettingsService } from "../settings/settings.service.js";
+import { serializePlanPreparationEvidence } from "./plan-preparation.service.js";
 
 /**
  * ADR 014 step 8 follow-up (#167) — auto-draft the plan scratchpad via a
@@ -477,29 +478,7 @@ export class PlanDrafterService {
       } satisfies PlanDraftTechnicalNotes,
     };
 
-    const preparationEvidence = preparation?.contributors.map((contributor) => ({
-      task: {
-        agent_type: contributor.task.agent_type,
-        task: contributor.task.task,
-        repo: contributor.task.repo ?? null,
-        focus_paths: contributor.task.focus_paths,
-        work_item_ids: contributor.task.work_item_ids,
-      },
-      run_id: contributor.run_id,
-      status: contributor.status,
-      confidence: contributor.confidence,
-      degraded: contributor.degraded,
-      summary: contributor.summary,
-      findings: contributor.findings.map((finding) => ({
-        kind: finding.kind,
-        ...(finding.file ? { file: finding.file } : {}),
-        ...(finding.lines ? { lines: finding.lines } : {}),
-        ...(finding.summary ? { summary: finding.summary } : {}),
-        ...(finding.snippet ? { snippet: finding.snippet } : {}),
-      })),
-      open_questions: contributor.open_questions,
-      errors: contributor.errors,
-    })) ?? [];
+    const preparationEvidence = serializePlanPreparationEvidence(preparation);
 
     const workItemContext = [
       `- id: ${workItem.id}`,

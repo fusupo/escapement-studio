@@ -8,6 +8,57 @@ import type {
   PlanPreparationTask,
 } from "./types.js";
 
+export function serializePlanPreparationEvidence(preparation?: PlanPreparationAggregate) {
+  return preparation?.contributors.map((contributor) => ({
+    task: {
+      agent_type: contributor.task.agent_type,
+      task: contributor.task.task,
+      repo: contributor.task.repo ?? null,
+      focus_paths: contributor.task.focus_paths,
+      work_item_ids: contributor.task.work_item_ids,
+    },
+    run_id: contributor.run_id,
+    status: contributor.status,
+    confidence: contributor.confidence,
+    degraded: contributor.degraded,
+    summary: contributor.summary,
+    findings: contributor.findings.map((finding) => ({
+      kind: finding.kind,
+      ...(finding.file ? { file: finding.file } : {}),
+      ...(finding.lines ? { lines: finding.lines } : {}),
+      ...(finding.summary ? { summary: finding.summary } : {}),
+      ...(finding.snippet ? { snippet: finding.snippet } : {}),
+    })),
+    open_questions: contributor.open_questions,
+    errors: contributor.errors,
+  })) ?? [];
+}
+
+export function renderPlanPreparationSection(preparation?: PlanPreparationAggregate): string[] {
+  if (!preparation) return [];
+  return [
+    "## Parallel Preparation",
+    "",
+    `Two bounded specialists contributed to final synthesis${preparation.degraded ? " (degraded)" : ""}.`,
+    "",
+    ...preparation.contributors.flatMap((contributor) => [
+      `### ${contributor.task.agent_type}`,
+      "",
+      `- **Run ID:** ${contributor.run_id}`,
+      `- **Status:** ${contributor.status}${contributor.degraded ? " (degraded)" : ""}`,
+      `- **Confidence:** ${contributor.confidence}`,
+      `- **Task:** ${contributor.task.task}`,
+      `- **Repo:** ${contributor.task.repo ?? "(not set)"}`,
+      `- **Work items:** ${contributor.task.work_item_ids.join(", ")}`,
+      `- **Focus paths:** ${contributor.task.focus_paths.length ? contributor.task.focus_paths.join(", ") : "(none — bounded fallback used)"}`,
+      `- **Summary:** ${contributor.summary}`,
+      `- **Open questions:** ${contributor.open_questions.length ? contributor.open_questions.join(" | ") : "(none)"}`,
+      `- **Errors:** ${contributor.errors.length ? contributor.errors.map((error) => `${error.code}: ${error.message}`).join(" | ") : "(none)"}`,
+      "",
+    ]),
+  ];
+}
+
 export class PlanPreparationError extends Error {
   constructor(workItemId: string) {
     super(`Plan preparation produced no completed specialist results for ${workItemId}`);
