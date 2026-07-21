@@ -105,6 +105,14 @@ export function unresolvedRefinementItems(run, drafts) {
   ));
 }
 
+export function hasCancellationSelection(run, drafts) {
+  return (run.refinement?.items || []).some((item) => {
+    const draft = refinementDraftFor(run, item, drafts);
+    if (draft.mode !== "option") return false;
+    return optionFor(item, draft.selected_option_id)?.action === "cancel_execution";
+  });
+}
+
 export function projectRefinementResponses(run, drafts) {
   return (run.refinement?.items || []).flatMap((item) => {
     const draft = refinementDraftFor(run, item, drafts);

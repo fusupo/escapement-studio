@@ -23,9 +23,12 @@
   import ExecutionDetailPane from "./ExecutionDetailPane.svelte";
   import ExecutionChecklist from "./ExecutionChecklist.svelte";
   import ExecutionArchivedList from "./ExecutionArchivedList.svelte";
+  import ExecutionRefinementItem from "./ExecutionRefinementItem.svelte";
   import { renderMarkdown } from "../lib/markdown.js";
   import {
-    refinementResponseFor,
+    hasCancellationSelection,
+    projectRefinementResponses,
+    refinementDraftFor,
     refinementResponseKey,
     unresolvedRefinementItems,
   } from "../lib/execution-refinement.js";
@@ -450,10 +453,10 @@
     return ["running", "preparing", "completed"].includes(run.status);
   }
 
-  function setRefinementResponse(run, item, value) {
+  function setRefinementResponse(run, item, draft) {
     refinementResponses = {
       ...refinementResponses,
-      [refinementResponseKey(run.run_id, item.id)]: value,
+      [refinementResponseKey(run.run_id, item.id)]: draft,
     };
     persistRefinementDrafts(refinementResponses);
   }
@@ -587,12 +590,7 @@
     error = "";
     try {
       const ctx = (disambiguationContext[run.run_id] || "").trim() || undefined;
-      const responses = (run.refinement?.items || [])
-        .map((item) => ({
-          item_id: item.id,
-          response: refinementResponseFor(run, item, refinementResponses).trim(),
-        }))
-        .filter((item) => item.response);
+      const responses = projectRefinementResponses(run, refinementResponses);
       const result = await resolveDisambiguation({
         run_id: run.run_id,
         responses,
@@ -1056,6 +1054,7 @@
       {@const drawerContext = disambiguationContext[drawerRun.run_id] || ""}
       {@const drawerResolving = !!resolvingDisambiguation[drawerRun.run_id]}
       {@const drawerAllowsUnresolved = !!confirmUnresolved[drawerRun.run_id]}
+      {@const drawerCancelsExecution = hasCancellationSelection(drawerRun, refinementResponses)}
 
       <aside
         class="refinement-drawer"
@@ -1089,25 +1088,22 @@
         </header>
 
         <div class="refinement-drawer-intro">
-          The approved plan was checked in the isolated worktree. Answer the items below, then explicitly start coding. This is separate from approving the initial plan.
+          The approved plan was checked in the isolated worktree. Answer the items below, then explicitly confirm the selected disposition. This is separate from approving the initial plan.
         </div>
 
         <div class="refinement-drawer-body">
           {#if drawerItems.length}
             <div class="refinement-items">
               {#each drawerItems as item, index}
-                <label class="refinement-item">
-                  <span class="refinement-item-number">{index + 1}</span>
-                  <span class="refinement-item-kind {item.kind}">{item.kind}</span>
-                  <span class="refinement-item-prompt">{item.prompt}</span>
-                  <textarea
-                    placeholder={item.kind === "blocker" ? "Describe how to resolve or explicitly accept this blocker..." : "Answer this question..."}
-                    value={refinementResponseFor(drawerRun, item, refinementResponses)}
-                    on:input={(e) => setRefinementResponse(drawerRun, item, e.currentTarget.value)}
-                    rows="3"
-                    disabled={drawerResolving}
-                  ></textarea>
-                </label>
+                {@const draft = refinementDraftFor(drawerRun, item, refinementResponses)}
+                <ExecutionRefinementItem
+                  runId={drawerRun.run_id}
+                  {item}
+                  {index}
+                  {draft}
+                  disabled={drawerResolving}
+                  on:draft={(event) => setRefinementResponse(drawerRun, item, event.detail)}
+                />
               {/each}
             </div>
           {:else}
@@ -1127,7 +1123,9 @@
         </div>
 
         <footer class="refinement-confirmation-footer">
-          {#if drawerUnresolved.length > 0}
+          {#if drawerCancelsExecution}
+            <span class="refinement-ready">The run will be abandoned and the work item returned to ready</span>
+          {:else if drawerUnresolved.length > 0}
             <label class="confirm-unresolved">
               <input
                 type="checkbox"
@@ -1144,9 +1142,11 @@
           <button
             class="confirm-execution-button"
             on:click={() => handleResolveDisambiguation(drawerRun)}
-            disabled={drawerResolving || (drawerUnresolved.length > 0 && !drawerAllowsUnresolved)}
+            disabled={drawerResolving || (!drawerCancelsExecution && drawerUnresolved.length > 0 && !drawerAllowsUnresolved)}
           >
-            {drawerResolving ? "Starting coding..." : "Confirm execution and start coding"}
+            {drawerResolving
+              ? (drawerCancelsExecution ? "Abandoning execution..." : "Starting coding...")
+              : (drawerCancelsExecution ? "Abandon execution" : "Confirm execution and start coding")}
           </button>
         </footer>
       </aside>
@@ -1456,51 +1456,6 @@
   .refinement-items {
     display: grid;
     gap: 9px;
-  }
-
-  .refinement-item {
-    display: grid;
-    grid-template-columns: auto auto minmax(0, 1fr);
-    align-items: start;
-    gap: 6px 8px;
-    padding: 10px;
-    border: 1px solid var(--border, #2b3245);
-    border-radius: var(--radius-sm, 3px);
-    background: var(--bg-surface, #13171f);
-  }
-
-  .refinement-item textarea {
-    grid-column: 1 / -1;
-    min-height: 72px;
-  }
-
-  .refinement-item-number {
-    color: var(--text-muted, #566070);
-    font-size: 10px;
-    line-height: 17px;
-  }
-
-  .refinement-item-kind {
-    align-self: start;
-    padding: 1px 5px;
-    border-radius: 2px;
-    color: #c4b5fd;
-    background: rgba(163, 113, 247, 0.18);
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .refinement-item-kind.blocker {
-    color: #fca5a5;
-    background: rgba(248, 81, 73, 0.16);
-  }
-
-  .refinement-item-prompt {
-    min-width: 0;
-    font-size: 12px;
-    line-height: 1.4;
   }
 
   .refinement-clear {

@@ -94,9 +94,13 @@ describe("execution refinement drafts", () => {
       ...fixed,
       options: [fixed.options[0], { id: "cancel", label: "Cancel execution", action: "cancel_execution" }],
     };
-    expect(refinement.projectRefinementResponses(makeRun([cancelItem]), {
+    const cancelRun = makeRun([cancelItem]);
+    const cancelDrafts = {
       "exec_123:blocker-1": { mode: "option", selected_option_id: "cancel", text: "" },
-    })).toEqual([{ item_id: "blocker-1", selected_option_id: "cancel", response: "Cancel execution" }]);
+    };
+    expect(refinement.projectRefinementResponses(cancelRun, cancelDrafts))
+      .toEqual([{ item_id: "blocker-1", selected_option_id: "cancel", response: "Cancel execution" }]);
+    expect(refinement.hasCancellationSelection(cancelRun, cancelDrafts)).toBe(true);
   });
 
   it("counts blank custom/legacy and unselected structured drafts as unresolved", () => {
