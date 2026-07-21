@@ -139,7 +139,20 @@ export class RunRefinementService {
     if (!refinement || refinement.status !== "confirmed") return null;
     const responses = refinement.items
       .filter((item) => item.response?.trim())
-      .map((item) => `- ${item.kind} ${item.id}: ${item.prompt}\n  Response: ${item.response!.trim()}`);
+      .map((item) => {
+        const selected = item.selected_option_id
+          ? item.options?.find((option) => option.id === item.selected_option_id)
+          : undefined;
+        if (selected) {
+          return [
+            `- ${item.kind} ${item.id}: ${item.prompt}`,
+            `  Selected option: ${selected.id} — ${selected.label}`,
+            ...(selected.description ? [`  Description: ${selected.description}`] : []),
+          ].join("\n");
+        }
+        const responseKind = item.options ? "Other (free text)" : "Free text";
+        return `- ${item.kind} ${item.id}: ${item.prompt}\n  ${responseKind}: ${item.response!.trim()}`;
+      });
     const context = refinement.additional_context?.trim();
     if (responses.length === 0 && !context) return null;
 
