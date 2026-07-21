@@ -4,7 +4,7 @@ import { workItemSlug } from "../../lib/context-layout.js";
 import type { WorkItemRecord } from "../graph/types.js";
 import { RunInteractionService } from "./run-interaction.service.js";
 import { RunStore } from "./run-store.service.js";
-import { ScratchpadService } from "./scratchpad.service.js";
+import { ScratchpadService, type ParsedScratchpadOpenItem } from "./scratchpad.service.js";
 import type {
   ExecutionDispatchNodePreview,
   ExecutionRefinementItem,
@@ -79,7 +79,7 @@ export class RunRefinementService {
       this.interaction.handleSessionEvent(run!.run_id, event);
     });
 
-    let openItems: { questions: string[]; blockers: string[] };
+    let openItems: { questions: ParsedScratchpadOpenItem[]; blockers: ParsedScratchpadOpenItem[] };
     try {
       await session.prompt(this.buildRefinementPrompt(run, input));
       const scratchpad = readFileSync(input.scratchpadPath, "utf8");
@@ -155,21 +155,22 @@ export class RunRefinementService {
     ].join("\n");
   }
 
-  private toStructuredItems(openItems: { questions: string[]; blockers: string[] }): ExecutionRefinementItem[] {
-    return [
-      ...openItems.questions.map((prompt, index) => ({
-        id: `question-${index + 1}`,
-        kind: "question" as const,
-        prompt,
-        response: null,
-      })),
-      ...openItems.blockers.map((prompt, index) => ({
-        id: `blocker-${index + 1}`,
-        kind: "blocker" as const,
-        prompt,
-        response: null,
-      })),
-    ];
+  private toStructuredItems(openItems: {
+    questions: ParsedScratchpadOpenItem[];
+    blockers: ParsedScratchpadOpenItem[];
+  }): ExecutionRefinementItem[] {
+    const mapItems = (
+      records: ParsedScratchpadOpenItem[],
+      kind: "question" | "blocker",
+    ): ExecutionRefinementItem[] => records.map((record, index) => ({
+      id: `${kind}-${index + 1}`,
+      kind,
+      prompt: record.prompt,
+      ...(record.metadata ?? {}),
+      selected_option_id: null,
+      response: null,
+    }));
+    return [...mapItems(openItems.questions, "question"), ...mapItems(openItems.blockers, "blocker")];
   }
 
   private assertRefinementContract(content: string): void {
@@ -214,6 +215,25 @@ export class RunRefinementService {
       "6. Put every condition that prevents safe implementation under `## Blockers` as a `- ` bullet.",
       "7. If either section has no items, write `_(none)_` under that heading.",
       `8. Save the refined plan back to ${scratchpadName}.`,
+      "",
+      "## Selectable decision encoding",
+      "",
+      "Keep open-ended decisions as plain `- ` bullets. When a decision is safely bounded, provide two to four mutually exclusive choices by placing this exact two-space-indented metadata fence immediately beneath the top-level bullet:",
+      "",
+      "- Which implementation should be used?",
+      "  ```execution-refinement",
+      "  {",
+      "    \"options\": [",
+      "      { \"id\": \"narrow\", \"label\": \"Use the narrow change\", \"description\": \"Limits impact to the current workflow.\" },",
+      "      { \"id\": \"broad\", \"label\": \"Use the broad change\" }",
+      "    ],",
+      "    \"recommended_option_id\": \"narrow\",",
+      "    \"allow_other\": true",
+      "  }",
+      "  ```",
+      "",
+      "Option IDs and labels must be unique/concise; descriptions are optional. Recommendations are display-only and must not silently choose an answer. Set `allow_other` only when free text is safe; it defaults to false. Invalid metadata degrades to a plain free-text bullet.",
+      "For blockers, prefer bounded choices such as accepting a narrow override or revising the plan. A real cancellation choice is allowed only on a blocker option with `\"action\": \"cancel_execution\"`; selecting it abandons this run and returns the work item to `ready` instead of coding.",
       "",
       "## Issue context",
       `Repo: ${input.workItem.repo ?? "(not set)"}`,

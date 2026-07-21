@@ -1,169 +1,133 @@
 import { describe, expect, it } from "vitest";
-import { ScratchpadService } from "../scratchpad.service.js";
-
-/**
- * Unit tests for the `parseScratchpadOpenItems` helper.
- *
- * Phase 4c (#232): the parser lives on ScratchpadService. Uses the
- * `Object.create(ScratchpadService.prototype)` harness pattern so we
- * can exercise the pure method without booting Nest DI.
- */
+import { ScratchpadService, type ParsedScratchpadOpenItem } from "../scratchpad.service.js";
 
 interface Harness {
   parseScratchpadOpenItems: (
     content: string,
-  ) => { questions: string[]; blockers: string[] };
+  ) => { questions: ParsedScratchpadOpenItem[]; blockers: ParsedScratchpadOpenItem[] };
 }
 
 function makeHarness(): Harness {
   return Object.create(ScratchpadService.prototype) as Harness;
 }
 
+const prompt = (text: string): ParsedScratchpadOpenItem => ({ prompt: text });
+
 describe("ScratchpadService.parseScratchpadOpenItems", () => {
-  it("parses items from both sections when both are populated", () => {
-    const h = makeHarness();
-    const content = [
+  it("parses mixed legacy items from both sections", () => {
+    const result = makeHarness().parseScratchpadOpenItems([
       "# Plan: studio-999",
-      "",
-      "## Questions / Concerns",
-      "",
       "### Clarifications Needed",
-      "",
       "- First question",
       "- Second question",
-      "",
       "### Assumptions Made",
-      "",
-      "- some assumption",
-      "",
+      "- ignored assumption",
       "## Blockers",
-      "",
       "- Blocker one",
       "- Blocker two",
-      "",
-    ].join("\n");
+    ].join("\n"));
 
-    const result = h.parseScratchpadOpenItems(content);
-    expect(result.questions).toEqual(["First question", "Second question"]);
-    expect(result.blockers).toEqual(["Blocker one", "Blocker two"]);
+    expect(result.questions).toEqual([prompt("First question"), prompt("Second question")]);
+    expect(result.blockers).toEqual([prompt("Blocker one"), prompt("Blocker two")]);
   });
 
-  it("returns empty arrays when both sections are _(none)_", () => {
-    const h = makeHarness();
-    const content = [
-      "## Questions / Concerns",
-      "",
+  it("parses valid choice metadata, recommendation, Other policy, and cancellation", () => {
+    const result = makeHarness().parseScratchpadOpenItems([
       "### Clarifications Needed",
-      "",
+      "- Which API?",
+      "  ```execution-refinement",
+      "  {",
+      "    \"options\": [",
+      "      { \"id\": \"a\", \"label\": \"API A\", \"description\": \"Stable\" },",
+      "      { \"id\": \"b\", \"label\": \"API B\" }",
+      "    ],",
+      "    \"recommended_option_id\": \"a\",",
+      "    \"allow_other\": true",
+      "  }",
+      "  ```",
+      "## Blockers",
+      "- How should this blocker be handled?",
+      "  ```execution-refinement",
+      "  {\"options\":[{\"id\":\"revise\",\"label\":\"Revise plan\"},{\"id\":\"cancel\",\"label\":\"Cancel execution\",\"action\":\"cancel_execution\"}],\"allow_other\":false}",
+      "  ```",
+    ].join("\n"));
+
+    expect(result.questions[0]).toEqual({
+      prompt: "Which API?",
+      metadata: {
+        options: [
+          { id: "a", label: "API A", description: "Stable" },
+          { id: "b", label: "API B" },
+        ],
+        recommended_option_id: "a",
+        allow_other: true,
+      },
+    });
+    expect(result.blockers[0].metadata?.options[1]).toEqual({
+      id: "cancel",
+      label: "Cancel execution",
+      action: "cancel_execution",
+    });
+    expect(result.blockers[0].metadata?.allow_other).toBe(false);
+  });
+
+  it("drops dangling recommendations while retaining valid options", () => {
+    const result = makeHarness().parseScratchpadOpenItems([
+      "### Clarifications Needed",
+      "- Choose",
+      "  ```execution-refinement",
+      "  {\"options\":[{\"id\":\"a\",\"label\":\"A\"},{\"id\":\"b\",\"label\":\"B\"}],\"recommended_option_id\":\"missing\"}",
+      "  ```",
+    ].join("\n"));
+    expect(result.questions[0].metadata).toEqual({ options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] });
+  });
+
+  it.each([
+    ["malformed JSON", "{not json}"],
+    ["too few options", "{\"options\":[{\"id\":\"a\",\"label\":\"A\"}]}"],
+    ["duplicate IDs", "{\"options\":[{\"id\":\"a\",\"label\":\"A\"},{\"id\":\"a\",\"label\":\"B\"}]}"],
+    ["blank label", "{\"options\":[{\"id\":\"a\",\"label\":\" \"},{\"id\":\"b\",\"label\":\"B\"}]}"],
+    ["blank description", "{\"options\":[{\"id\":\"a\",\"label\":\"A\",\"description\":\" \"},{\"id\":\"b\",\"label\":\"B\"}]}"],
+    ["cancellation on a question", "{\"options\":[{\"id\":\"a\",\"label\":\"A\",\"action\":\"cancel_execution\"},{\"id\":\"b\",\"label\":\"B\"}]}"],
+  ])("degrades %s metadata to a legacy item", (_label, json) => {
+    const result = makeHarness().parseScratchpadOpenItems([
+      "### Clarifications Needed",
+      "- Legacy fallback",
+      "  ```execution-refinement",
+      `  ${json}`,
+      "  ```",
+    ].join("\n"));
+    expect(result.questions).toEqual([prompt("Legacy fallback")]);
+  });
+
+  it.each([
+    ["detached", ["- Legacy", "", "  ```execution-refinement", "  {}", "  ```"]],
+    ["unindented", ["- Legacy", "```execution-refinement", "{}", "```"]],
+    ["wrong language", ["- Legacy", "  ```json", "  {}", "  ```"]],
+    ["unterminated", ["- Legacy", "  ```execution-refinement", "  {}"]],
+    ["indented bullet", ["  - Legacy", "  ```execution-refinement", "  {}", "  ```"]],
+  ])("does not bind %s metadata", (_label, lines) => {
+    const result = makeHarness().parseScratchpadOpenItems([
+      "### Clarifications Needed",
+      ...lines,
+    ].join("\n"));
+    expect(result.questions[0]).toEqual(prompt("Legacy"));
+  });
+
+  it("handles sentinels, missing sections, headings, whitespace, and CRLF", () => {
+    const content = [
+      "### Clarifications Needed",
       "_(none)_",
-      "",
       "### Assumptions Made",
-      "",
-      "_(none)_",
-      "",
+      "- ignored",
       "## Blockers",
-      "",
-      "_(none)_",
-      "",
-    ].join("\n");
-
-    const result = h.parseScratchpadOpenItems(content);
-    expect(result.questions).toEqual([]);
-    expect(result.blockers).toEqual([]);
-  });
-
-  it("returns empty questions when the `### Clarifications Needed` heading is missing", () => {
-    const h = makeHarness();
-    const content = [
-      "# Plan: studio-999",
-      "",
-      "## Blockers",
-      "",
-      "- Only blocker",
-      "",
-    ].join("\n");
-
-    const result = h.parseScratchpadOpenItems(content);
-    expect(result.questions).toEqual([]);
-    expect(result.blockers).toEqual(["Only blocker"]);
-  });
-
-  it("returns empty blockers when the `## Blockers` heading is missing", () => {
-    const h = makeHarness();
-    const content = [
-      "## Questions / Concerns",
-      "",
-      "### Clarifications Needed",
-      "",
-      "- The only question",
-      "",
-    ].join("\n");
-
-    const result = h.parseScratchpadOpenItems(content);
-    expect(result.questions).toEqual(["The only question"]);
-    expect(result.blockers).toEqual([]);
-  });
-
-  it("tolerates leading/trailing whitespace and blank lines between bullets", () => {
-    const h = makeHarness();
-    const content = [
-      "### Clarifications Needed",
-      "",
-      "   - indented question   ",
-      "",
-      "- second question",
-      "",
-      "",
-      "## Blockers",
-      "",
-      "- spaced blocker   ",
-      "",
-    ].join("\n");
-
-    const result = h.parseScratchpadOpenItems(content);
-    expect(result.questions).toEqual(["indented question", "second question"]);
-    expect(result.blockers).toEqual(["spaced blocker"]);
-  });
-
-  it("stops collecting at the next heading (e.g. ### Assumptions Made)", () => {
-    const h = makeHarness();
-    const content = [
-      "### Clarifications Needed",
-      "",
-      "- kept question",
-      "",
-      "### Assumptions Made",
-      "",
-      "- should not be collected as a question",
-      "",
-      "## Blockers",
-      "",
-      "- kept blocker",
-      "",
+      "   - spaced blocker   ",
       "## Work Log",
-      "",
-      "- should not be collected as a blocker",
-      "",
-    ].join("\n");
-
-    const result = h.parseScratchpadOpenItems(content);
-    expect(result.questions).toEqual(["kept question"]);
-    expect(result.blockers).toEqual(["kept blocker"]);
-  });
-
-  it("returns empty arrays for an empty string", () => {
-    const h = makeHarness();
-    const result = h.parseScratchpadOpenItems("");
+      "- ignored",
+    ].join("\r\n");
+    const result = makeHarness().parseScratchpadOpenItems(content);
     expect(result.questions).toEqual([]);
-    expect(result.blockers).toEqual([]);
-  });
-
-  it("handles CRLF line endings", () => {
-    const h = makeHarness();
-    const content =
-      "### Clarifications Needed\r\n\r\n- crlf question\r\n\r\n## Blockers\r\n\r\n- crlf blocker\r\n";
-    const result = h.parseScratchpadOpenItems(content);
-    expect(result.questions).toEqual(["crlf question"]);
-    expect(result.blockers).toEqual(["crlf blocker"]);
+    expect(result.blockers).toEqual([prompt("spaced blocker")]);
+    expect(makeHarness().parseScratchpadOpenItems("")).toEqual({ questions: [], blockers: [] });
   });
 });

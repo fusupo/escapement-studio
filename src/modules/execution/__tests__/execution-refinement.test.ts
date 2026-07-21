@@ -111,6 +111,9 @@ describe("worktree execution refinement", () => {
           "# Refined plan",
           "### Clarifications Needed",
           "- Should updates preserve text outside the managed block?",
+          "  ```execution-refinement",
+          "  {\"options\":[{\"id\":\"preserve\",\"label\":\"Preserve text\",\"description\":\"Recommended safe path\"},{\"id\":\"replace\",\"label\":\"Replace all text\"}],\"recommended_option_id\":\"preserve\",\"allow_other\":true}",
+          "  ```",
           "## Blockers",
           "- The fixture format is ambiguous.",
         ].join("\n"), "utf8");
@@ -144,12 +147,33 @@ describe("worktree execution refinement", () => {
       refinement: {
         status: "awaiting_confirmation",
         items: [
-          { id: "question-1", kind: "question", prompt: "Should updates preserve text outside the managed block?" },
-          { id: "blocker-1", kind: "blocker", prompt: "The fixture format is ambiguous." },
+          {
+            id: "question-1",
+            kind: "question",
+            prompt: "Should updates preserve text outside the managed block?",
+            options: [
+              { id: "preserve", label: "Preserve text", description: "Recommended safe path" },
+              { id: "replace", label: "Replace all text" },
+            ],
+            recommended_option_id: "preserve",
+            allow_other: true,
+            selected_option_id: null,
+            response: null,
+          },
+          {
+            id: "blocker-1",
+            kind: "blocker",
+            prompt: "The fixture format is ambiguous.",
+            selected_option_id: null,
+            response: null,
+          },
         ],
       },
     });
     expect(session.prompt).toHaveBeenCalledWith(expect.stringContaining("do not code yet"));
+    expect(session.prompt).toHaveBeenCalledWith(expect.stringContaining("```execution-refinement"));
+    expect(session.prompt).toHaveBeenCalledWith(expect.stringContaining('"action": "cancel_execution"'));
+    expect(session.prompt).toHaveBeenCalledWith(expect.stringContaining("Invalid metadata degrades"));
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(interaction.disposeSession).toHaveBeenCalledWith(run.run_id);
     expect(session.dispose).toHaveBeenCalledOnce();
