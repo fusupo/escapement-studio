@@ -121,6 +121,7 @@ describe("ExecutionService zero-diff terminal handling", () => {
     };
     service.runInteractionService = {
       pushActivity: vi.fn(),
+      refreshChecklistAtBoundary: vi.fn(),
     };
     service.hsmService = {
       dispatch: vi.fn(async () => ({ ok: true })),

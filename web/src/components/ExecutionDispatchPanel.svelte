@@ -29,6 +29,7 @@
     unresolvedRefinementItems,
   } from "../lib/execution-refinement.js";
   import { createExecutionSyncCoordinator } from "../lib/execution-sync.js";
+  import { shouldReplaceChecklistSnapshot } from "../lib/checklist-sync.js";
   import { projectExecutionRecovery } from "../lib/execution-recovery.js";
 
   const REFINEMENT_DRAFTS_KEY = "escapement.execution.refinement-drafts";
@@ -275,11 +276,10 @@
         if (entry?.work_item_id) nextMap[entry.work_item_id] = entry;
       }
       reconciledByWorkItem = nextMap;
-      for (const run of nextRuns) {
-        if (["queued", "preparing", "running", "completed", "disambiguating"].includes(run.status) && !checklistData[run.run_id]) {
-          loadChecklist(run.run_id);
-        }
-      }
+      // Checklist recovery is part of the synchronization completion: refresh
+      // every returned run, including cached and terminal entries, so a missed
+      // SSE event converges before the coordinator reports fresh.
+      await Promise.all(nextRuns.map((run) => loadChecklist(run.run_id)));
     } catch (e) {
       error = e.message;
       throw e;
@@ -531,8 +531,12 @@
   async function loadChecklist(runId) {
     try {
       const result = await getRunChecklist(runId);
-      checklistData = { ...checklistData, [runId]: result };
+      if (shouldReplaceChecklistSnapshot(checklistData[runId], result, runId)) {
+        checklistData = { ...checklistData, [runId]: result };
+      }
     } catch (e) {
+      // A checklist endpoint failure is isolated to this run and must not
+      // prevent the wider execution synchronization from becoming fresh.
       console.debug("Failed to load checklist", e);
     }
   }
@@ -742,7 +746,10 @@
       try {
         const envelope = JSON.parse(event.data);
         const snapshot = envelope.payload;
-        if (snapshot?.run_id) checklistData = { ...checklistData, [snapshot.run_id]: snapshot };
+        const runId = envelope.session_id;
+        if (shouldReplaceChecklistSnapshot(checklistData[runId], snapshot, runId)) {
+          checklistData = { ...checklistData, [runId]: snapshot };
+        }
       } catch (e) {
         console.error("Failed to parse checklist SSE event", e);
       }
@@ -901,10 +908,10 @@
             {/if}
 
             <!-- Checklist (collapsible, open by default) -->
-            {#if checklist?.items?.length}
+            {#if checklist}
               <details class="workspace-expandable" open>
-                <summary>Checklist ({checklist.items.filter(i => i.checked).length}/{checklist.items.length})</summary>
-                <ExecutionChecklist items={checklist.items} />
+                <summary>Implementation ({checklist.completed}/{checklist.total})</summary>
+                <ExecutionChecklist snapshot={checklist} />
               </details>
             {/if}
 

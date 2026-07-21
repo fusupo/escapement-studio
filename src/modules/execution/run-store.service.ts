@@ -6,6 +6,8 @@ import { getConfig } from "../../config.js";
 import { loadRunRecordsForArtifactRoot, loadRunRecordsFromDisk } from "./run-disk-store.js";
 import type {
   ActivityLogEntry,
+  ChecklistItem,
+  ExecutionChecklistSnapshot,
   ExecutionDispatchNodePreview,
   ExecutionRunRecord,
   ExecutionStatusEvent,
@@ -116,6 +118,49 @@ export class RunStore {
       nextRun,
     );
     return nextRun;
+  }
+
+  persistChecklistProjection(
+    runId: string,
+    items: ChecklistItem[],
+    options: { republishUnchanged?: boolean } = {},
+  ): ExecutionChecklistSnapshot | null {
+    const index = this.recentRuns.findIndex((run) => run.run_id === runId);
+    if (index < 0) return null;
+
+    const currentRun = this.recentRuns[index];
+    const implementationItems = items.filter((item) => item.category === "implementation");
+    const projection = {
+      items,
+      completed: implementationItems.filter((item) => item.checked).length,
+      total: implementationItems.length,
+    };
+    const current = currentRun.checklist;
+    const unchanged = current !== undefined
+      && JSON.stringify({ items: current.items, completed: current.completed, total: current.total })
+        === JSON.stringify(projection);
+
+    if (unchanged) {
+      if (options.republishUnchanged) {
+        this.emitEvent("execution_checklist", runId, current);
+      }
+      return current;
+    }
+
+    const checklist: ExecutionChecklistSnapshot = {
+      run_id: runId,
+      revision: (current?.revision ?? 0) + 1,
+      updated_at: this.now(),
+      ...projection,
+    };
+    const nextRun: ExecutionRunRecord = { ...currentRun, checklist };
+
+    // The artifact is the recovery source of truth. Do not update the buffer
+    // or publish an event unless persistence succeeds.
+    this.writeStatus(nextRun);
+    this.recentRuns[index] = nextRun;
+    this.emitEvent("execution_checklist", runId, checklist);
+    return checklist;
   }
 
   persistRun(run: ExecutionRunRecord): void {

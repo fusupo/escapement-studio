@@ -79,6 +79,7 @@ function makeExecutionServiceHarness(
   const scratchpad = Object.create(ScratchpadService.prototype) as ScratchpadService;
   (scratchpad as any).artifactRoot = artifactRoot;
   (scratchpad as any).logger = { warn: vi.fn() };
+  (scratchpad as any).runStore = runStore;
   (service as any).scratchpadService = scratchpad;
   // Phase 4d (#233): the session lifecycle + pushActivity + getRunChatHistory
   // + handleSessionEvent + sendFollowUp all live on RunInteractionService.
@@ -380,13 +381,17 @@ describe("ExecutionService run detail rehydration", () => {
     });
     expect(service.getRunChecklist("run_detail")).toEqual({
       run_id: "run_detail",
+      revision: 1,
+      updated_at: expect.any(String),
       items: [
-        { text: "Persist run state", checked: true },
-        { text: "Rehydrate detail endpoints", checked: false },
+        { text: "Persist run state", checked: true, category: "implementation" },
+        { text: "Rehydrate detail endpoints", checked: false, category: "implementation" },
       ],
       completed: 1,
       total: 2,
     });
+    const persisted = JSON.parse(readFileSync(join(runsDir, "run_detail", "status.json"), "utf8"));
+    expect(persisted.checklist.revision).toBe(1);
   });
 });
 

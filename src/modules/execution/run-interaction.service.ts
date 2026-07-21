@@ -153,13 +153,17 @@ export class RunInteractionService {
     let assistantText: string | null = null;
     try {
       if (input.resolutionPrompt) {
-        await session.prompt(input.resolutionPrompt);
-        this.scratchpadService.syncScratchpadToCanonical(run);
-        this.scratchpadService.emitChecklistIfChanged(run);
+        try {
+          await session.prompt(input.resolutionPrompt);
+        } finally {
+          this.refreshChecklistAtBoundary(runId);
+        }
       }
-      await session.prompt(this.buildDoWorkPrompt(run, undefined, input.workItem, input.projectContext));
-      this.scratchpadService.syncScratchpadToCanonical(run);
-      this.scratchpadService.emitChecklistIfChanged(run);
+      try {
+        await session.prompt(this.buildDoWorkPrompt(run, undefined, input.workItem, input.projectContext));
+      } finally {
+        this.refreshChecklistAtBoundary(runId);
+      }
       assistantText = session.getLastAssistantText()?.trim() || null;
     } finally {
       unsubscribe();
@@ -205,16 +209,18 @@ export class RunInteractionService {
       `For each unchecked task in the ## Implementation Plan section of ${scratchpadName}:`,
       "",
       "1. **Implement** the change",
-      `2. **Update ${scratchpadName}**: check off the task (\`- [x]\`), add a note to ## Work Log`,
-      "3. **Commit** your changes:",
+      "2. **Run the automated checks relevant to that task** and fix any failures",
+      `3. **Record completion** only after implementation and relevant checks succeed: check off the implementation task (\`- [x]\`) in ${scratchpadName} and add a note to ## Work Log`,
+      "4. **Commit** your changes:",
       `   - Stage specific files (never \`git add .\`, never stage ${scratchpadName})`,
       "   - Write a descriptive commit message",
       "   - Use conventional format: `type(scope): description`",
-      "4. **Run quality checks** after each significant change:",
-      "   - `npm run check` (TypeScript)",
-      "   - `npm test` (if tests exist)",
-      "   - `npm run build:web` (if frontend changes)",
-      "5. Move to the next unchecked task",
+      "5. Move to the next unchecked implementation task",
+      "",
+      "Acceptance Criteria and Quality Checks / Manual Verification are independent evidence:",
+      "- Mark Acceptance Criteria only when the criterion is actually satisfied",
+      "- Mark Quality Checks or Manual Verification only after that check is actually performed",
+      "- Neither category replaces the implementation-task completion transition above",
       "",
       "## Rules",
       "",
@@ -322,7 +328,7 @@ export class RunInteractionService {
       this.runStore.appendEvent(run, { type: event.type, tool_name: toolName });
       this.pushActivity(runId, "tool_end", `Tool finished: ${toolName ?? "unknown"}`);
       this.runStore.updateRun(runId, { progress_message: `${toolName ?? "tool"} finished.` });
-      this.scratchpadService.emitChecklistIfChanged(run);
+      this.observeChecklist(runId);
       return;
     }
 
@@ -348,7 +354,20 @@ export class RunInteractionService {
       this.runStore.appendEvent(run, { type: event.type });
       this.pushActivity(runId, "turn_end", "Execution turn completed.");
       this.runStore.updateRun(runId, { progress_message: "Execution turn completed." });
+      this.observeChecklist(runId);
     }
+  }
+
+  observeChecklist(runId: string): void {
+    const run = this.runStore.getRun(runId);
+    if (run) this.scratchpadService.emitChecklistIfChanged(run);
+  }
+
+  refreshChecklistAtBoundary(runId: string): void {
+    const run = this.runStore.getRun(runId);
+    if (!run) return;
+    this.scratchpadService.syncScratchpadToCanonical(run);
+    this.scratchpadService.emitChecklistIfChanged(run, true);
   }
 
   extractTextFromMessage(message: unknown): string | null {
@@ -471,11 +490,9 @@ export class RunInteractionService {
 
     try {
       await session.prompt(message);
-      // ADR 014 step 5: sync the agent's scratchpad edits back to canonical
-      // at follow-up turn completion (phase boundary).
-      this.scratchpadService.syncScratchpadToCanonical(run);
-      this.scratchpadService.emitChecklistIfChanged(run);
     } finally {
+      // Preserve checklist progress even when the continuation prompt fails.
+      this.refreshChecklistAtBoundary(run.run_id);
       unsubscribe();
       this.activeSessions.delete(run.run_id);
       session.dispose();
@@ -513,6 +530,7 @@ export class RunInteractionService {
         actual_files_sync: actualFilesSync,
         terminal_outcome: outcome.terminalOutcome,
       });
+      this.refreshChecklistAtBoundary(run.run_id);
       if (outcome.dispatchRunError) {
         const workItem = this.workItemsService.get(run.work_item_id);
         if (this.isInProgressState(workItem.state)) {

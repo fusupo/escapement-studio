@@ -168,6 +168,8 @@ export interface ExecutionRunRecord {
   terminal_outcome?: ExecutionTerminalOutcome;
   /** Worktree-specific plan refinement and the user's persisted responses. */
   refinement?: ExecutionRefinementState;
+  /** Latest durable projection of the execution scratchpad checklists. */
+  checklist?: ExecutionChecklistSnapshot;
   activity_log: ActivityLogEntry[];
   changed_files?: string[];
   pull_request?: ExecutionPullRequestRecord;
@@ -297,15 +299,24 @@ export interface RunChatMessage {
   text: string;
 }
 
+export type ChecklistItemCategory = "implementation" | "acceptance" | "verification";
+
 export interface ChecklistItem {
   text: string;
   checked: boolean;
+  category: ChecklistItemCategory;
 }
 
 export interface ExecutionChecklistSnapshot {
   run_id: string;
+  /** Monotonically increases whenever projected checklist content changes. */
+  revision: number;
+  /** ISO timestamp of the latest persisted content transition. */
+  updated_at: string | null;
   items: ChecklistItem[];
+  /** Completed implementation items only. */
   completed: number;
+  /** Total implementation items only. */
   total: number;
 }
 

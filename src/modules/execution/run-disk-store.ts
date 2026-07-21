@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { runsRoot } from "../../lib/context-layout.js";
 import type {
   ActivityLogEntry,
+  ChecklistItem,
+  ExecutionChecklistSnapshot,
   ExecutionPullRequestRecord,
   ExecutionRefinementState,
   ExecutionRunRecord,
@@ -312,6 +314,7 @@ export function coerceRecord(raw: unknown): ExecutionRunRecord | null {
   const terminalOutcome = coerceTerminalOutcome(record.terminal_outcome);
   const phase = coerceRunPhase(record.phase);
   const refinement = coerceRefinement(record.refinement);
+  const checklist = coerceChecklist(record.checklist, record.run_id);
 
   return {
     ...record,
@@ -333,12 +336,53 @@ export function coerceRecord(raw: unknown): ExecutionRunRecord | null {
     result_summary: typeof record.result_summary === "string" ? record.result_summary : undefined,
     terminal_outcome: terminalOutcome,
     refinement,
+    checklist,
     activity_log: activityLog,
     safety_checks: safetyChecks,
     changed_files: changedFiles,
     pull_request: pullRequest,
     errors,
   } as ExecutionRunRecord;
+}
+
+function coerceChecklist(raw: unknown, runId: string): ExecutionChecklistSnapshot | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  if (
+    value.run_id !== runId
+    || !Number.isInteger(value.revision)
+    || (value.revision as number) < 1
+    || typeof value.updated_at !== "string"
+    || Number.isNaN(Date.parse(value.updated_at))
+    || !Array.isArray(value.items)
+  ) {
+    return undefined;
+  }
+
+  const categories = new Set(["implementation", "acceptance", "verification"]);
+  const items = value.items.flatMap((candidate): ChecklistItem[] => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const item = candidate as Record<string, unknown>;
+    if (
+      typeof item.text !== "string"
+      || item.text.trim().length === 0
+      || typeof item.checked !== "boolean"
+      || typeof item.category !== "string"
+      || !categories.has(item.category)
+    ) {
+      return [];
+    }
+    return [{ text: item.text.trim(), checked: item.checked, category: item.category as ChecklistItem["category"] }];
+  });
+  const implementationItems = items.filter((item) => item.category === "implementation");
+  return {
+    run_id: runId,
+    revision: value.revision as number,
+    updated_at: value.updated_at,
+    items,
+    completed: implementationItems.filter((item) => item.checked).length,
+    total: implementationItems.length,
+  };
 }
 
 function coerceRunPhase(raw: unknown): ExecutionRunPhase | undefined {
