@@ -15,6 +15,12 @@ import { listArchivedRunBundles, readArchivedRunBundle } from "./archive-reader.
 import { RunCompletedEvent } from "./events/run-completed.event.js";
 import { LaunchEligibilityService } from "./launch-eligibility.service.js";
 import { PullRequestService } from "./pull-request.service.js";
+import {
+  isCancellationSelection,
+  isRefinementItemAnswered,
+  normalizeSubmittedRefinementResponse,
+  sanitizeRehydratedRefinementAnswer,
+} from "./refinement-response.js";
 import { classifyExecutionTerminalOutcome } from "./run-outcome.js";
 import { RunInteractionService } from "./run-interaction.service.js";
 import { RunRefinementService } from "./run-refinement.service.js";
@@ -262,48 +268,88 @@ export class ExecutionService implements OnModuleInit {
       };
     }
 
-    const responseById = new Map<string, string>();
-    for (const response of input.responses ?? []) {
-      const itemId = response.item_id?.trim();
-      const text = response.response?.trim();
-      if (itemId && text) responseById.set(itemId, text);
+    const reject = (error: string): ResolveDisambiguationResult => ({ resolved: false, run_id: runId, error });
+    if (input.responses !== undefined && !Array.isArray(input.responses)) {
+      return reject("Refinement responses must be an array.");
     }
+
+    const submissions = new Map<string, unknown>();
+    for (const candidate of input.responses ?? []) {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+        return reject("Each refinement response must be an object.");
+      }
+      const itemIdValue = (candidate as { item_id?: unknown }).item_id;
+      const itemId = typeof itemIdValue === "string" ? itemIdValue.trim() : "";
+      if (!itemId) return reject("Each refinement response requires a nonblank item_id.");
+      if (submissions.has(itemId)) return reject(`Duplicate refinement item response: ${itemId}`);
+      submissions.set(itemId, candidate);
+    }
+
     const knownIds = new Set(run.refinement.items.map((item) => item.id));
-    const unknownIds = [...responseById.keys()].filter((id) => !knownIds.has(id));
-    if (unknownIds.length > 0) {
-      return {
-        resolved: false,
-        run_id: runId,
-        error: `Unknown refinement item response(s): ${unknownIds.join(", ")}`,
-      };
-    }
+    const unknownIds = [...submissions.keys()].filter((id) => !knownIds.has(id));
+    if (unknownIds.length > 0) return reject(`Unknown refinement item response(s): ${unknownIds.join(", ")}`);
 
-    const items = run.refinement.items.map((item) => ({
-      ...item,
-      response: responseById.get(item.id) ?? item.response ?? null,
-    }));
-    const unresolved = items.filter((item) => !item.response?.trim());
-    if (unresolved.length > 0 && input.confirm_unresolved !== true) {
-      return {
-        resolved: false,
-        run_id: runId,
-        error: `Answer all refinement items or explicitly confirm ${unresolved.length} unresolved item(s).`,
-      };
+    const items = [];
+    for (const item of run.refinement.items) {
+      const persisted = { ...item, ...sanitizeRehydratedRefinementAnswer(item) };
+      const submission = submissions.get(item.id);
+      if (!submission) {
+        items.push(persisted);
+        continue;
+      }
+      const normalized = normalizeSubmittedRefinementResponse(item, submission);
+      if (!normalized.ok) return reject(normalized.error);
+      items.push({
+        ...item,
+        selected_option_id: normalized.selected_option_id,
+        response: normalized.response,
+      });
     }
-
+    const unresolved = items.filter((item) => !isRefinementItemAnswered(item));
     const confirmedAt = this.now();
+    const refinement = {
+      ...run.refinement,
+      status: "confirmed" as const,
+      items,
+      confirmed_at: confirmedAt,
+      additional_context: input.additional_context?.trim() || null,
+      confirmed_with_unresolved: unresolved.length > 0,
+    };
+
+    if (items.some(isCancellationSelection)) {
+      try {
+        await this.transitionInProgressToReady(run.work_item_id);
+      } catch (error) {
+        return reject(`Unable to abandon execution: ${this.getErrorMessage(error)}`);
+      }
+      const abandonedRun = this.runStore.updateRun(runId, {
+        status: "error",
+        phase: "failed",
+        progress_message: "Execution abandoned during confirmation — work item returned to ready.",
+        result_summary: "Execution abandoned by user during refinement confirmation.",
+        completed_at: confirmedAt,
+        refinement,
+      });
+      if (!abandonedRun) throw new BadRequestException(`Execution run disappeared while abandoning: ${runId}`);
+      this.runInteractionService.pushActivity(
+        runId,
+        "status_change",
+        "Execution abandoned during confirmation — work item returned to ready.",
+      );
+      this.runStore.appendEvent(abandonedRun, { type: "execution_abandoned", work_item_state: "ready" });
+      this.runStore.emitRun("execution_status", abandonedRun);
+      return { resolved: true, run_id: runId, run: abandonedRun };
+    }
+
+    if (unresolved.length > 0 && input.confirm_unresolved !== true) {
+      return reject(`Answer all refinement items or explicitly confirm ${unresolved.length} unresolved item(s).`);
+    }
+
     const confirmedRun = this.runStore.updateRun(runId, {
       status: "queued",
       phase: "coding",
       progress_message: "Execution confirmed — coding session queued.",
-      refinement: {
-        ...run.refinement,
-        status: "confirmed",
-        items,
-        confirmed_at: confirmedAt,
-        additional_context: input.additional_context?.trim() || null,
-        confirmed_with_unresolved: unresolved.length > 0,
-      },
+      refinement,
     });
     if (!confirmedRun) {
       throw new BadRequestException(`Execution run disappeared while confirming: ${runId}`);

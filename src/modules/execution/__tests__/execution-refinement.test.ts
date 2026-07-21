@@ -111,6 +111,9 @@ describe("worktree execution refinement", () => {
           "# Refined plan",
           "### Clarifications Needed",
           "- Should updates preserve text outside the managed block?",
+          "  ```execution-refinement",
+          "  {\"options\":[{\"id\":\"preserve\",\"label\":\"Preserve text\",\"description\":\"Recommended safe path\"},{\"id\":\"replace\",\"label\":\"Replace all text\"}],\"recommended_option_id\":\"preserve\",\"allow_other\":true}",
+          "  ```",
           "## Blockers",
           "- The fixture format is ambiguous.",
         ].join("\n"), "utf8");
@@ -144,12 +147,33 @@ describe("worktree execution refinement", () => {
       refinement: {
         status: "awaiting_confirmation",
         items: [
-          { id: "question-1", kind: "question", prompt: "Should updates preserve text outside the managed block?" },
-          { id: "blocker-1", kind: "blocker", prompt: "The fixture format is ambiguous." },
+          {
+            id: "question-1",
+            kind: "question",
+            prompt: "Should updates preserve text outside the managed block?",
+            options: [
+              { id: "preserve", label: "Preserve text", description: "Recommended safe path" },
+              { id: "replace", label: "Replace all text" },
+            ],
+            recommended_option_id: "preserve",
+            allow_other: true,
+            selected_option_id: null,
+            response: null,
+          },
+          {
+            id: "blocker-1",
+            kind: "blocker",
+            prompt: "The fixture format is ambiguous.",
+            selected_option_id: null,
+            response: null,
+          },
         ],
       },
     });
     expect(session.prompt).toHaveBeenCalledWith(expect.stringContaining("do not code yet"));
+    expect(session.prompt).toHaveBeenCalledWith(expect.stringContaining("```execution-refinement"));
+    expect(session.prompt).toHaveBeenCalledWith(expect.stringContaining('"action": "cancel_execution"'));
+    expect(session.prompt).toHaveBeenCalledWith(expect.stringContaining("Invalid metadata degrades"));
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(interaction.disposeSession).toHaveBeenCalledWith(run.run_id);
     expect(session.dispose).toHaveBeenCalledOnce();
@@ -243,5 +267,207 @@ describe("durable execution confirmation", () => {
       },
     });
     expect(service.continueRunAfterConfirmation).toHaveBeenCalledOnce();
+  });
+
+  it("validates listed/custom answers and ignores tampered listed meaning", async () => {
+    const initial = makeRun("/tmp", {
+      status: "disambiguating",
+      phase: "awaiting_confirmation",
+      refinement: {
+        status: "awaiting_confirmation",
+        items: [
+          {
+            id: "question-1",
+            kind: "question",
+            prompt: "Which API?",
+            options: [
+              { id: "safe", label: "Safe API", description: "Recommended" },
+              { id: "fast", label: "Fast API" },
+            ],
+            recommended_option_id: "safe",
+            response: null,
+          },
+          {
+            id: "blocker-1",
+            kind: "blocker",
+            prompt: "Any constraint?",
+            options: [{ id: "none", label: "No constraint" }, { id: "revise", label: "Revise" }],
+            allow_other: true,
+            response: null,
+          },
+        ],
+        started_at: "2026-07-20T00:00:00.000Z",
+      },
+    });
+    const runStore = makeRunStore(initial);
+    const service = Object.create(ExecutionService.prototype) as any;
+    Object.assign(service, {
+      runStore,
+      runInteractionService: { pushActivity: vi.fn() },
+      continueRunAfterConfirmation: vi.fn(async () => {}),
+      failRun: vi.fn(),
+      now: () => "2026-07-20T00:02:00.000Z",
+    });
+
+    const result = await service.resolveDisambiguation({
+      run_id: initial.run_id,
+      responses: [
+        { item_id: "question-1", selected_option_id: "safe", response: "tampered" },
+        { item_id: "blocker-1", response: "  Preserve compatibility  " },
+      ],
+    });
+
+    expect(result.resolved).toBe(true);
+    expect(runStore.current.refinement?.items).toMatchObject([
+      { selected_option_id: "safe", response: "Safe API — Recommended" },
+      { selected_option_id: null, response: "Preserve compatibility" },
+    ]);
+  });
+
+  it.each([
+    ["duplicate item", [
+      { item_id: "question-1", response: "one" },
+      { item_id: "question-1", response: "two" },
+    ], /Duplicate/],
+    ["unknown item", [{ item_id: "missing", response: "answer" }], /Unknown refinement item/],
+    ["blank item ID", [{ item_id: " ", response: "answer" }], /nonblank item_id/],
+    ["non-object entry", [null], /must be an object/],
+    ["unknown option", [{ item_id: "question-1", selected_option_id: "missing" }], /Unknown option/],
+    ["blank Other", [{ item_id: "question-1", response: " " }], /does not allow a custom response/],
+  ])("rejects %s without mutating persisted state", async (_name, responses, error) => {
+    const initial = makeRun("/tmp", {
+      status: "disambiguating",
+      phase: "awaiting_confirmation",
+      refinement: {
+        status: "awaiting_confirmation",
+        items: [{
+          id: "question-1",
+          kind: "question",
+          prompt: "Choose",
+          options: [{ id: "a", label: "A" }, { id: "b", label: "B" }],
+          response: null,
+        }],
+        started_at: "2026-07-20T00:00:00.000Z",
+      },
+    });
+    const runStore = makeRunStore(initial);
+    const service = Object.create(ExecutionService.prototype) as any;
+    Object.assign(service, { runStore, now: vi.fn() });
+    const result = await service.resolveDisambiguation({ run_id: initial.run_id, responses });
+    expect(result).toMatchObject({ resolved: false, error: expect.stringMatching(error as RegExp) });
+    expect(runStore.updateRun).not.toHaveBeenCalled();
+  });
+
+  it("abandons on an explicit cancellation action and returns the work item to ready", async () => {
+    const initial = makeRun("/tmp", {
+      status: "disambiguating",
+      phase: "awaiting_confirmation",
+      refinement: {
+        status: "awaiting_confirmation",
+        items: [
+          { id: "question-1", kind: "question", prompt: "Still unresolved", response: null },
+          {
+            id: "blocker-1",
+            kind: "blocker",
+            prompt: "Proceed?",
+            options: [
+              { id: "revise", label: "Revise" },
+              { id: "cancel", label: "Cancel execution", action: "cancel_execution" },
+            ],
+            response: null,
+          },
+        ],
+        started_at: "2026-07-20T00:00:00.000Z",
+      },
+    });
+    const runStore = makeRunStore(initial);
+    const service = Object.create(ExecutionService.prototype) as any;
+    Object.assign(service, {
+      runStore,
+      runInteractionService: { pushActivity: vi.fn() },
+      transitionInProgressToReady: vi.fn(async () => makeWorkItem()),
+      continueRunAfterConfirmation: vi.fn(),
+      now: () => "2026-07-20T00:02:00.000Z",
+    });
+
+    const result = await service.resolveDisambiguation({
+      run_id: initial.run_id,
+      responses: [{ item_id: "blocker-1", selected_option_id: "cancel", response: "ignored" }],
+    });
+
+    expect(result).toMatchObject({ resolved: true, run: { status: "error", phase: "failed" } });
+    expect(service.transitionInProgressToReady).toHaveBeenCalledWith(initial.work_item_id);
+    expect(runStore.current.progress_message).toMatch(/abandoned/);
+    expect(runStore.appendEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: "execution_abandoned" }));
+    expect(service.continueRunAfterConfirmation).not.toHaveBeenCalled();
+  });
+
+  it("leaves the run awaiting confirmation when cancellation cannot return the work item to ready", async () => {
+    const initial = makeRun("/tmp", {
+      status: "disambiguating",
+      phase: "awaiting_confirmation",
+      refinement: {
+        status: "awaiting_confirmation",
+        items: [{
+          id: "blocker-1",
+          kind: "blocker",
+          prompt: "Proceed?",
+          options: [
+            { id: "go", label: "Proceed" },
+            { id: "cancel", label: "Cancel", action: "cancel_execution" },
+          ],
+          response: null,
+        }],
+        started_at: "2026-07-20T00:00:00.000Z",
+      },
+    });
+    const runStore = makeRunStore(initial);
+    const service = Object.create(ExecutionService.prototype) as any;
+    Object.assign(service, {
+      runStore,
+      transitionInProgressToReady: vi.fn(async () => { throw new Error("wrong state"); }),
+      now: () => "2026-07-20T00:02:00.000Z",
+    });
+    const result = await service.resolveDisambiguation({
+      run_id: initial.run_id,
+      responses: [{ item_id: "blocker-1", selected_option_id: "cancel" }],
+    });
+    expect(result).toMatchObject({ resolved: false, error: expect.stringContaining("wrong state") });
+    expect(runStore.updateRun).not.toHaveBeenCalled();
+  });
+
+  it("builds explicit listed, Other, and legacy resolution context", () => {
+    const run = makeRun("/tmp", {
+      refinement: {
+        status: "confirmed",
+        items: [
+          {
+            id: "question-1",
+            kind: "question",
+            prompt: "Which API?",
+            options: [{ id: "safe", label: "Safe API", description: "Stable" }, { id: "fast", label: "Fast" }],
+            selected_option_id: "safe",
+            response: "Safe API — Stable",
+          },
+          {
+            id: "blocker-1",
+            kind: "blocker",
+            prompt: "Constraint?",
+            options: [{ id: "a", label: "A" }, { id: "b", label: "B" }],
+            allow_other: true,
+            selected_option_id: null,
+            response: "Custom constraint",
+          },
+          { id: "question-2", kind: "question", prompt: "Notes?", response: "Legacy note" },
+        ],
+        started_at: "2026-07-20T00:00:00.000Z",
+      },
+    });
+    const service = Object.create(RunRefinementService.prototype) as RunRefinementService;
+    const resolution = service.buildResolutionPrompt(run)!;
+    expect(resolution).toContain("Selected option: safe — Safe API");
+    expect(resolution).toContain("Description: Stable");
+    expect(resolution).toContain("Other (free text): Custom constraint");
+    expect(resolution).toContain("Free text: Legacy note");
   });
 });

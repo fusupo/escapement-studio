@@ -285,6 +285,116 @@ describe("detectAndMarkOrphans", () => {
     });
   });
 
+  it("rehydrates structured selections and re-derives canonical response text", () => {
+    writeRunStatus(runsDir, makeRun("run_structured", {
+      status: "disambiguating",
+      phase: "awaiting_confirmation",
+      refinement: {
+        status: "confirmed",
+        items: [{
+          id: "blocker-1",
+          kind: "blocker",
+          prompt: "Proceed?",
+          options: [
+            { id: "go", label: "Proceed", description: "Use the safe path" },
+            { id: "cancel", label: "Cancel execution", action: "cancel_execution" },
+          ],
+          recommended_option_id: "go",
+          allow_other: false,
+          selected_option_id: "go",
+          response: "tampered stale text",
+        }],
+        started_at: "2026-04-10T00:00:00.000Z",
+        confirmed_at: "2026-04-10T00:01:00.000Z",
+      },
+    }));
+
+    const [rehydrated] = loadRunRecordsFromDisk(runsDir);
+    expect(rehydrated.refinement?.items[0]).toEqual({
+      id: "blocker-1",
+      kind: "blocker",
+      prompt: "Proceed?",
+      options: [
+        { id: "go", label: "Proceed", description: "Use the safe path" },
+        { id: "cancel", label: "Cancel execution", action: "cancel_execution" },
+      ],
+      recommended_option_id: "go",
+      allow_other: false,
+      selected_option_id: "go",
+      response: "Proceed — Use the safe path",
+    });
+  });
+
+  it("sanitizes stale selections and preserves permitted custom answers", () => {
+    writeRunStatus(runsDir, makeRun("run_custom", {
+      refinement: {
+        status: "awaiting_confirmation",
+        items: [{
+          id: "question-1",
+          kind: "question",
+          prompt: "Choose",
+          options: [{ id: "a", label: "A" }, { id: "b", label: "B" }],
+          allow_other: true,
+          selected_option_id: "missing",
+          response: "  My custom answer  ",
+        }],
+        started_at: "2026-04-10T00:00:00.000Z",
+      },
+    }));
+
+    const [rehydrated] = loadRunRecordsFromDisk(runsDir);
+    expect(rehydrated.refinement?.items[0]).toMatchObject({
+      selected_option_id: null,
+      response: "My custom answer",
+    });
+  });
+
+  it("degrades malformed options to a legacy prompt and response", () => {
+    writeRunStatus(runsDir, makeRun("run_malformed_options", {
+      refinement: {
+        status: "confirmed",
+        items: [{
+          id: "question-1",
+          kind: "question",
+          prompt: "Legacy recovery",
+          options: [{ id: "duplicate", label: "A" }, { id: "duplicate", label: "B" }],
+          recommended_option_id: "duplicate",
+          allow_other: false,
+          selected_option_id: "duplicate",
+          response: "  retained answer  ",
+        }],
+        started_at: "2026-04-10T00:00:00.000Z",
+      },
+    }));
+
+    const [rehydrated] = loadRunRecordsFromDisk(runsDir);
+    expect(rehydrated.refinement?.items[0]).toEqual({
+      id: "question-1",
+      kind: "question",
+      prompt: "Legacy recovery",
+      selected_option_id: null,
+      response: "retained answer",
+    });
+  });
+
+  it("retains legacy prompt/response-only records", () => {
+    writeRunStatus(runsDir, makeRun("run_legacy", {
+      refinement: {
+        status: "confirmed",
+        items: [{ id: "question-1", kind: "question", prompt: "Open question", response: " Free text " }],
+        started_at: "2026-04-10T00:00:00.000Z",
+      },
+    }));
+    const [rehydrated] = loadRunRecordsFromDisk(runsDir);
+    expect(rehydrated.refinement?.items[0]).toEqual({
+      id: "question-1",
+      kind: "question",
+      prompt: "Open question",
+      selected_option_id: null,
+      response: "Free text",
+    });
+  });
+
   it("is idempotent — a second call is a no-op", () => {
     writeRunStatus(runsDir, makeRun("run_r", { status: "running" }));
 

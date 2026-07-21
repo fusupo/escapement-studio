@@ -8,6 +8,7 @@ import {
   readPlanMetadata,
   workItemSlug,
 } from "../../lib/context-layout.js";
+import { sanitizeRefinementMetadata } from "./refinement-response.js";
 import { RunStore } from "./run-store.service.js";
 import { WorktreeService } from "./worktree.service.js";
 import type {
@@ -15,8 +16,14 @@ import type {
   ChecklistItemCategory,
   ExecutionChecklistSnapshot,
   ExecutionDispatchNodePreview,
+  ExecutionRefinementItemKind,
   ExecutionRunRecord,
 } from "./types.js";
+
+export interface ParsedScratchpadOpenItem {
+  prompt: string;
+  metadata?: NonNullable<ReturnType<typeof sanitizeRefinementMetadata>>;
+}
 
 /**
  * Phase 4c of the cqrs refactor (#232): owns canonical scratchpad
@@ -254,12 +261,15 @@ export class ScratchpadService {
    * whether the disambiguation gate should fire before coding starts.
    */
   parseScratchpadOpenItems(content: string): {
-    questions: string[];
-    blockers: string[];
+    questions: ParsedScratchpadOpenItem[];
+    blockers: ParsedScratchpadOpenItem[];
   } {
     const lines = content.split(/\r?\n/);
-    const collect = (headingMatch: (line: string) => boolean): string[] => {
-      const items: string[] = [];
+    const collect = (
+      headingMatch: (line: string) => boolean,
+      kind: ExecutionRefinementItemKind,
+    ): ParsedScratchpadOpenItem[] => {
+      const items: ParsedScratchpadOpenItem[] = [];
       let i = 0;
       while (i < lines.length) {
         if (headingMatch(lines[i])) {
@@ -267,13 +277,39 @@ export class ScratchpadService {
           while (i < lines.length) {
             const line = lines[i];
             if (/^\s*#/.test(line)) break;
-            const trimmed = line.trim();
-            if (trimmed.startsWith("- ")) {
-              const body = trimmed.slice(2).trim();
-              if (body && body !== "_(none)_") {
-                items.push(body);
+            const bullet = /^\s*-\s+(.+?)\s*$/.exec(line);
+            if (!bullet) {
+              i += 1;
+              continue;
+            }
+            const prompt = bullet[1].trim();
+            if (!prompt || prompt === "_(none)_") {
+              i += 1;
+              continue;
+            }
+
+            let metadata: ParsedScratchpadOpenItem["metadata"];
+            // Metadata is deliberately stricter than legacy bullet parsing:
+            // both the bullet and its immediately adjacent fence are fixed at
+            // the documented indentation so detached/nested fences cannot bind.
+            if (line.startsWith("- ") && lines[i + 1] === "  ```execution-refinement") {
+              const jsonLines: string[] = [];
+              let closing = i + 2;
+              while (closing < lines.length && lines[closing] !== "  ```") {
+                if (!lines[closing].startsWith("  ")) break;
+                jsonLines.push(lines[closing].slice(2));
+                closing += 1;
+              }
+              if (closing < lines.length && lines[closing] === "  ```") {
+                try {
+                  metadata = sanitizeRefinementMetadata(JSON.parse(jsonLines.join("\n")), kind) ?? undefined;
+                } catch {
+                  metadata = undefined;
+                }
+                i = closing;
               }
             }
+            items.push({ prompt, ...(metadata ? { metadata } : {}) });
             i += 1;
           }
           break;
@@ -282,8 +318,8 @@ export class ScratchpadService {
       }
       return items;
     };
-    const questions = collect((line) => /^\s*###\s+Clarifications Needed\s*$/.test(line));
-    const blockers = collect((line) => /^\s*##\s+Blockers\s*$/.test(line));
+    const questions = collect((line) => /^\s*###\s+Clarifications Needed\s*$/.test(line), "question");
+    const blockers = collect((line) => /^\s*##\s+Blockers\s*$/.test(line), "blocker");
     return { questions, blockers };
   }
 

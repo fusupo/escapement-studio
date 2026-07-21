@@ -1,6 +1,10 @@
 import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runsRoot } from "../../lib/context-layout.js";
+import {
+  sanitizeRefinementMetadata,
+  sanitizeRehydratedRefinementAnswer,
+} from "./refinement-response.js";
 import type {
   ActivityLogEntry,
   ChecklistItem,
@@ -420,11 +424,28 @@ function coerceRefinement(raw: unknown): ExecutionRefinementState | undefined {
     ) {
       return [];
     }
-    return [{
+    const kind = item.kind as "question" | "blocker";
+    const response = typeof item.response === "string" ? item.response : item.response === null ? null : undefined;
+    const metadata = sanitizeRefinementMetadata(item, kind);
+    if (!metadata) {
+      const legacyItem = { id: item.id, kind, prompt: item.prompt, response };
+      return [{
+        ...legacyItem,
+        ...sanitizeRehydratedRefinementAnswer(legacyItem),
+      }];
+    }
+
+    const structuredItem = {
       id: item.id,
-      kind: item.kind as "question" | "blocker",
+      kind,
       prompt: item.prompt,
-      response: typeof item.response === "string" ? item.response : item.response === null ? null : undefined,
+      ...metadata,
+      selected_option_id: typeof item.selected_option_id === "string" ? item.selected_option_id : null,
+      response,
+    };
+    return [{
+      ...structuredItem,
+      ...sanitizeRehydratedRefinementAnswer(structuredItem),
     }];
   });
   return {
