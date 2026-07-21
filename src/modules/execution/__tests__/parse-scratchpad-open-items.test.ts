@@ -130,4 +130,18 @@ describe("ScratchpadService.parseScratchpadOpenItems", () => {
     expect(result.blockers).toEqual([prompt("spaced blocker")]);
     expect(makeHarness().parseScratchpadOpenItems("")).toEqual({ questions: [], blockers: [] });
   });
+
+  it("accepts H2 clarification and H3 blocker headings from refined plans", () => {
+    const result = makeHarness().parseScratchpadOpenItems([
+      "## Clarifications Needed",
+      "- Clarification written at H2",
+      "### Blockers",
+      "- Blocker written at H3",
+    ].join("\n"));
+
+    expect(result).toEqual({
+      questions: [prompt("Clarification written at H2")],
+      blockers: [prompt("Blocker written at H3")],
+    });
+  });
 });

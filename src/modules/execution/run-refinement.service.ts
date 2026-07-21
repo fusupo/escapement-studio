@@ -187,8 +187,8 @@ export class RunRefinementService {
   }
 
   private assertRefinementContract(content: string): void {
-    const hasQuestions = /^\s*###\s+Clarifications Needed\s*$/m.test(content);
-    const hasBlockers = /^\s*##\s+Blockers\s*$/m.test(content);
+    const hasQuestions = /^\s*#{2,3}\s+Clarifications Needed\s*$/m.test(content);
+    const hasBlockers = /^\s*#{2,3}\s+Blockers\s*$/m.test(content);
     if (!hasQuestions || !hasBlockers) {
       const missing = [
         ...(!hasQuestions ? ["### Clarifications Needed"] : []),

@@ -212,6 +212,53 @@ describe("worktree execution refinement", () => {
     expect(session.dispose).toHaveBeenCalledOnce();
     expect(scratchpad.syncScratchpadToCanonical).not.toHaveBeenCalled();
   });
+
+  it("accepts equivalent H2/H3 refinement section depths", async () => {
+    const run = makeRun(root);
+    const scratchpadPath = join(run.worktree_path, "SCRATCHPAD_studio_118.md");
+    writeFileSync(scratchpadPath, [
+      "# Refined plan",
+      "",
+      "## Clarifications Needed",
+      "",
+      "- Which API?",
+      "",
+      "### Blockers",
+      "",
+      "_(none)_",
+    ].join("\n"), "utf8");
+    const runStore = makeRunStore(run);
+    const session = {
+      sessionId: "session_heading_depth",
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    };
+    const interaction = {
+      createSession: vi.fn(async () => ({ session, modelFallbackMessage: null })),
+      registerSession: vi.fn(),
+      disposeSession: vi.fn(),
+      handleSessionEvent: vi.fn(),
+      pushActivity: vi.fn(),
+    };
+    const scratchpad = Object.create(ScratchpadService.prototype) as ScratchpadService;
+    (scratchpad as any).syncScratchpadToCanonical = vi.fn();
+    (scratchpad as any).emitChecklistIfChanged = vi.fn();
+    const service = new RunRefinementService(runStore as any, scratchpad, interaction as any);
+
+    const result = await service.refine(run, {
+      node: makeNode(run),
+      workItem: makeWorkItem(),
+      scratchpadPath,
+      issueBody: null,
+      projectContext: null,
+    });
+
+    expect(result.status).toBe("disambiguating");
+    expect(result.refinement?.items).toEqual([
+      expect.objectContaining({ kind: "question", prompt: "Which API?" }),
+    ]);
+  });
 });
 
 describe("durable execution confirmation", () => {

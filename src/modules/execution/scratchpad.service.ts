@@ -318,8 +318,8 @@ export class ScratchpadService {
       }
       return items;
     };
-    const questions = collect((line) => /^\s*###\s+Clarifications Needed\s*$/.test(line), "question");
-    const blockers = collect((line) => /^\s*##\s+Blockers\s*$/.test(line), "blocker");
+    const questions = collect((line) => /^\s*#{2,3}\s+Clarifications Needed\s*$/.test(line), "question");
+    const blockers = collect((line) => /^\s*#{2,3}\s+Blockers\s*$/.test(line), "blocker");
     return { questions, blockers };
   }
 
