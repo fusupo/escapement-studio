@@ -6,7 +6,12 @@ import {
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { WorkItemRecord } from "../graph/types.js";
-import type { PlanDraftEnvelope, PlanDraftTask, PlanDraftTechnicalNotes } from "./types.js";
+import type {
+  PlanDraftEnvelope,
+  PlanDraftTask,
+  PlanDraftTechnicalNotes,
+  PlanPreparationAggregate,
+} from "./types.js";
 import { SettingsService } from "../settings/settings.service.js";
 
 /**
@@ -67,16 +72,18 @@ export class PlanDrafterService {
   async draft(
     workItem: WorkItemRecord,
     issueBody: string | null,
+    preparation?: PlanPreparationAggregate,
   ): Promise<PlanDraftEnvelope> {
-    return await this.startDraft(workItem, issueBody).completion;
+    return await this.startDraft(workItem, issueBody, preparation).completion;
   }
 
   startDraft(
     workItem: WorkItemRecord,
     issueBody: string | null,
+    preparation?: PlanPreparationAggregate,
   ): PlanDraftHandle {
     const skillBody = this.loadSkillBody();
-    const prompt = this.buildDraftPrompt({ skillBody, workItem, issueBody });
+    const prompt = this.buildDraftPrompt({ skillBody, workItem, issueBody, preparation });
 
     this.logger.log(
       `Drafting plan for ${workItem.id} (prompt size: ${prompt.length} chars)`,
@@ -444,8 +451,9 @@ export class PlanDrafterService {
     skillBody: string;
     workItem: WorkItemRecord;
     issueBody: string | null;
+    preparation?: PlanPreparationAggregate;
   }): string {
-    const { skillBody, workItem, issueBody } = args;
+    const { skillBody, workItem, issueBody, preparation } = args;
 
     const exampleEnvelope: PlanDraftEnvelope = {
       summary: "One-paragraph statement of what this plan proposes.",
@@ -468,6 +476,30 @@ export class PlanDrafterService {
         challenges: "Potential complexity, edge cases",
       } satisfies PlanDraftTechnicalNotes,
     };
+
+    const preparationEvidence = preparation?.contributors.map((contributor) => ({
+      task: {
+        agent_type: contributor.task.agent_type,
+        task: contributor.task.task,
+        repo: contributor.task.repo ?? null,
+        focus_paths: contributor.task.focus_paths,
+        work_item_ids: contributor.task.work_item_ids,
+      },
+      run_id: contributor.run_id,
+      status: contributor.status,
+      confidence: contributor.confidence,
+      degraded: contributor.degraded,
+      summary: contributor.summary,
+      findings: contributor.findings.map((finding) => ({
+        kind: finding.kind,
+        ...(finding.file ? { file: finding.file } : {}),
+        ...(finding.lines ? { lines: finding.lines } : {}),
+        ...(finding.summary ? { summary: finding.summary } : {}),
+        ...(finding.snippet ? { snippet: finding.snippet } : {}),
+      })),
+      open_questions: contributor.open_questions,
+      errors: contributor.errors,
+    })) ?? [];
 
     const workItemContext = [
       `- id: ${workItem.id}`,
@@ -507,6 +539,13 @@ export class PlanDrafterService {
       "## Issue body",
       "",
       issueBody?.trim() ? issueBody.trim() : "_(issue body unavailable)_",
+      "",
+      "## Parallel preparation evidence",
+      "",
+      "The following bounded specialist evidence is ordered by declared task, not completion time.",
+      "Use it as supporting evidence, not as independent plans. Reconcile contradictions, explicitly",
+      "account for degraded/error/low-confidence contributions, and keep the final plan coherent.",
+      JSON.stringify(preparationEvidence, null, 2),
       "",
       "## JSON envelope schema",
       "",
