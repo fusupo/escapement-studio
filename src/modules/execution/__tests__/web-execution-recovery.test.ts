@@ -101,6 +101,40 @@ describe("execution recovery projection", () => {
     expect(result).toMatchObject({ canRedispatch: true, canInvestigate: true });
   });
 
+  it("cleans an unchanged orphaned worktree before chained re-dispatch", () => {
+    const result = project({
+      workItem: { id: "studio-271", state: "pre_pr.in_progress" },
+      eligibility: { ...eligible, can_launch: false, launch_unavailable_reason: null },
+      reconciled: {
+        enabled_events: ["user.investigate"],
+        worktree: { exists: true, dirty: false, commits_ahead: 0 },
+      },
+    });
+
+    expect(result).toMatchObject({
+      canRedispatch: true,
+      canInvestigate: true,
+      shouldCleanupWorktree: true,
+    });
+  });
+
+  it("preserves a failed worktree containing changes instead of re-dispatching", () => {
+    const result = project({
+      workItem: { id: "studio-271", state: "pre_pr.in_progress" },
+      eligibility: { ...eligible, can_launch: false, launch_unavailable_reason: null },
+      reconciled: {
+        enabled_events: ["user.investigate"],
+        worktree: { exists: true, dirty: true, commits_ahead: 0 },
+      },
+    });
+
+    expect(result).toMatchObject({
+      canRedispatch: false,
+      shouldCleanupWorktree: false,
+    });
+    expect(result.reason).toContain("preserved it instead of deleting work");
+  });
+
   it("does not infer investigation when reconciliation is missing", () => {
     const result = project({
       workItem: { id: "studio-271", state: "pre_pr.run_errored" },

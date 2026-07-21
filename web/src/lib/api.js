@@ -151,6 +151,14 @@ export function launchExecutionRun(payload) {
   });
 }
 
+export function cleanupExecutionWorktree(runId) {
+  return request("/api/execution/cleanup", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ run_id: runId }),
+  });
+}
+
 export function openPullRequest(payload) {
   return request("/api/execution/pull-request", {
     method: "POST",

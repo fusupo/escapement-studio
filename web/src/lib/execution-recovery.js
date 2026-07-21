@@ -27,6 +27,7 @@ export function projectExecutionRecovery({
       graphState: null,
       canRedispatch: false,
       canInvestigate: false,
+      shouldCleanupWorktree: false,
       reason: "",
       safetyChecks: [],
       loading: false,
@@ -43,10 +44,20 @@ export function projectExecutionRecovery({
   const canLaunchDirectly = isReadyState(workItem?.state)
     && eligibility?.issue_backed === true
     && eligibility?.can_launch === true;
+  const staleWorktree = reconciled?.worktree?.exists === true;
+  const staleWorktreeIsClean = staleWorktree
+    && reconciled.worktree.dirty === false
+    && reconciled.worktree.commits_ahead === 0;
+  const unsafeStaleWorktree = staleWorktree && !staleWorktreeIsClean;
   const unavailable = loading || !!lookupErrorMessage || actionInFlight;
-  const canRedispatch = !unavailable && (canLaunchDirectly || canInvestigate);
+  const canRedispatch = !unavailable
+    && !unsafeStaleWorktree
+    && (canLaunchDirectly || canInvestigate);
   const reason = actionErrorMessage
     || lookupErrorMessage
+    || (unsafeStaleWorktree
+      ? "The failed run's worktree contains commits, changes, or unknown state. Studio preserved it instead of deleting work; inspect it before retrying."
+      : "")
     || eligibility?.launch_unavailable_reason
     || reconciled?.rationale
     || (loading
@@ -62,6 +73,7 @@ export function projectExecutionRecovery({
     graphState,
     canRedispatch,
     canInvestigate,
+    shouldCleanupWorktree: staleWorktreeIsClean,
     reason,
     safetyChecks: eligibility?.safety_checks || [],
     loading,

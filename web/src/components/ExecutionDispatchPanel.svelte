@@ -2,6 +2,7 @@
   import { onMount, afterUpdate } from "svelte";
   import {
     archiveAndCloseMergedPullRequest,
+    cleanupExecutionWorktree,
     closeMergedPullRequest,
     getExecutionEligibility,
     getExecutionPreview,
@@ -342,6 +343,10 @@
     updateRecovery(workItemId, { actionInFlight: true, actionError: "" });
     error = "";
     try {
+      if (currentRecovery.shouldCleanupWorktree) {
+        await cleanupExecutionWorktree(run.run_id);
+      }
+
       if (currentRecovery.canInvestigate) {
         await transitionWorkItem(workItemId, "user.investigate");
       }

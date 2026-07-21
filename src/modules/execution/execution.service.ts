@@ -790,7 +790,10 @@ export class ExecutionService implements OnModuleInit {
    */
   async transitionInProgressToReady(workItemId: string): Promise<WorkItemRecord> {
     const workItem = this.workItemsService.get(workItemId);
-    if (workItem.state !== "in_progress") {
+    const leafState = workItem.state.startsWith("pre_pr.")
+      ? workItem.state.slice("pre_pr.".length)
+      : workItem.state;
+    if (leafState !== "in_progress") {
       throw new BadRequestException(
         `Cannot transition ${workItemId} from ${workItem.state} to ready (requires in_progress)`,
       );
@@ -809,7 +812,10 @@ export class ExecutionService implements OnModuleInit {
    */
   async transitionInProgressToDrafting(workItemId: string): Promise<WorkItemRecord> {
     const workItem = this.workItemsService.get(workItemId);
-    if (workItem.state !== "in_progress") {
+    const leafState = workItem.state.startsWith("pre_pr.")
+      ? workItem.state.slice("pre_pr.".length)
+      : workItem.state;
+    if (leafState !== "in_progress") {
       throw new BadRequestException(
         `Cannot transition ${workItemId} from ${workItem.state} to drafting (requires in_progress)`,
       );

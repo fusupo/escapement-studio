@@ -47,7 +47,7 @@ export class WorkItemsController {
   constructor(
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
-    private readonly commandBus: CommandBus,
+    @Inject(CommandBus) private readonly commandBus: CommandBus,
   ) {}
 
   @Get()

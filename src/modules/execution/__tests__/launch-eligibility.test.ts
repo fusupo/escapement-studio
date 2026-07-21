@@ -675,6 +675,16 @@ describe("ExecutionService.transitionInProgressToReady", () => {
     expect(harness.getCurrentWorkItem().state).toBe("ready");
   });
 
+  it("transitions a namespaced work item from pre_pr.in_progress to ready", async () => {
+    const workItem = makeWorkItem({ state: "pre_pr.in_progress" });
+    const harness = makeTransitionHarness(workItem);
+
+    const result = await harness.service.transitionInProgressToReady(workItem.id);
+
+    expect(result.state).toBe("ready");
+    expect(harness.dispatchCalls).toEqual([{ id: workItem.id, event: { type: "user.investigate" } }]);
+  });
+
   it("throws when the current state is not in_progress", async () => {
     const workItem = makeWorkItem({ state: "planned" });
     const harness = makeTransitionHarness(workItem);
