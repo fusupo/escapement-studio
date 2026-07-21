@@ -1,12 +1,9 @@
 import { Injectable, Inject, Logger } from "@nestjs/common";
 import {
   createAgentSession,
-  createBashTool,
-  createGrepTool,
-  createReadTool,
   SessionManager,
   type AgentSessionEvent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -83,11 +80,7 @@ export class SubAgentService {
         cwd: process.cwd(),
         sessionManager: SessionManager.inMemory(process.cwd()),
         model: this.settingsService.getSelectedModel(),
-        tools: [
-          createReadTool(process.cwd()),
-          createBashTool(process.cwd()),
-          createGrepTool(process.cwd()),
-        ],
+        tools: ["read", "bash", "grep"],
       });
 
       if (modelFallbackMessage) {

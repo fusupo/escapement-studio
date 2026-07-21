@@ -5,7 +5,7 @@ import type { WorkItemRecord } from "../../graph/types.js";
 /**
  * #167 — PlanDrafterService unit tests.
  *
- * Mocks `@mariozechner/pi-coding-agent` so we never actually spawn an LLM
+ * Mocks `@earendil-works/pi-coding-agent` so we never actually spawn an LLM
  * session. The drafter is instantiated via `Object.create` to bypass NestJS
  * DI (mirroring the harness pattern in `plans.service.test.ts`).
  */
@@ -27,7 +27,7 @@ type MockAttempt = {
 let mockAttemptQueue: MockAttempt[] = [];
 let mockCreateSessionCallCount = 0;
 
-vi.mock("@mariozechner/pi-coding-agent", () => {
+vi.mock("@earendil-works/pi-coding-agent", () => {
   return {
     createAgentSession: vi.fn(async () => {
       mockCreateSessionCallCount++;

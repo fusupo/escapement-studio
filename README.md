@@ -2,6 +2,8 @@
 
 ## Development
 
+Requires Node.js 22.19 or newer.
+
 ### Install
 
 ```bash

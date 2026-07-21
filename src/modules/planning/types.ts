@@ -1,4 +1,4 @@
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { ApplyGraphMutationsResult, EdgeRel, WorkItemKind, WorkItemRecord, WorkItemState } from "../graph/types.js";
 
 export type PlanningContextGraphMode = "default" | "focused" | "full";
