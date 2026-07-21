@@ -139,6 +139,13 @@ describe("WorkItemHsmService", () => {
     ]);
   });
 
+  it("keeps post-close archival available from done", () => {
+    const harness = createHarness("done");
+    expect(harness.service.getEnabledEvents("studio-200")).toEqual([
+      "user.archive_and_finalize",
+    ]);
+  });
+
   const transitionCases: Array<[WorkItemState, WorkItemHsmEvent, WorkItemState]> = [
     ["planned", { type: "user.start_draft" }, "pre_pr.drafting"],
     ["pre_pr.drafting", { type: "draft.completed" }, "pre_pr.ready"],
@@ -156,6 +163,7 @@ describe("WorkItemHsmService", () => {
     ["merged_pr", { type: "user.archive_and_finalize" }, "archived"],
     ["closed", { type: "user.finalize" }, "done"],
     ["closed", { type: "user.archive_and_finalize" }, "archived"],
+    ["done", { type: "user.archive_and_finalize" }, "archived"],
   ];
 
   it.each(transitionCases)("transitions %s via %o to %s", async (from, event, expected) => {
@@ -245,6 +253,29 @@ describe("WorkItemHsmService", () => {
 
       const appliedCall = (harness.graphWriter.apply as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
       expect(appliedCall.mutations[0].patch).toMatchObject({
+        state: "archived",
+        archive_path: "/archives/studio-200",
+      });
+    });
+
+    it("archives from done without invoking the GitHub close action", async () => {
+      const harness = createHarness("done");
+      const closeGhIssue = vi.fn(async () => {});
+      const runArchiver = vi.fn(async (_wi, _ev, ctx) => {
+        ctx.patch_overrides.archive_path = "/archives/studio-200";
+      });
+      harness.service.registerActionHandler("closeGhIssue", closeGhIssue);
+      harness.service.registerActionHandler("runArchiver", runArchiver);
+
+      const result = await harness.service.dispatch("studio-200", {
+        type: "user.archive_and_finalize",
+      });
+
+      expect(result.next_state).toBe("archived");
+      expect(result.applied_actions).toEqual(["runArchiver"]);
+      expect(runArchiver).toHaveBeenCalledOnce();
+      expect(closeGhIssue).not.toHaveBeenCalled();
+      expect(harness.getCurrent()).toMatchObject({
         state: "archived",
         archive_path: "/archives/studio-200",
       });

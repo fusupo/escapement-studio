@@ -204,6 +204,17 @@ Each run records:
 
 Multiple runs may exist per plan. The latest active run, if any, is the "current run" for the work item.
 
+Run records also carry a durable phase so the UI can distinguish mechanical
+progress from human gates:
+
+- `queued` → `preparing` → `refining_plan`
+- `awaiting_confirmation`
+- `coding` → `completed` or `failed`
+
+`awaiting_confirmation` is persisted with structured `question` and `blocker`
+items. It requires no live agent session, so a server or browser restart does
+not discard the questions or the user's ability to confirm execution.
+
 ## Scratchpad lifecycle
 
 Single canonical scratchpad per plan. No more initial/final duality at the canonical level.
@@ -218,7 +229,15 @@ Single canonical scratchpad per plan. No more initial/final duality at the canon
 - `predicted_files` is auto-refined from the plan's `Affected Files`
 
 ### During execution
+- only a `ready` plan can launch; execution never synthesizes a fallback plan
 - copied into the worktree at run start
+- checked against the exact worktree by a bounded refinement agent session
+- refinement must preserve `### Clarifications Needed` and `## Blockers`; open
+  bullets are persisted as structured run items
+- after refinement the agent session ends and the run waits durably for a
+  second, execution-specific human confirmation
+- the user answers every item or explicitly accepts unresolved items
+- coding starts in a fresh agent session after that confirmation
 - updated by the execution agent during the do-work phase
 - synced back to `plans/<slug>/SCRATCHPAD_<slug>.md` at phase boundaries and on completion
 
@@ -276,6 +295,8 @@ Illustrative only. Concrete endpoint shapes are defined at implementation time.
 
 ### Execution
 - `POST /api/execution/launch` — must reference a `ready` plan
+- `POST /api/execution/resolve-disambiguation` — persist item-specific answers
+  and explicitly confirm the refined worktree plan before coding
 - existing run/cleanup/PR/sync endpoints unchanged at the surface
 
 ### Disposition
@@ -289,6 +310,8 @@ Smallest useful additions:
   - Prepare plan
   - Review plan
   - Launch
+- in Execute, label launch candidates as approved and present a separate
+  "Confirm execution" gate after worktree refinement
 - show plan status alongside work item state
 - runs panel continues to show ephemeral runs
 - archive UI is deferred to the #83 epic

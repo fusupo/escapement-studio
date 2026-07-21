@@ -56,7 +56,7 @@
     <div class="detail-card">
       <div class="detail-card-hdr">
         <h3>CONTEXT</h3>
-        <span class="status-pill {statusTone(run.status, run.terminal_outcome)}">{run.terminal_outcome?.label || run.status}</span>
+        <span class="status-pill {statusTone(run.status, run.terminal_outcome)}">{run.terminal_outcome?.label || run.phase || run.status}</span>
       </div>
       <div class="detail-kv-list">
         <div class="detail-kv"><span class="muted">Branch</span><code>{run.branch}</code></div>
@@ -168,7 +168,7 @@
     <div class="detail-card">
       <div class="detail-card-hdr">
         <h3>CONTEXT</h3>
-        <span class="status-pill {dispatchNode.can_launch ? 'healthy' : 'warn'}">{dispatchNode.can_launch ? 'ready' : 'blocked'}</span>
+        <span class="status-pill {dispatchNode.can_launch ? 'healthy' : 'warn'}">{dispatchNode.can_launch ? 'approved' : 'blocked'}</span>
       </div>
       <div class="detail-kv-list">
         <div class="detail-kv"><span class="muted">Repo</span><span>{dispatchNode.repo}</span></div>

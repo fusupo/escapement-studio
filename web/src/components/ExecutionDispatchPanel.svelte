@@ -20,6 +20,33 @@
   import ExecutionChecklist from "./ExecutionChecklist.svelte";
   import ExecutionArchivedList from "./ExecutionArchivedList.svelte";
   import { renderMarkdown } from "../lib/markdown.js";
+  import {
+    refinementResponseFor,
+    refinementResponseKey,
+    unresolvedRefinementItems,
+  } from "../lib/execution-refinement.js";
+
+  const REFINEMENT_DRAFTS_KEY = "escapement.execution.refinement-drafts";
+
+  function loadRefinementDrafts() {
+    if (typeof window === "undefined") return {};
+    try {
+      const value = JSON.parse(window.sessionStorage.getItem(REFINEMENT_DRAFTS_KEY) || "{}");
+      return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function persistRefinementDrafts(value) {
+    if (typeof window === "undefined") return;
+    try {
+      window.sessionStorage.setItem(REFINEMENT_DRAFTS_KEY, JSON.stringify(value));
+    } catch {
+      // Draft persistence is a convenience; storage restrictions must not
+      // prevent answering or confirming a refinement.
+    }
+  }
 
   let preview = null;
   let runs = [];
@@ -54,6 +81,11 @@
   let sendingFollowUp = {};
   let resolvingDisambiguation = {};
   let disambiguationContext = {};
+  let refinementResponses = loadRefinementDrafts();
+  let confirmUnresolved = {};
+  let refinementDrawerWidths = {};
+  let refinementDrawerClosed = {};
+  let refinementDrawerResizeCleanup = null;
   let scratchpadContent = {};
   let scratchpadLoading = {};
   let checklistData = {};
@@ -277,7 +309,71 @@
   }
 
   function canSendFollowUp(run) {
-    return ["running", "preparing", "completed", "disambiguating"].includes(run.status);
+    return ["running", "preparing", "completed"].includes(run.status);
+  }
+
+  function setRefinementResponse(run, item, value) {
+    refinementResponses = {
+      ...refinementResponses,
+      [refinementResponseKey(run.run_id, item.id)]: value,
+    };
+    persistRefinementDrafts(refinementResponses);
+  }
+
+  function clearRefinementResponses(runId) {
+    refinementResponses = Object.fromEntries(
+      Object.entries(refinementResponses).filter(([key]) => !key.startsWith(`${runId}:`)),
+    );
+    persistRefinementDrafts(refinementResponses);
+  }
+
+  function setRefinementDrawerClosed(runId, closed) {
+    refinementDrawerClosed = { ...refinementDrawerClosed, [runId]: closed };
+  }
+
+  function clampRefinementDrawerWidth(width, maximum = 1000) {
+    return Math.max(480, Math.min(maximum, width));
+  }
+
+  function setRefinementDrawerWidth(runId, width, maximum) {
+    refinementDrawerWidths = {
+      ...refinementDrawerWidths,
+      [runId]: clampRefinementDrawerWidth(width, maximum),
+    };
+  }
+
+  function startRefinementDrawerResize(event, runId) {
+    event.preventDefault();
+    refinementDrawerResizeCleanup?.();
+    const handle = event.currentTarget;
+    const drawer = handle.closest(".refinement-drawer");
+    if (!drawer) return;
+
+    const startX = event.clientX;
+    const startWidth = drawer.getBoundingClientRect().width;
+    const maximum = Math.max(480, Math.min(1100, window.innerWidth - 120));
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+
+    const move = (moveEvent) => {
+      setRefinementDrawerWidth(runId, startWidth + startX - moveEvent.clientX, maximum);
+    };
+    const stop = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", stop);
+      document.body.style.userSelect = previousUserSelect;
+      refinementDrawerResizeCleanup = null;
+    };
+    refinementDrawerResizeCleanup = stop;
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", stop);
+  }
+
+  function handleRefinementDrawerResizeKeydown(event, runId) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const current = refinementDrawerWidths[runId] || Math.min(900, window.innerWidth * 0.52);
+    setRefinementDrawerWidth(runId, current + (event.key === "ArrowLeft" ? 32 : -32));
   }
 
   async function handleSendFollowUp(run) {
@@ -325,7 +421,7 @@
     launchingIds = [...launchingIds, node.id];
     error = "";
     try {
-      const result = await launchExecutionRun({ work_item_id: node.id, disambiguate: true });
+      const result = await launchExecutionRun({ work_item_id: node.id });
       mergeRun(result.run);
       if (result.run) {
         selectedRunId = result.run.run_id;
@@ -349,9 +445,26 @@
     error = "";
     try {
       const ctx = (disambiguationContext[run.run_id] || "").trim() || undefined;
-      const result = await resolveDisambiguation({ run_id: run.run_id, additional_context: ctx });
+      const responses = (run.refinement?.items || [])
+        .map((item) => ({
+          item_id: item.id,
+          response: refinementResponseFor(run, item, refinementResponses).trim(),
+        }))
+        .filter((item) => item.response);
+      const result = await resolveDisambiguation({
+        run_id: run.run_id,
+        responses,
+        additional_context: ctx,
+        confirm_unresolved: !!confirmUnresolved[run.run_id],
+      });
       if (!result.resolved) error = result.error || "Failed to resolve.";
-      else disambiguationContext = { ...disambiguationContext, [run.run_id]: "" };
+      else {
+        if (result.run) mergeRun(result.run);
+        clearRefinementResponses(run.run_id);
+        setRefinementDrawerClosed(run.run_id, true);
+        disambiguationContext = { ...disambiguationContext, [run.run_id]: "" };
+        confirmUnresolved = { ...confirmUnresolved, [run.run_id]: false };
+      }
     } catch (e) {
       error = e.message;
     } finally {
@@ -478,6 +591,7 @@
 
     return () => {
       window.clearTimeout(copyTimer);
+      refinementDrawerResizeCleanup?.();
       stream?.close();
     };
   });
@@ -595,8 +709,7 @@
           {@const followUp = followUpTexts[run.run_id] || ""}
           {@const isSending = !!sendingFollowUp[run.run_id]}
           {@const isDisambiguating = run.status === "disambiguating"}
-          {@const disambigCtx = disambiguationContext[run.run_id] || ""}
-          {@const isResolving = !!resolvingDisambiguation[run.run_id]}
+          {@const unresolvedItems = unresolvedRefinementItems(run, refinementResponses)}
 
           <!-- Fixed header -->
           <div class="workspace-top">
@@ -605,7 +718,7 @@
                 <h3>{run.work_item_id}</h3>
                 <span class="muted">{run.work_item_name}</span>
               </div>
-              <span class="status-pill {runStatusTone(run)}">{run.terminal_outcome?.label || run.status}</span>
+              <span class="status-pill {runStatusTone(run)}">{run.terminal_outcome?.label || run.phase || run.status}</span>
             </div>
 
             {#if run.progress_message}
@@ -623,8 +736,14 @@
             <!-- Disambiguation banner -->
             {#if isDisambiguating}
               <div class="disambig-banner">
-                <strong>Setup phase</strong>
-                <span class="muted">Review the plan, answer questions, then approve to start coding.</span>
+                <div class="disambig-banner-copy">
+                  <strong>Execution refinement complete</strong>
+                  <span class="muted">The approved plan was checked in the isolated worktree. Review the open items, then explicitly start coding. This checkpoint survives a Studio restart.</span>
+                </div>
+                <button
+                  class="secondary small"
+                  on:click={() => setRefinementDrawerClosed(run.run_id, false)}
+                >Review &amp; confirm ({unresolvedItems.length})</button>
               </div>
             {/if}
           </div>
@@ -711,12 +830,11 @@
             {/if}
           </div>
 
-          <!-- Pinned input at bottom -->
           {#if canSendFollowUp(run)}
             <div class="workspace-input-pinned">
               <div class="chat-input-row">
                 <textarea
-                  placeholder={isDisambiguating ? "Answer questions or add context..." : ["running", "preparing"].includes(run.status) ? "Steer or follow up..." : "Send a follow-up..."}
+                  placeholder={["running", "preparing"].includes(run.status) ? "Steer or follow up..." : "Send a follow-up..."}
                   value={followUp}
                   on:input={(e) => followUpTexts = { ...followUpTexts, [run.run_id]: e.currentTarget.value }}
                   on:keydown={(e) => handleFollowUpKeydown(e, run)}
@@ -727,21 +845,6 @@
                   {isSending ? "..." : "Send"}
                 </button>
               </div>
-
-              {#if isDisambiguating}
-                <div class="chat-input-row">
-                  <textarea
-                    placeholder="Optional: final context for the coding agent..."
-                    value={disambigCtx}
-                    on:input={(e) => disambiguationContext = { ...disambiguationContext, [run.run_id]: e.currentTarget.value }}
-                    rows="2"
-                    disabled={isResolving}
-                  ></textarea>
-                  <button on:click={() => handleResolveDisambiguation(run)} disabled={isResolving}>
-                    {isResolving ? "Starting..." : "Proceed to coding"}
-                  </button>
-                </div>
-              {/if}
             </div>
           {/if}
 
@@ -758,10 +861,118 @@
         {/if}
       </div>
     </div>
+
+    {#if activeSelection === "run" && selectedRun?.status === "disambiguating" && !refinementDrawerClosed[selectedRun.run_id]}
+      {@const drawerRun = selectedRun}
+      {@const drawerItems = drawerRun.refinement?.items || []}
+      {@const drawerUnresolved = unresolvedRefinementItems(drawerRun, refinementResponses)}
+      {@const drawerContext = disambiguationContext[drawerRun.run_id] || ""}
+      {@const drawerResolving = !!resolvingDisambiguation[drawerRun.run_id]}
+      {@const drawerAllowsUnresolved = !!confirmUnresolved[drawerRun.run_id]}
+
+      <aside
+        class="refinement-drawer"
+        aria-label="Execution confirmation"
+        style:width={refinementDrawerWidths[drawerRun.run_id] ? `${refinementDrawerWidths[drawerRun.run_id]}px` : null}
+      >
+        <button
+          type="button"
+          class="refinement-drawer-resize"
+          aria-label="Resize execution confirmation drawer"
+          on:mousedown={(event) => startRefinementDrawerResize(event, drawerRun.run_id)}
+          on:keydown={(event) => handleRefinementDrawerResizeKeydown(event, drawerRun.run_id)}
+        ><span></span></button>
+
+        <header class="refinement-drawer-header">
+          <div class="refinement-drawer-title">
+            <span class="refinement-drawer-eyebrow">Execution confirmation</span>
+            <h3>{drawerRun.work_item_id}</h3>
+            <p>{drawerRun.work_item_name}</p>
+          </div>
+          <div class="refinement-drawer-actions">
+            <span class="status-pill disambiguating">{drawerUnresolved.length} unresolved</span>
+            <button
+              type="button"
+              class="secondary small refinement-drawer-close"
+              aria-label="Close execution confirmation"
+              title="Close confirmation drawer"
+              on:click={() => setRefinementDrawerClosed(drawerRun.run_id, true)}
+            >&times;</button>
+          </div>
+        </header>
+
+        <div class="refinement-drawer-intro">
+          The approved plan was checked in the isolated worktree. Answer the items below, then explicitly start coding. This is separate from approving the initial plan.
+        </div>
+
+        <div class="refinement-drawer-body">
+          {#if drawerItems.length}
+            <div class="refinement-items">
+              {#each drawerItems as item, index}
+                <label class="refinement-item">
+                  <span class="refinement-item-number">{index + 1}</span>
+                  <span class="refinement-item-kind {item.kind}">{item.kind}</span>
+                  <span class="refinement-item-prompt">{item.prompt}</span>
+                  <textarea
+                    placeholder={item.kind === "blocker" ? "Describe how to resolve or explicitly accept this blocker..." : "Answer this question..."}
+                    value={refinementResponseFor(drawerRun, item, refinementResponses)}
+                    on:input={(e) => setRefinementResponse(drawerRun, item, e.currentTarget.value)}
+                    rows="3"
+                    disabled={drawerResolving}
+                  ></textarea>
+                </label>
+              {/each}
+            </div>
+          {:else}
+            <div class="refinement-clear">No open questions or blockers were found in the worktree refinement.</div>
+          {/if}
+
+          <label class="refinement-context-block">
+            <span>Additional context <span class="muted">(optional)</span></span>
+            <textarea
+              placeholder="Anything else the coding agent should know..."
+              value={drawerContext}
+              on:input={(e) => disambiguationContext = { ...disambiguationContext, [drawerRun.run_id]: e.currentTarget.value }}
+              rows="3"
+              disabled={drawerResolving}
+            ></textarea>
+          </label>
+        </div>
+
+        <footer class="refinement-confirmation-footer">
+          {#if drawerUnresolved.length > 0}
+            <label class="confirm-unresolved">
+              <input
+                type="checkbox"
+                checked={drawerAllowsUnresolved}
+                on:change={(e) => confirmUnresolved = { ...confirmUnresolved, [drawerRun.run_id]: e.currentTarget.checked }}
+                disabled={drawerResolving}
+              />
+              Proceed with {drawerUnresolved.length} unresolved {drawerUnresolved.length === 1 ? "item" : "items"}
+            </label>
+          {:else}
+            <span class="refinement-ready">All items answered</span>
+          {/if}
+
+          <button
+            class="confirm-execution-button"
+            on:click={() => handleResolveDisambiguation(drawerRun)}
+            disabled={drawerResolving || (drawerUnresolved.length > 0 && !drawerAllowsUnresolved)}
+          >
+            {drawerResolving ? "Starting coding..." : "Confirm execution and start coding"}
+          </button>
+        </footer>
+      </aside>
+    {/if}
   {/if}
 </section>
 
 <style>
+  .execution-panel {
+    position: relative;
+    isolation: isolate;
+  }
+
   /* Top bar */
   .exec-topbar {
     display: flex;
@@ -942,6 +1153,224 @@
     gap: 4px;
   }
 
+  .refinement-drawer {
+    position: absolute;
+    z-index: 30;
+    inset: 0 0 0 auto;
+    width: clamp(600px, 52vw, 960px);
+    min-width: 480px;
+    overflow: hidden;
+    background: var(--bg-panel, #0d1117);
+    border-left: 1px solid rgba(163, 113, 247, 0.5);
+    box-shadow: -18px 0 36px rgba(0, 0, 0, 0.48);
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  .refinement-drawer-resize {
+    position: absolute;
+    z-index: 2;
+    inset: 0 auto 0 -5px;
+    width: 10px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    cursor: ew-resize;
+    background: transparent;
+  }
+
+  .refinement-drawer-resize span {
+    position: absolute;
+    inset: 0 auto 0 4px;
+    width: 2px;
+    border-radius: 999px;
+    background: rgba(196, 181, 253, 0.48);
+  }
+
+  .refinement-drawer-resize:hover span,
+  .refinement-drawer-resize:focus-visible span {
+    background: rgba(196, 181, 253, 0.95);
+  }
+
+  .refinement-drawer-resize:focus-visible {
+    outline: none;
+  }
+
+  .refinement-drawer-header {
+    min-width: 0;
+    padding: 14px 16px 11px;
+    border-bottom: 1px solid rgba(163, 113, 247, 0.28);
+    background: rgba(163, 113, 247, 0.06);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .refinement-drawer-title {
+    min-width: 0;
+  }
+
+  .refinement-drawer-eyebrow {
+    display: block;
+    margin-bottom: 4px;
+    color: #c4b5fd;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .refinement-drawer-title h3 {
+    margin: 0;
+    font-size: 16px;
+  }
+
+  .refinement-drawer-title p {
+    margin: 3px 0 0;
+    color: var(--text-secondary, #8b95a5);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .refinement-drawer-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .refinement-drawer-close {
+    min-width: 28px;
+    padding: 2px 7px;
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .refinement-drawer-intro {
+    padding: 9px 16px;
+    color: var(--text-secondary, #8b95a5);
+    background: rgba(163, 113, 247, 0.035);
+    border-bottom: 1px solid var(--border, #2b3245);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .refinement-drawer-body {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 12px 16px;
+    display: grid;
+    gap: 12px;
+    align-content: start;
+  }
+
+  .refinement-items {
+    display: grid;
+    gap: 9px;
+  }
+
+  .refinement-item {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: start;
+    gap: 6px 8px;
+    padding: 10px;
+    border: 1px solid var(--border, #2b3245);
+    border-radius: var(--radius-sm, 3px);
+    background: var(--bg-surface, #13171f);
+  }
+
+  .refinement-item textarea {
+    grid-column: 1 / -1;
+    min-height: 72px;
+  }
+
+  .refinement-item-number {
+    color: var(--text-muted, #566070);
+    font-size: 10px;
+    line-height: 17px;
+  }
+
+  .refinement-item-kind {
+    align-self: start;
+    padding: 1px 5px;
+    border-radius: 2px;
+    color: #c4b5fd;
+    background: rgba(163, 113, 247, 0.18);
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .refinement-item-kind.blocker {
+    color: #fca5a5;
+    background: rgba(248, 81, 73, 0.16);
+  }
+
+  .refinement-item-prompt {
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .refinement-clear {
+    padding: 7px;
+    border: 1px solid rgba(63, 185, 80, 0.3);
+    border-radius: var(--radius-sm, 3px);
+    color: #86efac;
+    background: rgba(63, 185, 80, 0.06);
+    font-size: 11px;
+  }
+
+  .refinement-context-block {
+    display: grid;
+    gap: 5px;
+    font-size: 11px;
+  }
+
+  .refinement-context-block textarea {
+    width: 100%;
+    min-height: 72px;
+  }
+
+  .confirm-unresolved {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--yellow, #d29922);
+    font-size: 11px;
+  }
+
+  .confirm-unresolved input {
+    width: auto;
+    margin: 0;
+  }
+
+  .refinement-confirmation-footer {
+    min-width: 0;
+    padding: 10px 16px;
+    border-top: 1px solid rgba(163, 113, 247, 0.3);
+    background: var(--bg-surface, #13171f);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .refinement-ready {
+    color: var(--green, #3fb950);
+    font-size: 11px;
+  }
+
+  .confirm-execution-button {
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
   .workspace-header {
     display: flex;
     justify-content: space-between;
@@ -1078,13 +1507,25 @@
   }
 
   .disambig-banner {
-    display: grid;
-    gap: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     padding: 5px 8px;
     border-radius: var(--radius-sm, 3px);
     background: rgba(163, 113, 247, 0.08);
     border: 1px solid rgba(163, 113, 247, 0.2);
     font-size: 12px;
+  }
+
+  .disambig-banner-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .disambig-banner button {
+    flex-shrink: 0;
   }
 
   /* Expandables */
@@ -1206,6 +1647,20 @@
     .exec-col-dispatch {
       border-right: none;
       border-bottom: 1px solid var(--border, #2b3245);
+    }
+
+    .refinement-drawer {
+      width: 100% !important;
+      min-width: 0;
+    }
+
+    .refinement-drawer-resize {
+      display: none;
+    }
+
+    .disambig-banner {
+      align-items: stretch;
+      flex-direction: column;
     }
   }
 </style>

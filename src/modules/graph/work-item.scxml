@@ -89,7 +89,14 @@
     <transition event="user.archive_and_finalize" target="archived" action="runArchiver" />
   </state>
 
-  <state id="done" final="true" />
+  <!--
+    `done` means the merged work has been closed out, but its local plan/run
+    artifacts may still need to be archived. Keep that post-close archival
+    transition available without repeating the GitHub close action.
+  -->
+  <state id="done">
+    <transition event="user.archive_and_finalize" target="archived" action="runArchiver" />
+  </state>
   <state id="archived" final="true" />
   <state id="cancelled" final="true" />
 </scxml>

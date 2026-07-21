@@ -105,7 +105,10 @@ export function archiveRunArtifactsForWorkItem(
 
   // Gather candidate runs. Prefer the caller-supplied list so a single
   // disk scan can be shared between the active-run guard and the archiver.
-  const allRuns = options.runs ?? loadRunRecordsFromDisk(runsRoot(artifactRoot), { onWarn: warn });
+  const allRuns = options.runs ?? loadRunRecordsFromDisk(runsRoot(artifactRoot), {
+    onWarn: warn,
+    includeDisposed: true,
+  });
   const workItemRuns = allRuns.filter((run) => run.work_item_id === workItem.id);
 
   // Guard 1: active run short-circuit. Raised BEFORE any filesystem

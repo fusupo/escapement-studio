@@ -12,9 +12,11 @@ import { PullRequestTruthRefreshedHandler } from "./events/pull-request-truth-re
 import { ExecutionController } from "./execution.controller.js";
 import { ExecutionService } from "./execution.service.js";
 import { HsmActionHandlers } from "./hsm-action-handlers.js";
+import { LaunchEligibilityService } from "./launch-eligibility.service.js";
 import { PullRequestService } from "./pull-request.service.js";
 import { RunDispositionService } from "./run-disposition.service.js";
 import { RunInteractionService } from "./run-interaction.service.js";
+import { RunRefinementService } from "./run-refinement.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
 import { WorkItemReconcilerController } from "./work-item-reconciler.controller.js";
@@ -27,9 +29,11 @@ import { WorktreeService } from "./worktree.service.js";
   providers: [
     ExecutionService,
     HsmActionHandlers,
+    LaunchEligibilityService,
     PullRequestService,
     RunDispositionService,
     RunInteractionService,
+    RunRefinementService,
     RunStore,
     ScratchpadService,
     WorktreeService,
@@ -44,9 +48,11 @@ import { WorktreeService } from "./worktree.service.js";
   ],
   exports: [
     ExecutionService,
+    LaunchEligibilityService,
     PullRequestService,
     RunDispositionService,
     RunInteractionService,
+    RunRefinementService,
     RunStore,
     ScratchpadService,
     WorktreeService,

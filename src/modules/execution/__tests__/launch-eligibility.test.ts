@@ -1,8 +1,9 @@
 import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionService } from "../execution.service.js";
+import { LaunchEligibilityService } from "../launch-eligibility.service.js";
 import { RunInteractionService } from "../run-interaction.service.js";
-import type { ExecutionDispatchNodePreview, ExecutionRunRecord, ExecutionSafetyCheck } from "../types.js";
+import type { ExecutionDispatchNodePreview, ExecutionDispatchPreview, ExecutionRunRecord, ExecutionSafetyCheck } from "../types.js";
 import type { WorkItemRecord, WorkItemState } from "../../graph/types.js";
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
@@ -10,7 +11,7 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
     id: "studio-141",
     name: "Gate launch actions to frontier nodes",
     kind: "issue",
-    state: "planned",
+    state: "ready",
     repo: "fusupo/escapement-studio",
     issue_number: 141,
     issue_url: "https://github.com/fusupo/escapement-studio/issues/141",
@@ -103,8 +104,8 @@ function makeService(params: {
   workItems: WorkItemRecord[];
   plan: ReturnType<typeof makePlan>;
   safetyChecks?: ExecutionSafetyCheck[];
-}): ExecutionService {
-  const service = Object.create(ExecutionService.prototype) as ExecutionService;
+}): LaunchEligibilityService {
+  const service = Object.create(LaunchEligibilityService.prototype) as LaunchEligibilityService;
   const workItemsById = new Map(params.workItems.map((item) => [item.id, item]));
 
   (service as any).graphService = {
@@ -120,9 +121,8 @@ function makeService(params: {
     },
   };
   // Phase 4b (#231): worktreeRoot + evaluateSafety + getWorktreePath moved
-  // to WorktreeService. The harness provides a minimal worktreeService field
-  // so resolveLaunchEligibility and getPreview can reach them via
-  // `this.worktreeService.X(...)`.
+  // to WorktreeService. The harness provides the eligibility service's
+  // minimal worktree dependency.
   (service as any).worktreeService = {
     evaluateSafety: () => params.safetyChecks ?? [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }],
     getWorktreePath: (branch: string) => `/tmp/studio-worktrees/${branch}`,
@@ -159,7 +159,7 @@ function makeLaunchHarness(
     },
   };
 
-  (service as any).resolveLaunchEligibility = () => {
+  const resolveLaunchEligibility = vi.fn(() => {
     const dispatchNode = makeDispatchNode(currentWorkItem);
     if (options.canLaunch === false) {
       return {
@@ -178,6 +178,13 @@ function makeLaunchHarness(
       launch_unavailable_reason: null,
       dispatch_node: dispatchNode,
     };
+  });
+  (service as any).launchEligibilityService = {
+    resolveLaunchEligibility,
+    isLaunchableState: (state: WorkItemState) => {
+      const leaf = state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+      return leaf === "ready";
+    },
   };
 
   // Phase 4b (#231): minimal worktreeService for the launch harness —
@@ -253,8 +260,25 @@ function makeLaunchHarness(
     service,
     updateCalls,
     executionOrder,
+    resolveLaunchEligibility,
     getCurrentWorkItem: () => currentWorkItem,
   };
+}
+
+function makeFacadeHarness(workItem: WorkItemRecord, preview: ExecutionDispatchPreview) {
+  const service = Object.create(ExecutionService.prototype) as ExecutionService;
+  const getPreview = vi.fn(() => preview);
+  const eligibility = makeService({
+    workItems: [workItem],
+    plan: makePlan([makePlanNode(workItem.id, workItem.name, workItem.branch ?? `${workItem.id}-branch`)]),
+  }).resolveLaunchEligibility(workItem);
+  const resolveLaunchEligibility = vi.fn(() => eligibility);
+  const getWorkItem = vi.fn(() => workItem);
+
+  (service as any).launchEligibilityService = { getPreview, resolveLaunchEligibility };
+  (service as any).workItemsService = { get: getWorkItem };
+
+  return { service, getPreview, resolveLaunchEligibility, getWorkItem };
 }
 
 describe("launch eligibility", () => {
@@ -265,7 +289,7 @@ describe("launch eligibility", () => {
       plan: makePlan([makePlanNode(workItem.id, workItem.name, workItem.branch ?? "studio-141-branch")]),
     });
 
-    const eligibility = service.getLaunchEligibility(workItem.id);
+    const eligibility = service.resolveLaunchEligibility(workItem);
 
     expect(eligibility.can_launch).toBe(true);
     expect(eligibility.issue_backed).toBe(true);
@@ -287,7 +311,7 @@ describe("launch eligibility", () => {
       plan: makePlan([makePlanNode(workItem.id, workItem.name, workItem.branch ?? "capability-1-branch")]),
     });
 
-    const eligibility = service.getLaunchEligibility(workItem.id);
+    const eligibility = service.resolveLaunchEligibility(workItem);
 
     expect(eligibility.can_launch).toBe(true);
     expect(eligibility.issue_backed).toBe(false);
@@ -303,7 +327,7 @@ describe("launch eligibility", () => {
       plan: makePlan([]),
     });
 
-    const eligibility = service.getLaunchEligibility(workItem.id);
+    const eligibility = service.resolveLaunchEligibility(workItem);
 
     expect(eligibility.can_launch).toBe(false);
     expect(eligibility.launch_unavailable_code).toBe("not_dispatchable");
@@ -334,13 +358,57 @@ describe("launch eligibility", () => {
     expect(node.launch_unavailable_reason).toBeNull();
   });
 
-  it("marks planned work items in progress before launching execution", async () => {
+  it("returns the exact blocked preview envelope when a planned work item is missing", () => {
+    const node = makePlanNode("studio-404", "Missing work item", "studio-404-branch");
+    const service = makeService({ workItems: [], plan: makePlan([node]) });
+
+    const preview = service.getPreview();
+
+    expect(preview.groups[0]?.nodes[0]).toEqual({
+      id: "studio-404",
+      name: "Missing work item",
+      repo: "fusupo/escapement-studio",
+      branch: "studio-404-branch",
+      issue_url: "https://github.com/fusupo/escapement-studio/issues/404",
+      scope_hint: null,
+      default_base_ref: "develop",
+      files_owned: ["src/example.ts"],
+      files_shared: [],
+      files_forbidden: ["src/forbidden.ts"],
+      worktree_path: "/tmp/studio-worktrees/studio-404-branch",
+      safety_checks: [{
+        code: "missing_work_item",
+        status: "fail",
+        message: "Work item studio-404 could not be loaded from the graph store.",
+      }],
+      can_launch: false,
+      issue_backed: false,
+      launch_unavailable_code: "missing_work_item",
+      launch_unavailable_reason: "Work item studio-404 could not be loaded from the graph store.",
+    });
+  });
+
+  it("omits unapproved planned items from the Execute queue", () => {
+    const workItem = makeWorkItem({ state: "planned" });
+    const service = makeService({
+      workItems: [workItem],
+      plan: makePlan([makePlanNode(workItem.id, workItem.name, workItem.branch ?? "studio-141-branch")]),
+    });
+
+    const preview = service.getPreview();
+
+    expect(preview.groups).toEqual([]);
+    expect(preview.summary.dispatchable_now).toBe(0);
+  });
+
+  it("marks approved work items in progress before launching execution", async () => {
     const workItem = makeWorkItem();
     const harness = makeLaunchHarness(workItem);
 
     const result = await harness.service.launch({ work_item_id: workItem.id, prompt: "Launch" });
 
     expect(result.accepted).toBe(true);
+    expect(harness.resolveLaunchEligibility).toHaveBeenCalledWith(workItem, { baseRef: "develop" });
     // State transition now via HSM dispatch, not direct update
     expect(harness.updateCalls).toEqual([]);
     expect(harness.getCurrentWorkItem().state).toBe("in_progress");
@@ -390,7 +458,7 @@ describe("launch eligibility", () => {
     expect(result.accepted).toBe(false);
     expect(result.run.status).toBe("blocked");
     expect(harness.updateCalls).toEqual([]);
-    expect(harness.getCurrentWorkItem().state).toBe("planned");
+    expect(harness.getCurrentWorkItem().state).toBe("ready");
     expect(harness.executionOrder).toEqual([]);
   });
 
@@ -460,8 +528,9 @@ describe("launch eligibility", () => {
 
   // ADR 014 step 5: the `not_ready` safety check gates launch on work item state.
   describe("launchable_state safety check (ADR 014 step 5)", () => {
-    const launchableStates: WorkItemState[] = ["ready", "planned"];
+    const launchableStates: WorkItemState[] = ["ready"];
     const nonLaunchableStates: WorkItemState[] = [
+      "planned",
       "drafting",
       "in_progress",
       "open_pr",
@@ -479,7 +548,7 @@ describe("launch eligibility", () => {
           plan: makePlan([makePlanNode(workItem.id, workItem.name, workItem.branch ?? "studio-141-branch")]),
         });
 
-        const eligibility = service.getLaunchEligibility(workItem.id);
+        const eligibility = service.resolveLaunchEligibility(workItem);
 
         expect(eligibility.can_launch).toBe(true);
         expect(eligibility.launch_unavailable_code).toBeNull();
@@ -496,7 +565,7 @@ describe("launch eligibility", () => {
           plan: makePlan([makePlanNode(workItem.id, workItem.name, workItem.branch ?? "studio-141-branch")]),
         });
 
-        const eligibility = service.getLaunchEligibility(workItem.id);
+        const eligibility = service.resolveLaunchEligibility(workItem);
 
         expect(eligibility.can_launch).toBe(false);
         expect(eligibility.launch_unavailable_code).toBe("not_ready");
@@ -517,13 +586,42 @@ describe("launch eligibility", () => {
         plan: makePlan([]),
       });
 
-      const eligibility = service.getLaunchEligibility(workItem.id);
+      const eligibility = service.resolveLaunchEligibility(workItem);
 
       expect(eligibility.can_launch).toBe(false);
       expect(eligibility.launch_unavailable_code).toBe("not_dispatchable");
       const hasLaunchableCheck = eligibility.safety_checks.some((check: ExecutionSafetyCheck) => check.code === "launchable_state" || check.code === "not_ready");
       expect(hasLaunchableCheck).toBe(false);
     });
+  });
+});
+
+describe("ExecutionService eligibility facade", () => {
+  it("delegates preview requests with the unchanged repo argument", () => {
+    const workItem = makeWorkItem();
+    const preview = makeService({
+      workItems: [workItem],
+      plan: makePlan([makePlanNode(workItem.id, workItem.name, workItem.branch ?? "studio-141-branch")]),
+    }).getPreview();
+    const harness = makeFacadeHarness(workItem, preview);
+
+    expect(harness.service.getPreview("fusupo/escapement-studio")).toBe(preview);
+    expect(harness.getPreview).toHaveBeenCalledWith("fusupo/escapement-studio");
+  });
+
+  it("validates, resolves, defaults, and delegates launch eligibility requests", () => {
+    const workItem = makeWorkItem();
+    const preview = makeService({ workItems: [workItem], plan: makePlan([]) }).getPreview();
+    const harness = makeFacadeHarness(workItem, preview);
+
+    expect(() => harness.service.getLaunchEligibility("  ")).toThrowError(BadRequestException);
+    expect(harness.getWorkItem).not.toHaveBeenCalled();
+
+    const result = harness.service.getLaunchEligibility(`  ${workItem.id}  `, "  ");
+
+    expect(result.work_item_id).toBe(workItem.id);
+    expect(harness.getWorkItem).toHaveBeenCalledWith(workItem.id);
+    expect(harness.resolveLaunchEligibility).toHaveBeenCalledWith(workItem, { baseRef: "develop" });
   });
 });
 

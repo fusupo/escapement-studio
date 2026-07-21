@@ -293,10 +293,9 @@ export class ScratchpadService {
    * no skeleton synthesis happens here and the setup-phase agent turn is
    * skipped upstream (caller uses the returned `source` field).
    *
-   * The fallback path (no plan metadata or plan state is null/drafting, for
-   * `planned` items under the step 5 transitional gate) still generates a
-   * skeleton via `buildScratchpad` and writes it to canonical. This path
-   * goes away when every launch goes through prepare→approve.
+   * Legacy callers may still carry forward or synthesize a scratchpad when
+   * `requireApproved` is false. Execution launch always passes
+   * `requireApproved: true`, so it can never enter those compatibility paths.
    *
    * Returns `{ path, source }`:
    *   - `canonical_ready`    — plan was approved, content came from canonical
@@ -307,10 +306,17 @@ export class ScratchpadService {
   writeScratchpad(
     run: ExecutionRunRecord,
     node: ExecutionDispatchNodePreview,
+    options: { requireApproved?: boolean } = {},
   ): { path: string; source: "canonical_ready" | "carried_forward" | "synthesized" } {
     ensurePlanDir(this.artifactRoot, run.work_item_id);
     const canonicalPath = canonicalScratchpadPath(this.artifactRoot, run.work_item_id);
     const metadata = readPlanMetadata(this.artifactRoot, run.work_item_id);
+
+    if (options.requireApproved && metadata?.state !== "ready") {
+      throw new BadRequestException(
+        `approved_plan_required: work item ${run.work_item_id} has no ready plan metadata`,
+      );
+    }
 
     let content: string;
     let source: "canonical_ready" | "carried_forward" | "synthesized";

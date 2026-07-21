@@ -496,7 +496,7 @@ export class PullRequestService {
     this.worktreeService.runGitIn(run.worktree_path, ["commit", "-m", message]);
 
     // Refresh changed files after commit
-    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
+    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path, run.base_ref);
     if (changedFiles.length > 0) {
       this.runStore.updateRun(run.run_id, { changed_files: changedFiles });
     }
