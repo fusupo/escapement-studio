@@ -66,6 +66,7 @@ interface ExecutionHarness {
   getErrorMessage: (error: unknown) => string;
   runStore: {
     getRun: (runId: string) => ExecutionRunRecord | null;
+    persistChecklistProjection: (runId: string, items: any[]) => any;
   };
   scratchpadService: ScratchpadService;
 }
@@ -80,8 +81,23 @@ function makeExecutionService(artifactRoot: string, run?: ExecutionRunRecord): E
     },
   };
   // Phase 4a (#230): getRun lives on RunStore.
+  let currentRun = run;
   service.runStore = {
-    getRun: (runId: string) => (run && run.run_id === runId ? run : null),
+    getRun: (runId: string) => (currentRun && currentRun.run_id === runId ? currentRun : null),
+    persistChecklistProjection: (runId: string, items: any[]) => {
+      if (!currentRun || currentRun.run_id !== runId) return null;
+      const implementation = items.filter((item) => item.category === "implementation");
+      const checklist = {
+        run_id: runId,
+        revision: (currentRun.checklist?.revision ?? 0) + 1,
+        updated_at: "2026-04-09T01:00:00.000Z",
+        items,
+        completed: implementation.filter((item) => item.checked).length,
+        total: implementation.length,
+      };
+      currentRun = { ...currentRun, checklist };
+      return checklist;
+    },
   };
   // Phase 4c (#232): the thin-wrapper getters delegate to a real
   // ScratchpadService. Construct a ScratchpadService-prototype harness
@@ -90,6 +106,7 @@ function makeExecutionService(artifactRoot: string, run?: ExecutionRunRecord): E
   const scratchpad = Object.create(ScratchpadService.prototype) as ScratchpadService;
   (scratchpad as any).artifactRoot = artifactRoot;
   (scratchpad as any).logger = { warn: () => {} };
+  (scratchpad as any).runStore = service.runStore;
   service.scratchpadService = scratchpad;
   return service;
 }
@@ -345,6 +362,44 @@ describe("ExecutionService scratchpad orchestration", () => {
   });
 
   describe("getRunChecklist thin wrapper", () => {
+    it("returns durable checklist state when the worktree scratchpad is unavailable", () => {
+      const durable = {
+        run_id: "exec_test",
+        revision: 4,
+        updated_at: "2026-04-09T00:30:00.000Z",
+        items: [{ text: "Persisted task", checked: true, category: "implementation" as const }],
+        completed: 1,
+        total: 1,
+      };
+      const run = makeRun({
+        worktree_path: join(tmpRoot, "removed-worktree"),
+        artifact_dir: join(tmpRoot, "runs", "exec_test"),
+        checklist: durable,
+      });
+      const service = makeExecutionService(tmpRoot, run);
+
+      expect(service.getRunChecklist("exec_test")).toEqual(durable);
+    });
+
+    it("distinguishes a readable empty checklist from a missing worktree", () => {
+      const run = makeRun({
+        worktree_path: worktree,
+        artifact_dir: join(tmpRoot, "runs", "exec_test"),
+        checklist: {
+          run_id: "exec_test",
+          revision: 2,
+          updated_at: "2026-04-09T00:30:00.000Z",
+          items: [{ text: "Old task", checked: false, category: "implementation" }],
+          completed: 0,
+          total: 1,
+        },
+      });
+      writeFileSync(join(worktree, "SCRATCHPAD_studio_999.md"), "## Implementation Plan\n<!-- empty -->", "utf8");
+      const service = makeExecutionService(tmpRoot, run);
+
+      expect(service.getRunChecklist("exec_test")).toMatchObject({ revision: 3, items: [], total: 0 });
+    });
+
     it("reconstructs checklist state from the surviving worktree scratchpad", () => {
       const run = makeRun({
         worktree_path: worktree,
@@ -364,9 +419,11 @@ describe("ExecutionService scratchpad orchestration", () => {
 
       expect(service.getRunChecklist("exec_test")).toEqual({
         run_id: "exec_test",
+        revision: 1,
+        updated_at: "2026-04-09T01:00:00.000Z",
         items: [
-          { text: "Finish persistence layer", checked: true },
-          { text: "Verify restart hydration", checked: false },
+          { text: "Finish persistence layer", checked: true, category: "implementation" },
+          { text: "Verify restart hydration", checked: false, category: "implementation" },
         ],
         completed: 1,
         total: 2,

@@ -48,15 +48,13 @@ export class ScratchpadService {
 
   getRunChecklist(run: ExecutionRunRecord): ExecutionChecklistSnapshot {
     const items = this.readChecklistFromWorktree(run);
-    const implementationItems = items.filter((item) => item.category === "implementation");
-    return {
-      run_id: run.run_id,
-      revision: 0,
-      updated_at: null,
-      items,
-      completed: implementationItems.filter((item) => item.checked).length,
-      total: implementationItems.length,
-    };
+    if (items !== null) {
+      const projected = this.runStore.persistChecklistProjection(run.run_id, items);
+      if (projected) return projected;
+    }
+
+    const durable = this.runStore.getRun(run.run_id)?.checklist ?? run.checklist;
+    return durable ?? this.emptyChecklist(run.run_id);
   }
 
   getRunScratchpad(run: ExecutionRunRecord): { run_id: string; content: string | null } {
@@ -124,23 +122,44 @@ export class ScratchpadService {
     return this.parseChecklistProjection(content).filter((item) => item.category === "implementation");
   }
 
-  readChecklistFromWorktree(run: ExecutionRunRecord): ChecklistItem[] {
+  readChecklistFromWorktree(run: ExecutionRunRecord): ChecklistItem[] | null {
     const slug = workItemSlug(run.work_item_id);
     const scratchpadPath = join(run.worktree_path, `SCRATCHPAD_${slug}.md`);
     if (!existsSync(scratchpadPath)) {
-      return [];
+      return null;
     }
     try {
       const content = readFileSync(scratchpadPath, "utf8");
       return this.parseChecklistProjection(content);
     } catch {
-      return [];
+      return null;
     }
   }
 
   emitChecklistIfChanged(run: ExecutionRunRecord, republishUnchanged = false): void {
     const items = this.readChecklistFromWorktree(run);
-    this.runStore.persistChecklistProjection(run.run_id, items, { republishUnchanged });
+    if (items !== null) {
+      this.runStore.persistChecklistProjection(run.run_id, items, { republishUnchanged });
+      return;
+    }
+
+    if (republishUnchanged) {
+      const durable = this.runStore.getRun(run.run_id)?.checklist ?? run.checklist;
+      if (durable) {
+        this.runStore.persistChecklistProjection(run.run_id, durable.items, { republishUnchanged: true });
+      }
+    }
+  }
+
+  private emptyChecklist(runId: string): ExecutionChecklistSnapshot {
+    return {
+      run_id: runId,
+      revision: 0,
+      updated_at: null,
+      items: [],
+      completed: 0,
+      total: 0,
+    };
   }
 
   // ─── Scratchpad rendering + canonical sync ────────────────────────

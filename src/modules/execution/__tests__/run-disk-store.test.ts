@@ -151,6 +151,18 @@ describe("loadRunRecordsFromDisk", () => {
         { code: "kept", message: "kept" },
         { code: 42, message: null } as unknown as NonNullable<ExecutionRunRecord["errors"]>[number],
       ],
+      checklist: {
+        run_id: "run_completed",
+        revision: 3,
+        updated_at: "2026-04-10T00:03:00.000Z",
+        items: [
+          { text: "Implemented", checked: true, category: "implementation" },
+          { text: "Accepted", checked: false, category: "acceptance" },
+          { text: "bad", checked: "yes", category: "verification" } as any,
+        ],
+        completed: 99,
+        total: 99,
+      },
     }));
 
     const [record] = loadRunRecordsFromDisk(runsDir);
@@ -166,6 +178,41 @@ describe("loadRunRecordsFromDisk", () => {
     ]);
     expect(record.pull_request?.number).toBe(130);
     expect(record.errors).toEqual([{ code: "kept", message: "kept" }]);
+    expect(record.checklist).toEqual({
+      run_id: "run_completed",
+      revision: 3,
+      updated_at: "2026-04-10T00:03:00.000Z",
+      items: [
+        { text: "Implemented", checked: true, category: "implementation" },
+        { text: "Accepted", checked: false, category: "acceptance" },
+      ],
+      completed: 1,
+      total: 1,
+    });
+  });
+
+  it.each([
+    { revision: 0, updated_at: "2026-04-10T00:03:00.000Z", run_id: "run_bad" },
+    { revision: 1, updated_at: "not-a-date", run_id: "run_bad" },
+    { revision: 1, updated_at: "2026-04-10T00:03:00.000Z", run_id: "other-run" },
+  ])("discards malformed optional checklist metadata without rejecting the run: %j", (metadata) => {
+    writeRunStatus(runsDir, makeRun("run_bad", {
+      checklist: {
+        ...metadata,
+        items: [],
+        completed: 0,
+        total: 0,
+      } as ExecutionRunRecord["checklist"],
+    }));
+
+    const [record] = loadRunRecordsFromDisk(runsDir);
+    expect(record.run_id).toBe("run_bad");
+    expect(record.checklist).toBeUndefined();
+  });
+
+  it("keeps legacy records that have no checklist snapshot", () => {
+    writeRunStatus(runsDir, makeRun("run_legacy"));
+    expect(loadRunRecordsFromDisk(runsDir)[0].checklist).toBeUndefined();
   });
 });
 
