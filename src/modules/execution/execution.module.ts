@@ -12,6 +12,7 @@ import { PullRequestTruthRefreshedHandler } from "./events/pull-request-truth-re
 import { ExecutionController } from "./execution.controller.js";
 import { ExecutionService } from "./execution.service.js";
 import { HsmActionHandlers } from "./hsm-action-handlers.js";
+import { LaunchEligibilityService } from "./launch-eligibility.service.js";
 import { PullRequestService } from "./pull-request.service.js";
 import { RunDispositionService } from "./run-disposition.service.js";
 import { RunInteractionService } from "./run-interaction.service.js";
@@ -28,6 +29,7 @@ import { WorktreeService } from "./worktree.service.js";
   providers: [
     ExecutionService,
     HsmActionHandlers,
+    LaunchEligibilityService,
     PullRequestService,
     RunDispositionService,
     RunInteractionService,
@@ -46,6 +48,7 @@ import { WorktreeService } from "./worktree.service.js";
   ],
   exports: [
     ExecutionService,
+    LaunchEligibilityService,
     PullRequestService,
     RunDispositionService,
     RunInteractionService,
