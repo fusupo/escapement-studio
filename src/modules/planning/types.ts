@@ -7,7 +7,7 @@ export type PlanningMemoryEditKind = "replace_text" | "insert_after_heading" | "
 export type SubAgentType = "code-crawler" | "scope-predictor" | "reconciliation-analyst";
 export type SubAgentRunStatus = "queued" | "running" | "completed" | "error";
 export type SubAgentConfidence = "low" | "medium" | "high";
-export type GitHubSyncOperationKind = "update_managed_body_block";
+export type GitHubSyncOperationKind = "update_managed_body_block" | "replace_issue_body";
 
 export interface SendAgentMessageDto {
   message: string;
@@ -238,6 +238,7 @@ export interface GitHubSyncOperation {
   preview: {
     before: string;
     after: string;
+    unified_diff: string;
   };
 }
 
@@ -305,6 +306,7 @@ export interface GitHubSyncToolInput {
   source?: Partial<PlanningMutationProposalSource>;
   summary: string;
   work_item_id: string;
+  body_after?: string;
 }
 
 export interface GitHubCreateIssueToolInput {

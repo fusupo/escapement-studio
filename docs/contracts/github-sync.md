@@ -12,26 +12,35 @@ Define how Studio synchronizes issue-backed planning state to GitHub while prese
 
 Studio enriches and orchestrates GitHub and git rather than replacing them.
 
-## V1 rules
+## Rules
 
 - sync is one-way from Studio to GitHub
 - sync is approval-gated
-- sync is narrow and non-destructive
 - only GitHub-backed work items participate in issue sync
 - non-issue graph items remain Studio-local by default
+- broader issue-body edits remain limited to the GitHub issue linked from the current `work_item_id`
+- Studio stages proposals only; direct GitHub mutation outside approval is forbidden
 
-## Recommended write scope
+## Supported write scope
 
-Focus V1 writes on:
+Studio supports two approval-gated issue-body sync modes:
 
-- issue title where appropriate
-- machine-managed planning block in issue body
-- optional lightweight labels/state indicators if explicitly chosen
+1. **Managed block sync**
+   - operation kind: `update_managed_body_block`
+   - updates only the `studio-sync` block bounded by the managed markers
+   - fails closed if the block is missing, duplicated, or unsafe to replace
+
+2. **Broader issue body replacement**
+   - operation kind: `replace_issue_body`
+   - stages an explicit final issue body (`body_after`) for the issue linked from `work_item_id`
+   - requires review data containing full `before`, full `after`, and a unified diff of the exact body change
+   - must preserve any existing managed `studio-sync` block unchanged
 
 Avoid by default:
 
 - automatic issue closure
 - destructive lifecycle automation
+- arbitrary repository / issue targeting
 - flattening the full graph into GitHub
 
 ## Managed block example
@@ -51,8 +60,20 @@ Avoid by default:
 <!-- studio-sync:end -->
 ```
 
-## Safety rule
+## Safety rules
 
-Studio must not overwrite arbitrary human-authored issue content outside the managed block.
+### Managed block sync
+
+Studio may update the machine-managed block only through the managed-block sync path.
 
 If the managed block is missing or cannot be safely updated, sync should fail safely and require review.
+
+### Broader issue body replacement
+
+Studio may stage a broader issue body edit only when the planner supplies the complete proposed final body.
+
+That broader edit must:
+- target only the GitHub issue already linked from `work_item_id`
+- preserve any existing `studio-sync` block unchanged
+- be reviewable as a unified diff, with full before/after text available
+- fail safely if the issue body changed after staging (`based_on_body_hash` mismatch)

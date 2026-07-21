@@ -10,8 +10,10 @@ export function createGitHubSyncTool(deps: PlanningToolDeps) {
     description: "Stage an approval-gated GitHub sync proposal for a GitHub-backed work item.",
     promptSnippet: "github_sync: stage a structured GitHub sync proposal for browser approval instead of mutating GitHub directly.",
     promptGuidelines: [
-      "Use github_sync only for narrow, non-destructive GitHub updates.",
-      "V1 sync supports only the machine-managed issue body block bounded by studio-sync markers.",
+      "Use github_sync only for approval-gated issue body updates tied to the current work item.",
+      "For broader issue-body edits, send the complete proposed final body in body_after so the reviewer can see exactly what will be written.",
+      "Do not target arbitrary repo/issue pairs; github_sync only stages changes for the GitHub issue linked from work_item_id.",
+      "Do not modify, remove, or introduce studio-sync managed blocks through broader body edits.",
       "Do not attempt direct GitHub mutation outside the approval flow.",
     ],
     parameters: Type.Object({
@@ -24,6 +26,7 @@ export function createGitHubSyncTool(deps: PlanningToolDeps) {
       })),
       summary: Type.String(),
       work_item_id: Type.String(),
+      body_after: Type.Optional(Type.String()),
     }),
     execute: async (_toolCallId, params: GitHubSyncToolInput) => {
       const sync = await deps.proposalState.normalizeGitHubSync(params, deps.buildProposalDefaults());

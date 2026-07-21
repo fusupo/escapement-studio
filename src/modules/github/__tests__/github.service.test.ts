@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { GitHubIssueBodySyncService } from "../github-issue-body-sync.service.js";
 import { GitHubService } from "../github.service.js";
 import { PullRequestTruthRefreshedEvent } from "../../execution/events/pull-request-truth-refreshed.event.js";
 import type { WorkItemRecord } from "../../graph/types.js";
@@ -15,6 +16,13 @@ function makeEventBusStub() {
   return { publish } as unknown as import("@nestjs/cqrs").EventBus & {
     publish: ReturnType<typeof vi.fn>;
   };
+}
+
+function makeIssueBodySyncService(workItems: Record<string, unknown> = {}, db: Record<string, unknown> = {}) {
+  return new GitHubIssueBodySyncService(
+    { getDb: () => db } as any,
+    workItems as any,
+  );
 }
 
 function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
@@ -65,10 +73,10 @@ describe("GitHubService reconciliation", () => {
       return applyPatch(workItem, patch);
     });
 
-    const service = new GitHubService({ getDb: () => ({}) } as any, {
+    const service = new GitHubService({
       listByRepoIssueNumber: vi.fn(() => [workItem]),
       update,
-    } as any, makeEventBusStub());
+    } as any, makeEventBusStub(), makeIssueBodySyncService());
 
     (service as any).runGhJson = vi.fn().mockResolvedValue({
       number: 91,
@@ -122,11 +130,11 @@ describe("GitHubService reconciliation", () => {
     });
 
     const eventBus = makeEventBusStub();
-    const service = new GitHubService({ getDb: () => ({}) } as any, {
+    const service = new GitHubService({
       listByRepoPullRequestNumber: vi.fn(() => []),
       listByRepoBranch: vi.fn(() => [workItem]),
       update,
-    } as any, eventBus);
+    } as any, eventBus, makeIssueBodySyncService());
 
     (service as any).runGhJson = vi.fn().mockResolvedValue({
       number: 70,
@@ -195,11 +203,11 @@ describe("GitHubService reconciliation", () => {
         return applyPatch(workItem, patch);
       });
       const eventBus = makeEventBusStub();
-      const service = new GitHubService({ getDb: () => ({}) } as any, {
+      const service = new GitHubService({
         listByRepoPullRequestNumber: vi.fn(() => []),
         listByRepoBranch: vi.fn(() => [workItem]),
         update,
-      } as any, eventBus);
+      } as any, eventBus, makeIssueBodySyncService());
       return { service, update, eventBus };
     }
 
@@ -296,7 +304,7 @@ describe("GitHubService reconciliation", () => {
 
 describe("GitHubService issue closing", () => {
   it("closes an issue without posting a comment by default", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const runGh = vi.fn().mockReturnValue("");
     const readIssueResult = {
       repo: "fusupo/escapement-studio",
@@ -327,7 +335,7 @@ describe("GitHubService issue closing", () => {
   });
 
   it("posts a comment before closing when one is provided", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const runGh = vi.fn().mockReturnValue("");
     const readIssueResult = {
       repo: "fusupo/escapement-studio",
@@ -364,14 +372,14 @@ describe("GitHubService issue closing", () => {
   });
 
   it("rejects closeIssue when repo or issue_number are invalid", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
 
     await expect(service.closeIssue("", 136)).rejects.toThrow("repo is required");
     await expect(service.closeIssue("fusupo/escapement-studio", 0)).rejects.toThrow("issue_number must be a positive integer");
   });
 
   it("stops before close when posting the comment fails", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const runGh = vi.fn(() => {
       throw new Error("gh command failed: comment nope");
     });
@@ -382,7 +390,7 @@ describe("GitHubService issue closing", () => {
   });
 
   it("propagates close failures after posting the comment", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const runGh = vi.fn()
       .mockReturnValueOnce("")
       .mockImplementationOnce(() => {
@@ -397,7 +405,7 @@ describe("GitHubService issue closing", () => {
 
 describe("GitHubService issue deletion", () => {
   it("deletes an issue with gh issue delete --yes", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const runGh = vi.fn().mockReturnValue("");
     (service as any).runGh = runGh;
 
@@ -417,14 +425,14 @@ describe("GitHubService issue deletion", () => {
   });
 
   it("rejects deleteIssue when repo or issue_number are invalid", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
 
     await expect(service.deleteIssue("", 137)).rejects.toThrow("repo is required");
     await expect(service.deleteIssue("fusupo/escapement-studio", 0)).rejects.toThrow("issue_number must be a positive integer");
   });
 
   it("propagates gh delete failures", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     (service as any).runGh = vi.fn(() => {
       throw new Error("gh command failed: nope");
     });
@@ -433,9 +441,266 @@ describe("GitHubService issue deletion", () => {
   });
 });
 
+describe("GitHub issue body sync", () => {
+  function makeIssueSyncService(workItem: WorkItemRecord) {
+    const workItems = {
+      get: vi.fn(() => workItem),
+      listByRepoIssueNumber: vi.fn(() => []),
+    };
+    const db = {
+      prepare: vi.fn(() => ({
+        all: vi.fn(() => []),
+      })),
+    };
+    const issueBodySync = makeIssueBodySyncService(workItems, db);
+    const service = new GitHubService(workItems as any, makeEventBusStub(), issueBodySync);
+    return { service, workItems };
+  }
+
+  function mockIssueView(service: GitHubService, body: string) {
+    (service as any).runGhJson = vi.fn().mockResolvedValue({
+      number: 118,
+      title: "Planner sync target",
+      body,
+      url: "https://github.com/fusupo/escapement-studio/issues/118",
+      state: "OPEN",
+      labels: [],
+      assignees: [],
+    });
+  }
+
+  it("stages a managed-block sync through the existing path", async () => {
+    const managedBlock = [
+      "<!-- studio-sync:start -->",
+      "old block",
+      "<!-- studio-sync:end -->",
+    ].join("\n");
+    const body = `Intro\n\n${managedBlock}\n\nOutro`;
+    const workItem = makeWorkItem({
+      id: "studio-118",
+      issue_number: 118,
+      issue_url: "https://github.com/fusupo/escapement-studio/issues/118",
+      state: "in_progress",
+      predicted_files: ["src/modules/github/github.service.ts"],
+    });
+    const { service } = makeIssueSyncService(workItem);
+    mockIssueView(service, body);
+
+    const staged = await service.stageManagedBlockSync("studio-118");
+
+    expect(staged.work_item_id).toBe("studio-118");
+    expect(staged.operations).toHaveLength(1);
+    expect(staged.operations[0]).toMatchObject({
+      kind: "update_managed_body_block",
+      preview: {
+        before: managedBlock,
+      },
+    });
+    expect(staged.operations[0]?.preview.after).toContain("- State: in_progress");
+    expect(staged.operations[0]?.preview.unified_diff).toContain("--- managed-block.before");
+  });
+
+  it("stages a broader issue body update when no sync block exists", async () => {
+    const workItem = makeWorkItem({
+      id: "studio-118",
+      issue_number: 118,
+      issue_url: "https://github.com/fusupo/escapement-studio/issues/118",
+    });
+    const { service } = makeIssueSyncService(workItem);
+    mockIssueView(service, "Old body\n\n- note");
+
+    const staged = await service.stageIssueBodySync("studio-118", "Old body\n\n- clarified note");
+
+    expect(staged.operations).toHaveLength(1);
+    expect(staged.operations[0]).toMatchObject({
+      kind: "replace_issue_body",
+      preview: {
+        before: "Old body\n\n- note",
+        after: "Old body\n\n- clarified note",
+      },
+    });
+    expect(staged.operations[0]?.preview.unified_diff).toContain("--- issue.before");
+    expect(staged.operations[0]?.preview.unified_diff).toContain("-- note");
+    expect(staged.operations[0]?.preview.unified_diff).toContain("+- clarified note");
+  });
+
+  it("rejects approve when the issue body hash is stale", async () => {
+    const workItem = makeWorkItem({ id: "studio-118", issue_number: 118, issue_url: "https://github.com/fusupo/escapement-studio/issues/118" });
+    const { service } = makeIssueSyncService(workItem);
+    const issue = {
+      repo: "fusupo/escapement-studio",
+      number: 118,
+      title: "Planner sync target",
+      body: "Current body",
+      url: "https://github.com/fusupo/escapement-studio/issues/118",
+      state: "OPEN",
+      labels: [],
+      assignees: [],
+      body_hash: "current-hash",
+      managed_block: null,
+      reconciliation: { updated_work_item_ids: [], work_items: [] },
+    };
+    (service as any).readIssue = vi.fn().mockResolvedValue(issue);
+
+    const result = await service.applySyncProposal({
+      sync_id: "ghsync_1",
+      created_at: "2026-07-21T00:00:00Z",
+      source: { agent: "root-planner", session_id: "planning-root", turn_id: "turn_1" },
+      summary: "Clarify issue",
+      issue: {
+        repo: issue.repo,
+        issue_number: issue.number,
+        issue_url: issue.url,
+        title: issue.title,
+      },
+      work_item_id: "studio-118",
+      based_on_body_hash: "stale-hash",
+      operations: [{
+        id: "op1",
+        kind: "replace_issue_body",
+        summary: "Replace issue body",
+        rationale: "Clarify issue body",
+        target: { repo: issue.repo, issue_number: issue.number, work_item_id: "studio-118" },
+        preview: { before: "Current body", after: "Next body", unified_diff: "diff" },
+      }],
+    }, ["op1"]);
+
+    expect(result.result.status).toBe("stale");
+    expect((service as any).readIssue).toHaveBeenCalledOnce();
+  });
+
+  it("fails validation on unsupported or unsafe issue body operations", async () => {
+    const workItem = makeWorkItem({ id: "studio-118", issue_number: 118, issue_url: "https://github.com/fusupo/escapement-studio/issues/118" });
+    const { service } = makeIssueSyncService(workItem);
+    const currentBody = [
+      "Before",
+      "<!-- studio-sync:start -->",
+      "keep me",
+      "<!-- studio-sync:end -->",
+    ].join("\n");
+    const issue = {
+      repo: "fusupo/escapement-studio",
+      number: 118,
+      title: "Planner sync target",
+      body: currentBody,
+      url: "https://github.com/fusupo/escapement-studio/issues/118",
+      state: "OPEN",
+      labels: [],
+      assignees: [],
+      body_hash: "hash-1",
+      managed_block: {
+        content: ["<!-- studio-sync:start -->", "keep me", "<!-- studio-sync:end -->"].join("\n"),
+        start_marker: "<!-- studio-sync:start -->",
+        end_marker: "<!-- studio-sync:end -->",
+      },
+      reconciliation: { updated_work_item_ids: [], work_items: [] },
+    };
+    (service as any).readIssue = vi.fn().mockResolvedValue(issue);
+
+    const result = await service.applySyncProposal({
+      sync_id: "ghsync_2",
+      created_at: "2026-07-21T00:00:00Z",
+      source: { agent: "root-planner", session_id: "planning-root", turn_id: "turn_1" },
+      summary: "Unsafe clarify issue",
+      issue: {
+        repo: issue.repo,
+        issue_number: issue.number,
+        issue_url: issue.url,
+        title: issue.title,
+      },
+      work_item_id: "studio-118",
+      based_on_body_hash: "hash-1",
+      operations: [{
+        id: "op1",
+        kind: "replace_issue_body",
+        summary: "Replace issue body",
+        rationale: "Clarify issue body",
+        target: { repo: issue.repo, issue_number: issue.number, work_item_id: "studio-118" },
+        preview: {
+          before: currentBody,
+          after: currentBody.replace("keep me", "changed block"),
+          unified_diff: "diff",
+        },
+      }],
+    }, ["op1"]);
+
+    expect(result.result.status).toBe("validation_failed");
+    if (result.result.status === "validation_failed") {
+      expect(result.result.errors[0]?.message).toContain("preserve the existing managed studio-sync block unchanged");
+    }
+  });
+
+  it("applies a reviewed issue body replacement through gh issue edit --body-file -", async () => {
+    const workItem = makeWorkItem({ id: "studio-118", issue_number: 118, issue_url: "https://github.com/fusupo/escapement-studio/issues/118" });
+    const { service } = makeIssueSyncService(workItem);
+    const currentIssue = {
+      repo: "fusupo/escapement-studio",
+      number: 118,
+      title: "Planner sync target",
+      body: "Before body",
+      url: "https://github.com/fusupo/escapement-studio/issues/118",
+      state: "OPEN",
+      labels: [],
+      assignees: [],
+      body_hash: "hash-1",
+      managed_block: null,
+      reconciliation: { updated_work_item_ids: [], work_items: [] },
+    };
+    const updatedIssue = {
+      ...currentIssue,
+      body: "After body",
+      body_hash: "hash-2",
+    };
+    (service as any).readIssue = vi.fn()
+      .mockResolvedValueOnce(currentIssue)
+      .mockResolvedValueOnce(updatedIssue);
+    (service as any).runGh = vi.fn();
+
+    const result = await service.applySyncProposal({
+      sync_id: "ghsync_3",
+      created_at: "2026-07-21T00:00:00Z",
+      source: { agent: "root-planner", session_id: "planning-root", turn_id: "turn_1" },
+      summary: "Clarify issue",
+      issue: {
+        repo: currentIssue.repo,
+        issue_number: currentIssue.number,
+        issue_url: currentIssue.url,
+        title: currentIssue.title,
+      },
+      work_item_id: "studio-118",
+      based_on_body_hash: "hash-1",
+      operations: [{
+        id: "op1",
+        kind: "replace_issue_body",
+        summary: "Replace issue body",
+        rationale: "Clarify issue body",
+        target: { repo: currentIssue.repo, issue_number: currentIssue.number, work_item_id: "studio-118" },
+        preview: { before: "Before body", after: "After body", unified_diff: "diff" },
+      }],
+    }, ["op1"]);
+
+    expect((service as any).runGh).toHaveBeenCalledWith([
+      "issue",
+      "edit",
+      "118",
+      "--repo",
+      "fusupo/escapement-studio",
+      "--body-file",
+      "-",
+    ], "After body");
+    expect(result.result).toEqual({
+      status: "applied",
+      applied_operation_ids: ["op1"],
+      previous_body_hash: "hash-1",
+      new_body_hash: "hash-2",
+    });
+    expect(result.issue?.body).toBe("After body");
+  });
+});
+
 describe("GitHubService batch list methods", () => {
   it("lists pull requests with normalized fields and commands", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const runGhJson = vi.fn().mockResolvedValue([
       {
         number: 194,
@@ -480,7 +745,7 @@ describe("GitHubService batch list methods", () => {
   });
 
   it("lists issues with normalized closed_at fields and empty responses", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const runGhJson = vi.fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([
@@ -520,7 +785,7 @@ describe("GitHubService batch list methods", () => {
   });
 
   it("warns when batch list results hit the hard limits", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const logger = { warn: vi.fn() };
     (service as any).logger = logger;
     (service as any).runGhJson = vi.fn()
@@ -549,7 +814,7 @@ describe("GitHubService batch list methods", () => {
   });
 
   it("propagates batch list failures", async () => {
-    const service = new GitHubService({ getDb: () => ({}) } as any, {} as any, makeEventBusStub());
+    const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     (service as any).runGhJson = vi.fn().mockRejectedValue(new Error("gh failed"));
 
     await expect(service.listPullRequests("fusupo/escapement-studio")).rejects.toThrow("gh failed");

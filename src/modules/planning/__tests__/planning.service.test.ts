@@ -32,6 +32,7 @@ import { checkIdAlignment } from "../../graph/types.js";
 import { PlanningService } from "../planning.service.js";
 import { ProposalStateService } from "../proposal-state.service.js";
 import { createGitHubCreateIssueTool } from "../tools/github-create-issue.tool.js";
+import { createGitHubSyncTool } from "../tools/github-sync.tool.js";
 import type { PlanningToolDeps } from "../tools/types.js";
 import type { PlanningMutationProposal } from "../types.js";
 
@@ -91,6 +92,83 @@ function makePlanningService(createdIssues: CreatedIssue[]) {
     service,
     createIssue,
     tool: createGitHubCreateIssueTool(deps),
+  };
+}
+
+function makeGitHubSyncTool() {
+  const graphService = { getGraph: () => ({ graph_version: "7" }) } as never;
+  const githubService = {
+    stageManagedBlockSync: vi.fn(async (workItemId: string) => ({
+      issue: {
+        repo: "fusupo/escapement-studio",
+        number: 118,
+        url: "https://github.com/fusupo/escapement-studio/issues/118",
+        title: "Planner sync target",
+      },
+      work_item_id: workItemId,
+      based_on_body_hash: "hash-managed",
+      operations: [{
+        id: "op1",
+        kind: "update_managed_body_block",
+        summary: "Update managed block",
+        rationale: "Keep legacy path working",
+        target: {
+          repo: "fusupo/escapement-studio",
+          issue_number: 118,
+          work_item_id: workItemId,
+        },
+        preview: {
+          before: "old block",
+          after: "new block",
+          unified_diff: "managed diff",
+        },
+      }],
+    })),
+    stageIssueBodySync: vi.fn(async (workItemId: string, bodyAfter: string) => ({
+      issue: {
+        repo: "fusupo/escapement-studio",
+        number: 118,
+        url: "https://github.com/fusupo/escapement-studio/issues/118",
+        title: "Planner sync target",
+      },
+      work_item_id: workItemId,
+      based_on_body_hash: "hash-body",
+      operations: [{
+        id: "op1",
+        kind: "replace_issue_body",
+        summary: "Replace issue body",
+        rationale: "Clarify the issue",
+        target: {
+          repo: "fusupo/escapement-studio",
+          issue_number: 118,
+          work_item_id: workItemId,
+        },
+        preview: {
+          before: "before body",
+          after: bodyAfter,
+          unified_diff: "body diff",
+        },
+      }],
+    })),
+  };
+  const memoryService = { read: () => ({ content_hash: "mem-hash" }) } as never;
+  const proposalState = new ProposalStateService(graphService, githubService as never, memoryService);
+
+  const deps: PlanningToolDeps = {
+    graphService,
+    memoryService,
+    subAgentService: {} as never,
+    githubService: githubService as never,
+    driftReportService: {} as never,
+    proposalState,
+    emitStudioEvent: () => {},
+    buildProposalDefaults: () => ({ currentTurnId: "turn_0001", sessionId: "planning-root" }),
+    getCurrentTurnId: () => "turn_0001",
+  };
+
+  return {
+    tool: createGitHubSyncTool(deps),
+    githubService,
   };
 }
 
@@ -352,5 +430,53 @@ describe("PlanningService github_create_issue staging", () => {
     });
     expectAlignedIssueBackedMutations(proposal);
     expect(JSON.stringify(proposal)).not.toContain('"studio-82"');
+  });
+});
+
+describe("PlanningService github_sync staging", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("stages a managed-block sync for the legacy github_sync shape", async () => {
+    const { tool, githubService } = makeGitHubSyncTool();
+
+    const result = await tool.execute("tool_call_1", {
+      summary: "Sync managed block",
+      work_item_id: "studio-118",
+    }, undefined, undefined, {} as never);
+
+    expect(githubService.stageManagedBlockSync).toHaveBeenCalledWith("studio-118");
+    expect(githubService.stageIssueBodySync).not.toHaveBeenCalled();
+    expect(result.details.sync).toMatchObject({
+      work_item_id: "studio-118",
+      based_on_body_hash: "hash-managed",
+      operations: [{ kind: "update_managed_body_block" }],
+    });
+  });
+
+  it("stages a broader issue body proposal when body_after is provided", async () => {
+    const { tool, githubService } = makeGitHubSyncTool();
+
+    const result = await tool.execute("tool_call_1", {
+      summary: "Clarify issue body",
+      work_item_id: "studio-118",
+      body_after: "after body",
+    }, undefined, undefined, {} as never);
+
+    expect(githubService.stageIssueBodySync).toHaveBeenCalledWith("studio-118", "after body");
+    expect(githubService.stageManagedBlockSync).not.toHaveBeenCalled();
+    expect(result.details.sync).toMatchObject({
+      work_item_id: "studio-118",
+      based_on_body_hash: "hash-body",
+      operations: [{
+        kind: "replace_issue_body",
+        preview: {
+          before: "before body",
+          after: "after body",
+          unified_diff: "body diff",
+        },
+      }],
+    });
   });
 });
