@@ -18,10 +18,12 @@ import {
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { PlanDrafterService } from "./plan-drafter.service.js";
+import { PlanPreparationService } from "./plan-preparation.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ApprovePlanDto,
   PlanDraftEnvelope,
+  PlanPreparationAggregate,
   PlanResponse,
   PredictedFilesDiff,
   ReopenPlanDto,
@@ -52,6 +54,7 @@ export class PlansService {
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(StudioIssueTemplateService) private readonly templateService: StudioIssueTemplateService,
+    @Inject(PlanPreparationService) private readonly preparationService: PlanPreparationService,
     @Inject(PlanDrafterService) private readonly drafter: PlanDrafterService,
   ) {}
 
@@ -87,13 +90,14 @@ export class PlansService {
     // renderer. The drafter doesn't need its own gh access.
     const issueBody = fetchIssueBody(workItem.repo, workItem.issue_number);
 
-    // Run the drafter BEFORE any state mutation. If this throws, no state
-    // changes are visible and the caller can retry.
-    const draft = await this.drafter.draft(workItem, issueBody);
+    // Run bounded preparation and final synthesis BEFORE any state mutation.
+    // If either throws, no state changes are visible and the caller can retry.
+    const preparation = await this.preparationService.prepare(workItem);
+    const draft = await this.drafter.draft(workItem, issueBody, preparation);
 
     return this.persistDraftEnvelope(workItemId, draft, issueBody, {
       transitionToDrafting: this.leafState(workItem.state) !== "drafting",
-    });
+    }, preparation);
   }
 
   /**
@@ -231,6 +235,7 @@ export class PlansService {
     draft: PlanDraftEnvelope,
     issueBody: string | null,
     options: { transitionToDrafting?: boolean } = {},
+    preparation?: PlanPreparationAggregate,
   ): Promise<PlanResponse> {
     if (draft.affected_files.length > 0) {
       this.workItemsService.update(workItemId, {
@@ -251,6 +256,7 @@ export class PlansService {
       issueBody,
       templates,
       draft,
+      preparation,
     );
     const canonicalPath = canonicalScratchpadPath(this.artifactRoot, workItemId);
     writeFileSync(canonicalPath, scratchpadContent, "utf8");
@@ -310,6 +316,7 @@ export class PlansService {
     issueBody: string | null,
     templates: StudioIssueTemplate[],
     draft?: PlanDraftEnvelope,
+    preparation?: PlanPreparationAggregate,
   ): string {
     const templateSummary = templates.length
       ? templates
@@ -377,6 +384,30 @@ export class PlansService {
         ? workItem.predicted_files.map((p) => `- ${p}`)
         : ["- (none predicted yet — populate during plan review)"];
 
+    const parallelPreparationSection = preparation
+      ? [
+          "## Parallel Preparation",
+          "",
+          `Two bounded specialists contributed to final synthesis${preparation.degraded ? " (degraded)" : ""}.`,
+          "",
+          ...preparation.contributors.flatMap((contributor) => [
+            `### ${contributor.task.agent_type}`,
+            "",
+            `- **Run ID:** ${contributor.run_id}`,
+            `- **Status:** ${contributor.status}${contributor.degraded ? " (degraded)" : ""}`,
+            `- **Confidence:** ${contributor.confidence}`,
+            `- **Task:** ${contributor.task.task}`,
+            `- **Repo:** ${contributor.task.repo ?? "(not set)"}`,
+            `- **Work items:** ${contributor.task.work_item_ids.join(", ")}`,
+            `- **Focus paths:** ${contributor.task.focus_paths.length ? contributor.task.focus_paths.join(", ") : "(none — bounded fallback used)"}`,
+            `- **Summary:** ${contributor.summary}`,
+            `- **Open questions:** ${contributor.open_questions.length ? contributor.open_questions.join(" | ") : "(none)"}`,
+            `- **Errors:** ${contributor.errors.length ? contributor.errors.map((error) => `${error.code}: ${error.message}`).join(" | ") : "(none)"}`,
+            "",
+          ]),
+        ]
+      : [];
+
     const affectedFilesSection = [
       "## Affected Files",
       "<!-- Predicted files this plan will touch. Approval refines the work item's predicted_files from this list. -->",
@@ -439,7 +470,9 @@ export class PlansService {
       : ["## Blockers", ""];
 
     const drafterBanner = draft
-      ? "> Auto-drafted by PlansService.prepare via PlanDrafterService (ADR 014 step 8 follow-up, #167)."
+      ? preparation
+        ? "> Auto-drafted by PlansService.prepare from two bounded parallel specialists and one canonical PlanDrafterService synthesis pass."
+        : "> Auto-drafted by PlansService.prepare via PlanDrafterService (ADR 014 step 8 follow-up, #167)."
       : "> Drafted by PlansService.prepare (ADR 014 step 4). Worktree not yet created.";
 
     return [
@@ -455,6 +488,7 @@ export class PlansService {
       `- **Branch:** ${workItem.branch ?? "(not set)"}`,
       "",
       ...issueSection,
+      ...parallelPreparationSection,
       ...summarySection,
       ...acceptanceCriteriaSection,
       ...implementationPlanSection,
@@ -473,7 +507,9 @@ export class PlansService {
       "",
       `### ${new Date().toISOString().slice(0, 10)} - Plan drafted`,
       draft
-        ? "- Scratchpad auto-drafted by PlansService.prepare via PlanDrafterService"
+        ? preparation
+          ? "- Scratchpad synthesized from two bounded parallel specialist runs via PlansService.prepare and PlanDrafterService"
+          : "- Scratchpad auto-drafted by PlansService.prepare via PlanDrafterService"
         : "- Scratchpad created by PlansService.prepare",
       "",
       ...blockersSection,
