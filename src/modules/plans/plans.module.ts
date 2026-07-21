@@ -2,9 +2,11 @@ import { Module } from "@nestjs/common";
 import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
 import { SettingsModule } from "../settings/settings.module.js";
+import { PlanningModule } from "../planning/planning.module.js";
 import { PreparePlanHandler } from "./application/commands/prepare-plan.handler.js";
 import { ReopenPlanHandler } from "./application/commands/reopen-plan.handler.js";
 import { PlanDrafterService } from "./plan-drafter.service.js";
+import { PlanPreparationService } from "./plan-preparation.service.js";
 import { PlansController } from "./plans.controller.js";
 import { PlansService } from "./plans.service.js";
 import { WorkItemDeletedHandler } from "./work-item-deleted.handler.js";
@@ -18,15 +20,16 @@ import { WorkItemDeletedHandler } from "./work-item-deleted.handler.js";
  * only imports Graph, so no cycle reaches back into Plans.
  */
 @Module({
-  imports: [GraphModule, GitHubModule, SettingsModule],
+  imports: [GraphModule, GitHubModule, SettingsModule, PlanningModule],
   controllers: [PlansController],
   providers: [
     PlansService,
     PlanDrafterService,
+    PlanPreparationService,
     PreparePlanHandler,
     ReopenPlanHandler,
     WorkItemDeletedHandler,
   ],
-  exports: [PlansService, PlanDrafterService],
+  exports: [PlansService, PlanDrafterService, PlanPreparationService],
 })
 export class PlansModule {}

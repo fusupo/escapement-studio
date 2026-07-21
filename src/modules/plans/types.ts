@@ -1,4 +1,10 @@
 import type { PlanMetadata } from "../../lib/context-layout.js";
+import type {
+  SubAgentConfidence,
+  SubAgentError,
+  SubAgentFinding,
+  SubAgentType,
+} from "../planning/types.js";
 
 /** POST /api/plans/:work_item_id/prepare — no body required. */
 export interface PreparePlanDto {
@@ -79,4 +85,30 @@ export interface PlanDraftTechnicalNotes {
   architecture: string;
   approach: string;
   challenges: string;
+}
+
+export interface PlanPreparationTask {
+  agent_type: Extract<SubAgentType, "code-crawler" | "scope-predictor">;
+  task: string;
+  repo: string | undefined;
+  focus_paths: string[];
+  work_item_ids: string[];
+  notes: string;
+}
+
+export interface PlanPreparationContributor {
+  task: PlanPreparationTask;
+  run_id: string;
+  status: "completed" | "error";
+  confidence: SubAgentConfidence;
+  summary: string;
+  findings: SubAgentFinding[];
+  open_questions: string[];
+  errors: SubAgentError[];
+  degraded: boolean;
+}
+
+export interface PlanPreparationAggregate {
+  contributors: PlanPreparationContributor[];
+  degraded: boolean;
 }
