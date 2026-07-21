@@ -120,6 +120,22 @@
   $: suspectRuns = runs.filter((run) => run.terminal_outcome?.severity === "warn");
   $: blockedRuns = runs.filter((run) => run.status === "blocked");
   $: failedRuns = runs.filter((run) => run.status === "error" && run.terminal_outcome?.severity !== "warn");
+  $: syncTone = syncStatus === "fresh"
+    ? "healthy"
+    : syncStatus === "syncing"
+      ? "info"
+      : syncStatus === "stale"
+        ? "danger"
+        : "warn";
+  $: syncLabel = syncStatus === "syncing"
+    ? "synchronizing"
+    : syncStatus === "stale"
+      ? lastSuccessfulSyncAt
+        ? `sync failed · last synced at ${formatSyncTime(lastSuccessfulSyncAt)}`
+        : "sync failed"
+      : lastSuccessfulSyncAt
+        ? `synced at ${formatSyncTime(lastSuccessfulSyncAt)}`
+        : "not yet synced";
 
   $: dispatchNodes = preview?.groups?.flatMap((group) =>
     group.nodes.map((node) => ({
@@ -494,6 +510,10 @@
     return "";
   }
 
+  function formatSyncTime(value) {
+    try { return value.toLocaleTimeString(); } catch { return ""; }
+  }
+
   function formatActivityTime(value) {
     if (!value) return "";
     try { return new Date(value).toLocaleTimeString(); } catch { return ""; }
@@ -642,6 +662,12 @@
   <div class="exec-topbar">
     <div class="exec-topbar-left">
       <span class:healthy={connected} class="status-pill">{connected ? "stream connected" : "reconnecting"}</span>
+      <span
+        class="status-pill {syncTone}"
+        role="status"
+        aria-live="polite"
+        title={syncError?.message || syncLabel}
+      >{syncLabel}</span>
       {#if preview}
         <span class="exec-stat">{preview.summary.dispatchable_now} dispatchable</span>
         <span class="exec-stat">{activeRuns.length} active</span>
