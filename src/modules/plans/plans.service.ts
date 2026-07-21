@@ -18,10 +18,15 @@ import {
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { PlanDrafterService } from "./plan-drafter.service.js";
+import {
+  PlanPreparationService,
+  renderPlanPreparationSection,
+} from "./plan-preparation.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import type {
   ApprovePlanDto,
   PlanDraftEnvelope,
+  PlanPreparationAggregate,
   PlanResponse,
   PredictedFilesDiff,
   ReopenPlanDto,
@@ -52,6 +57,7 @@ export class PlansService {
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(StudioIssueTemplateService) private readonly templateService: StudioIssueTemplateService,
+    @Inject(PlanPreparationService) private readonly preparationService: PlanPreparationService,
     @Inject(PlanDrafterService) private readonly drafter: PlanDrafterService,
   ) {}
 
@@ -87,13 +93,14 @@ export class PlansService {
     // renderer. The drafter doesn't need its own gh access.
     const issueBody = fetchIssueBody(workItem.repo, workItem.issue_number);
 
-    // Run the drafter BEFORE any state mutation. If this throws, no state
-    // changes are visible and the caller can retry.
-    const draft = await this.drafter.draft(workItem, issueBody);
+    // Run bounded preparation and final synthesis BEFORE any state mutation.
+    // If either throws, no state changes are visible and the caller can retry.
+    const preparation = await this.preparationService.prepare(workItem);
+    const draft = await this.drafter.draft(workItem, issueBody, preparation);
 
     return this.persistDraftEnvelope(workItemId, draft, issueBody, {
       transitionToDrafting: this.leafState(workItem.state) !== "drafting",
-    });
+    }, preparation);
   }
 
   /**
@@ -231,6 +238,7 @@ export class PlansService {
     draft: PlanDraftEnvelope,
     issueBody: string | null,
     options: { transitionToDrafting?: boolean } = {},
+    preparation?: PlanPreparationAggregate,
   ): Promise<PlanResponse> {
     if (draft.affected_files.length > 0) {
       this.workItemsService.update(workItemId, {
@@ -251,6 +259,7 @@ export class PlansService {
       issueBody,
       templates,
       draft,
+      preparation,
     );
     const canonicalPath = canonicalScratchpadPath(this.artifactRoot, workItemId);
     writeFileSync(canonicalPath, scratchpadContent, "utf8");
@@ -310,6 +319,7 @@ export class PlansService {
     issueBody: string | null,
     templates: StudioIssueTemplate[],
     draft?: PlanDraftEnvelope,
+    preparation?: PlanPreparationAggregate,
   ): string {
     const templateSummary = templates.length
       ? templates
@@ -377,6 +387,8 @@ export class PlansService {
         ? workItem.predicted_files.map((p) => `- ${p}`)
         : ["- (none predicted yet — populate during plan review)"];
 
+    const parallelPreparationSection = renderPlanPreparationSection(preparation);
+
     const affectedFilesSection = [
       "## Affected Files",
       "<!-- Predicted files this plan will touch. Approval refines the work item's predicted_files from this list. -->",
@@ -439,7 +451,9 @@ export class PlansService {
       : ["## Blockers", ""];
 
     const drafterBanner = draft
-      ? "> Auto-drafted by PlansService.prepare via PlanDrafterService (ADR 014 step 8 follow-up, #167)."
+      ? preparation
+        ? "> Auto-drafted by PlansService.prepare from two bounded parallel specialists and one canonical PlanDrafterService synthesis pass."
+        : "> Auto-drafted by PlansService.prepare via PlanDrafterService (ADR 014 step 8 follow-up, #167)."
       : "> Drafted by PlansService.prepare (ADR 014 step 4). Worktree not yet created.";
 
     return [
@@ -455,6 +469,7 @@ export class PlansService {
       `- **Branch:** ${workItem.branch ?? "(not set)"}`,
       "",
       ...issueSection,
+      ...parallelPreparationSection,
       ...summarySection,
       ...acceptanceCriteriaSection,
       ...implementationPlanSection,
@@ -473,7 +488,9 @@ export class PlansService {
       "",
       `### ${new Date().toISOString().slice(0, 10)} - Plan drafted`,
       draft
-        ? "- Scratchpad auto-drafted by PlansService.prepare via PlanDrafterService"
+        ? preparation
+          ? "- Scratchpad synthesized from two bounded parallel specialist runs via PlansService.prepare and PlanDrafterService"
+          : "- Scratchpad auto-drafted by PlansService.prepare via PlanDrafterService"
         : "- Scratchpad created by PlansService.prepare",
       "",
       ...blockersSection,

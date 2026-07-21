@@ -4,6 +4,7 @@ import {
   SessionManager,
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -49,7 +50,7 @@ export class SubAgentService {
   }
 
   async runDelegation(input: DelegateSubAgentToolInput, hooks: RunHooks = {}): Promise<SubAgentRunRecord> {
-    const runId = `sub_${Date.now()}`;
+    const runId = `sub_${Date.now()}_${randomUUID()}`;
     const createdAt = this.now();
     const artifactDir = runDir(this.artifactRoot, runId);
     mkdirSync(artifactDir, { recursive: true });

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { PlanDrafterService } from "../plan-drafter.service.js";
 import type { WorkItemRecord } from "../../graph/types.js";
+import type { PlanPreparationAggregate } from "../types.js";
 
 /**
  * #167 — PlanDrafterService unit tests.
@@ -26,6 +27,7 @@ type MockAttempt = {
 };
 let mockAttemptQueue: MockAttempt[] = [];
 let mockCreateSessionCallCount = 0;
+let mockPromptTexts: string[] = [];
 
 vi.mock("@earendil-works/pi-coding-agent", () => {
   return {
@@ -45,7 +47,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
       const session = {
         sessionId: "mock-session",
         messages: sessionMessages,
-        async prompt(_text: string) {
+        async prompt(text: string) {
+          mockPromptTexts.push(text);
           if (behavior === "throw_in_prompt") {
             throw new Error("session.prompt blew up");
           }
@@ -102,6 +105,44 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
   } as WorkItemRecord & typeof overrides;
 }
 
+function preparationAggregate(): PlanPreparationAggregate {
+  const task = (agent_type: "code-crawler" | "scope-predictor", focus_paths: string[]) => ({
+    agent_type,
+    task: `${agent_type} bounded task`,
+    repo: "fusupo/escapement-studio",
+    focus_paths,
+    work_item_ids: ["studio-167"],
+    notes: "bounded",
+  });
+  return {
+    degraded: true,
+    contributors: [
+      {
+        task: task("code-crawler", ["src/first.ts"]),
+        run_id: "sub_crawler",
+        status: "completed",
+        confidence: "high",
+        summary: "Concrete trace",
+        findings: [{ kind: "file_impact", file: "src/first.ts", summary: "Relevant", internal: "omit me" }],
+        open_questions: [],
+        errors: [],
+        degraded: false,
+      },
+      {
+        task: task("scope-predictor", ["src/second.ts"]),
+        run_id: "sub_predictor",
+        status: "error",
+        confidence: "low",
+        summary: "Prediction failed",
+        findings: [],
+        open_questions: ["Confirm scope?"],
+        errors: [{ code: "failed", message: "model error" }],
+        degraded: true,
+      },
+    ],
+  };
+}
+
 function makeService(): PlanDrafterService {
   const service = Object.create(PlanDrafterService.prototype) as PlanDrafterService;
   (service as unknown as { settingsService: { getSelectedModel: () => undefined } }).settingsService = {
@@ -147,6 +188,7 @@ beforeEach(() => {
   mockAttemptQueue = [];
   mockCreateSessionCallCount = 0;
   mockDisposeCallCount = 0;
+  mockPromptTexts = [];
 });
 
 describe("PlanDrafterService.loadSkillBody", () => {
@@ -206,6 +248,23 @@ describe("PlanDrafterService.buildDraftPrompt", () => {
       issueBody: null,
     });
     expect(prompt).toContain("issue body unavailable");
+  });
+
+  it("embeds bounded preparation evidence in deterministic order including degradation", () => {
+    const service = makeService();
+    const prompt = service.buildDraftPrompt({
+      skillBody: "(skill)",
+      workItem: makeWorkItem(),
+      issueBody: "body",
+      preparation: preparationAggregate(),
+    });
+
+    expect(prompt).toContain("Parallel preparation evidence");
+    expect(prompt.indexOf("sub_crawler")).toBeLessThan(prompt.indexOf("sub_predictor"));
+    expect(prompt).toContain('"status": "error"');
+    expect(prompt).toContain('"confidence": "low"');
+    expect(prompt).toContain("model error");
+    expect(prompt).not.toContain("omit me");
   });
 });
 
@@ -370,11 +429,13 @@ describe("PlanDrafterService.parseEnvelope", () => {
 describe("PlanDrafterService.startDraft / draft (integration with mocked pi-coding-agent)", () => {
   it("returns a parsed envelope on a successful agent run", async () => {
     const service = makeService();
-    const result = await service.draft(makeWorkItem(), "issue body");
+    const result = await service.draft(makeWorkItem(), "issue body", preparationAggregate());
 
     expect(result.summary).toBe("Drafted summary");
     expect(result.implementation_tasks).toHaveLength(1);
     expect(result.affected_files).toEqual(["src/foo.ts", "src/bar.ts"]);
+    expect(mockPromptTexts[0]).toContain("sub_crawler");
+    expect(mockPromptTexts[0]).toContain("sub_predictor");
   });
 
   it("throws when the agent returns an empty assistant message", async () => {
