@@ -605,7 +605,7 @@ export class ExecutionService implements OnModuleInit {
   getRunChecklist(runId: string): ExecutionChecklistSnapshot {
     const run = this.runStore.getRun(runId);
     if (!run) {
-      return { run_id: runId, items: [], completed: 0, total: 0 };
+      return { run_id: runId, revision: 0, updated_at: null, items: [], completed: 0, total: 0 };
     }
     return this.scratchpadService.getRunChecklist(run);
   }

@@ -1,139 +1,98 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ScratchpadService } from "../scratchpad.service.js";
 
-/**
- * Phase 4c (#232): parseImplementationPlanChecklist lives on
- * ScratchpadService. The method is a pure parser, so the harness
- * constructs a bare ScratchpadService instance via Object.create.
- */
 function parseChecklist(content: string) {
   const service = Object.create(ScratchpadService.prototype) as ScratchpadService;
-  return service.parseImplementationPlanChecklist(content);
+  return service.parseChecklistProjection(content);
 }
 
-describe("parseImplementationPlanChecklist", () => {
-  it("extracts checklist items from the Implementation Plan section", () => {
-    const content = [
-      "# Scratchpad",
-      "",
-      "## Context",
-      "- **Repo:** test",
-      "",
+describe("parseChecklistProjection", () => {
+  it("categorizes supported checklist sections and derives implementation rows", () => {
+    const items = parseChecklist([
+      "## Acceptance Criteria",
+      "- [x] User-visible behavior works",
       "## Implementation Plan",
-      "",
-      "- [ ] Analyze scope and identify changes needed",
-      "- [x] Implement changes",
-      "- [ ] Run tests / verify",
-      "- [x] Summarize results",
-      "",
-      "## Work Log",
-      "- Some note",
-      "",
-    ].join("\n");
+      "- [ ] Implement the behavior",
+      "- [X] Add tests",
+      "## Quality Checks",
+      "- [x] npm test",
+      "## Manual Verification",
+      "- [ ] Check narrow layout",
+    ].join("\n"));
 
-    const items = parseChecklist(content);
     expect(items).toEqual([
-      { checked: false, text: "Analyze scope and identify changes needed" },
-      { checked: true, text: "Implement changes" },
-      { checked: false, text: "Run tests / verify" },
-      { checked: true, text: "Summarize results" },
+      { checked: true, text: "User-visible behavior works", category: "acceptance" },
+      { checked: false, text: "Implement the behavior", category: "implementation" },
+      { checked: true, text: "Add tests", category: "implementation" },
+      { checked: true, text: "npm test", category: "verification" },
+      { checked: false, text: "Check narrow layout", category: "verification" },
+    ]);
+    const implementation = items.filter((item) => item.category === "implementation");
+    expect({ completed: implementation.filter((item) => item.checked).length, total: implementation.length })
+      .toEqual({ completed: 1, total: 2 });
+  });
+
+  it("uses the last exact H2 when issue-body and canonical headings repeat", () => {
+    const items = parseChecklist([
+      "## Acceptance Criteria",
+      "- [ ] Issue-body criterion",
+      "## Notes",
+      "## Implementation Plan (draft)",
+      "- [ ] Similar but not exact",
+      "## Acceptance Criteria",
+      "### Required behavior",
+      "  - [x] Canonical criterion",
+      "## Implementation Plan",
+      "- [ ] Canonical task",
+    ].join("\n"));
+
+    expect(items).toEqual([
+      { checked: true, text: "Canonical criterion", category: "acceptance" },
+      { checked: false, text: "Canonical task", category: "implementation" },
     ]);
   });
 
-  it("ignores checkbox lines outside the Implementation Plan section", () => {
-    const content = [
-      "## Context",
-      "- [ ] This should be ignored",
-      "",
+  it("allows nested headings and indented task rows but stops at the next H2", () => {
+    const items = parseChecklist([
       "## Implementation Plan",
-      "- [ ] Real item",
-      "",
+      "### Backend",
+      "  - [ ] Indented item",
+      "    - [x] Deeply indented",
       "## Work Log",
-      "- [ ] This is also ignored",
-      "",
-      "## Blockers",
-      "- [x] Ignored too",
-    ].join("\n");
+      "- [ ] Not a task",
+    ].join("\n"));
 
-    const items = parseChecklist(content);
-    expect(items).toEqual([{ checked: false, text: "Real item" }]);
+    expect(items).toEqual([
+      { checked: false, text: "Indented item", category: "implementation" },
+      { checked: true, text: "Deeply indented", category: "implementation" },
+    ]);
   });
 
-  it("returns empty array when there is no Implementation Plan section", () => {
-    const content = [
-      "## Context",
-      "Some content",
-      "",
-      "## Work Log",
-      "- [ ] Not in Implementation Plan",
-    ].join("\n");
-
-    const items = parseChecklist(content);
-    expect(items).toEqual([]);
+  it("handles unchecked, lowercase, and uppercase checkbox variants", () => {
+    expect(parseChecklist([
+      "## Implementation Plan",
+      "- [ ] Pending",
+      "- [x] Lowercase",
+      "- [X] Uppercase",
+    ].join("\n"))).toEqual([
+      { checked: false, text: "Pending", category: "implementation" },
+      { checked: true, text: "Lowercase", category: "implementation" },
+      { checked: true, text: "Uppercase", category: "implementation" },
+    ]);
   });
 
-  it("returns empty array for empty content", () => {
+  it("returns an empty projection when supported sections are missing or empty", () => {
+    expect(parseChecklist("## Context\n- [ ] Not a checklist")).toEqual([]);
+    expect(parseChecklist("## Implementation Plan\n<!-- no tasks yet -->")).toEqual([]);
     expect(parseChecklist("")).toEqual([]);
   });
 
-  it("handles uppercase X in checkboxes", () => {
-    const content = [
-      "## Implementation Plan",
-      "- [X] Done item",
-      "- [ ] Pending item",
-    ].join("\n");
-
-    const items = parseChecklist(content);
-    expect(items).toEqual([
-      { checked: true, text: "Done item" },
-      { checked: false, text: "Pending item" },
+  it("supports either verification heading independently", () => {
+    expect(parseChecklist("## Quality Checks\n- [ ] Automated checks")).toEqual([
+      { checked: false, text: "Automated checks", category: "verification" },
     ]);
-  });
-
-  it("handles indented checklist items", () => {
-    const content = [
-      "## Implementation Plan",
-      "  - [ ] Indented item",
-      "    - [x] Deeply indented",
-    ].join("\n");
-
-    const items = parseChecklist(content);
-    expect(items).toEqual([
-      { checked: false, text: "Indented item" },
-      { checked: true, text: "Deeply indented" },
-    ]);
-  });
-
-  it("stops at the next ## heading", () => {
-    const content = [
-      "## Implementation Plan",
-      "- [ ] First",
-      "- [x] Second",
-      "## Blockers",
-      "- [ ] Not a plan item",
-    ].join("\n");
-
-    const items = parseChecklist(content);
-    expect(items).toEqual([
-      { checked: false, text: "First" },
-      { checked: true, text: "Second" },
-    ]);
-  });
-
-  it("skips non-checklist lines within the section", () => {
-    const content = [
-      "## Implementation Plan",
-      "<!-- comment -->",
-      "",
-      "- [ ] Real item",
-      "Some random text",
-      "- [x] Another item",
-    ].join("\n");
-
-    const items = parseChecklist(content);
-    expect(items).toEqual([
-      { checked: false, text: "Real item" },
-      { checked: true, text: "Another item" },
+    expect(parseChecklist("## Manual Verification\n- [x] Browser checked")).toEqual([
+      { checked: true, text: "Browser checked", category: "verification" },
     ]);
   });
 });

@@ -12,6 +12,7 @@ import { RunStore } from "./run-store.service.js";
 import { WorktreeService } from "./worktree.service.js";
 import type {
   ChecklistItem,
+  ChecklistItemCategory,
   ExecutionChecklistSnapshot,
   ExecutionDispatchNodePreview,
   ExecutionRunRecord,
@@ -50,11 +51,14 @@ export class ScratchpadService {
 
   getRunChecklist(run: ExecutionRunRecord): ExecutionChecklistSnapshot {
     const items = this.readChecklistFromWorktree(run);
+    const implementationItems = items.filter((item) => item.category === "implementation");
     return {
       run_id: run.run_id,
+      revision: 0,
+      updated_at: null,
       items,
-      completed: items.filter((i) => i.checked).length,
-      total: items.length,
+      completed: implementationItems.filter((item) => item.checked).length,
+      total: implementationItems.length,
     };
   }
 
@@ -78,31 +82,49 @@ export class ScratchpadService {
   // ─── Checklist parsing + SSE push ─────────────────────────────────
 
   /**
-   * Parse checklist items from the ## Implementation Plan section of a scratchpad.
-   * Only matches `- [ ]` and `- [x]` lines within that section.
+   * Project the canonical execution checklists from a scratchpad.
+   *
+   * Prepared scratchpads can include issue-body headings before the canonical
+   * execution contract, so the last exact H2 for each supported heading wins.
+   * H3 content remains inside its parent section; the next H2 ends it.
    */
-  parseImplementationPlanChecklist(content: string): ChecklistItem[] {
-    const lines = content.split("\n");
-    const items: ChecklistItem[] = [];
-    let inSection = false;
+  parseChecklistProjection(content: string): ChecklistItem[] {
+    const lines = content.split(/\r?\n/);
+    const sections: Array<{ heading: string; category: ChecklistItemCategory }> = [
+      { heading: "Acceptance Criteria", category: "acceptance" },
+      { heading: "Implementation Plan", category: "implementation" },
+      { heading: "Quality Checks", category: "verification" },
+      { heading: "Manual Verification", category: "verification" },
+    ];
 
-    for (const line of lines) {
-      // Detect heading boundaries
-      if (/^##\s/.test(line)) {
-        inSection = /^##\s+Implementation Plan/i.test(line);
-        continue;
+    return sections.flatMap(({ heading, category }) => {
+      let sectionStart = -1;
+      for (let index = 0; index < lines.length; index += 1) {
+        if (lines[index].trim() === `## ${heading}`) {
+          sectionStart = index + 1;
+        }
       }
-      if (inSection) {
-        const match = line.match(/^\s*-\s+\[([\sxX])\]\s+(.+)$/);
+      if (sectionStart < 0) return [];
+
+      const items: ChecklistItem[] = [];
+      for (let index = sectionStart; index < lines.length; index += 1) {
+        if (/^\s*##(?:\s|$)/.test(lines[index])) break;
+        const match = lines[index].match(/^\s*-\s+\[([ xX])\]\s+(.+)$/);
         if (match) {
           items.push({
             checked: match[1].toLowerCase() === "x",
             text: match[2].trim(),
+            category,
           });
         }
       }
-    }
-    return items;
+      return items;
+    });
+  }
+
+  /** @deprecated Use parseChecklistProjection for categorized checklist data. */
+  parseImplementationPlanChecklist(content: string): ChecklistItem[] {
+    return this.parseChecklistProjection(content).filter((item) => item.category === "implementation");
   }
 
   readChecklistFromWorktree(run: ExecutionRunRecord): ChecklistItem[] {
@@ -113,7 +135,7 @@ export class ScratchpadService {
     }
     try {
       const content = readFileSync(scratchpadPath, "utf8");
-      return this.parseImplementationPlanChecklist(content);
+      return this.parseChecklistProjection(content);
     } catch {
       return [];
     }
@@ -121,11 +143,14 @@ export class ScratchpadService {
 
   emitChecklistIfChanged(run: ExecutionRunRecord): void {
     const items = this.readChecklistFromWorktree(run);
+    const implementationItems = items.filter((item) => item.category === "implementation");
     const snapshot: ExecutionChecklistSnapshot = {
       run_id: run.run_id,
+      revision: 0,
+      updated_at: null,
       items,
-      completed: items.filter((i) => i.checked).length,
-      total: items.length,
+      completed: implementationItems.filter((item) => item.checked).length,
+      total: implementationItems.length,
     };
     const key = JSON.stringify(snapshot.items);
     if (this.lastChecklistSnapshots.get(run.run_id) === key) {
