@@ -10,6 +10,7 @@
   import Sidebar from "./components/Sidebar.svelte";
   import {
     approvePlan,
+    archiveAndCloseMergedPullRequest,
     cancelWorkItem,
     closeMergedPullRequest,
     createEdge,
@@ -47,6 +48,7 @@
   let health = null;
   let activeTab = "planning";
   let closingIssue = false;
+  let archivingWorkItem = false;
   let cancelingWorkItem = false;
   let deletingWorkItem = false;
   let launchingExecution = false;
@@ -458,6 +460,22 @@
       error = closeError.message;
     } finally {
       closingIssue = false;
+    }
+  }
+
+  async function handleArchiveWorkItem(item) {
+    if (!item?.id) return;
+    archivingWorkItem = true;
+    error = "";
+    notice = "";
+    try {
+      const result = await archiveAndCloseMergedPullRequest(item.id);
+      await loadGraph();
+      notice = `Archived ${item.id} to ${result.archive.archive_path}.`;
+    } catch (archiveError) {
+      error = archiveError.message;
+    } finally {
+      archivingWorkItem = false;
     }
   }
 
@@ -895,9 +913,11 @@
                   onCreateEdge={handleCreateEdge}
                   onDeleteEdge={handleDeleteEdge}
                   onCloseIssue={handleCloseIssue}
+                  onArchiveWorkItem={handleArchiveWorkItem}
                   onCancelWorkItem={openCancelDialog}
                   onDeleteWorkItem={openDeleteDialog}
                   {closingIssue}
+                  {archivingWorkItem}
                   {cancelingWorkItem}
                   {deletingWorkItem}
                 />

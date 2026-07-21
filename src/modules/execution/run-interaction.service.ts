@@ -5,7 +5,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { workItemSlug } from "../../lib/context-layout.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
@@ -21,36 +21,21 @@ import type {
   ExecutionRunRecord,
   FollowUpMessageDto,
   FollowUpMessageResult,
-  ResolveDisambiguationDto,
-  ResolveDisambiguationResult,
   RunChatHistory,
   RunChatMessage,
 } from "./types.js";
 import { classifyExecutionTerminalOutcome } from "./run-outcome.js";
 
 /**
- * Phase 4e (#234): input envelope for `runSession`. RunInteractionService
- * now owns prompt construction internally — callers pass the raw
- * materials (node, workItem, issueBody, projectContext) and the
- * service builds `buildSetupPrompt` / `buildDoWorkPrompt` on demand
- * inside the phase bodies. Fixes the Phase 4d boundary where callers
- * had to pre-build prompts as strings.
+ * Durable coding-session input. The worktree refinement session has already
+ * ended before this is invoked, so confirmation can survive a server restart.
  */
-export interface RunSessionInput {
-  /** Dispatch node metadata for this run. */
-  node: ExecutionDispatchNodePreview;
-  /** Work item record for prompt context. */
+export interface RunCodingSessionInput {
   workItem: WorkItemRecord;
-  /** Worktree path to the scratchpad file (result of `ScratchpadService.writeScratchpad`). */
   scratchpadPath: string;
-  /** True when the work item reached `ready` state via an approved plan. */
-  hasApprovedPlan: boolean;
-  /** False disables the disambiguation gate for both phase paths. */
-  disambiguate: boolean;
-  /** GitHub issue body text for the setup phase prompt. `null` when unavailable. */
-  issueBody: string | null;
-  /** AGENTS.md / CLAUDE.md project context for both phase prompts. `null` when unavailable. */
   projectContext: string | null;
+  /** Prompt that records user responses into the scratchpad before coding. */
+  resolutionPrompt?: string | null;
 }
 
 export interface RunSessionResult {
@@ -60,14 +45,13 @@ export interface RunSessionResult {
 
 /**
  * Phase 4d of the cqrs refactor (#233): owns the pi-coding-agent
- * session lifecycle, the disambiguation gate, the activity-log push
+ * coding-session lifecycle, the activity-log push
  * helper, the session-event translator, the follow-up turn handler,
  * and (after Tasks 2+3 land) the setup and do-work phase bodies.
  *
- * This service is the single owner of `activeSessions` +
- * `disambiguationGates`. `ExecutionService.executeRun` calls into
- * this service via the helper methods below and never touches either
- * map directly.
+ * This service is the single owner of active agent sessions. Human approval
+ * is deliberately not represented by an in-memory promise; the durable run
+ * record is the handoff between refinement and coding.
  *
  * Injected dependencies:
  *   - RunStore        — run record persistence, activity log push, event emit
@@ -84,8 +68,6 @@ export class RunInteractionService {
   private readonly logger = new Logger(RunInteractionService.name);
   /** Active agent sessions keyed by run_id — kept alive while run is active */
   private readonly activeSessions = new Map<string, AgentSession>();
-  /** Disambiguation gate resolvers — calling the stored function unblocks the coding phase */
-  private readonly disambiguationGates = new Map<string, { resolve: (additionalContext?: string) => void }>();
 
   constructor(
     @Inject(RunStore) private readonly runStore: RunStore,
@@ -137,64 +119,30 @@ export class RunInteractionService {
     return this.activeSessions.get(runId);
   }
 
-  /**
-   * Phase 4d (#233): wraps the inline gate-await Promise pattern that
-   * executeRun uses at the setup-phase approval boundary. Registers a
-   * resolver in `disambiguationGates`; `resolveDisambiguation` below
-   * fires it. Caller awaits the returned Promise.
-   */
-  awaitDisambiguationGate(runId: string): Promise<string | undefined> {
-    return new Promise<string | undefined>((resolve) => {
-      this.disambiguationGates.set(runId, { resolve });
-    });
-  }
-
-  clearDisambiguationGate(runId: string): void {
-    this.disambiguationGates.delete(runId);
-  }
-
-  // ─── Session top-level lifecycle (runSession) ─────────────────────
-
-  /**
-   * Phase 4d (#233): owns the full agent session lifecycle for a
-   * single execution run. Creates the session, registers it, wires
-   * the event subscription, drives both phase bodies (setup + doWork),
-   * and disposes everything in a single try/finally — matching the
-   * shape that used to live inline in `ExecutionService.executeRun`.
-   *
-   * `ExecutionService.executeRun` builds the scratchpad, gathers
-   * context, builds the two prompts, then calls this method once and
-   * handles the post-session completion state (changed files,
-   * actual_files sync, final status write, outputs artifact).
-   *
-   * Throws on any agent-session error; the orchestrator catches in a
-   * top-level try/catch and writes the failure state.
-   */
-  async runSession(
+  /** Run the confirmed coding phase in a fresh, independently recoverable session. */
+  async runCodingSession(
     initialRun: ExecutionRunRecord,
-    input: RunSessionInput,
+    input: RunCodingSessionInput,
   ): Promise<RunSessionResult> {
     const runId = initialRun.run_id;
-
-    // --- Create agent session ---
     const { session, modelFallbackMessage } = await this.createSession(initialRun);
-
     if (modelFallbackMessage) {
       this.logger.warn(modelFallbackMessage);
     }
 
     let run = this.runStore.updateRun(runId, {
       status: "running",
-      started_at: this.now(),
+      phase: "coding",
+      started_at: initialRun.started_at ?? this.now(),
       session_id: session.sessionId,
-      progress_message: "Agent session started — setup phase.",
+      progress_message: "Execution confirmed — coding phase started.",
     });
     if (!run) {
       session.dispose();
-      throw new Error(`runSession: run record disappeared for ${runId}`);
+      throw new Error(`runCodingSession: run record disappeared for ${runId}`);
     }
-    this.pushActivity(run.run_id, "status_change", "Agent session started.");
-    this.runStore.appendEvent(run, { type: "session_started", session_id: session.sessionId });
+    this.pushActivity(run.run_id, "status_change", "Coding agent session started.");
+    this.runStore.appendEvent(run, { type: "coding_session_started", session_id: session.sessionId });
     this.runStore.emitRun("execution_status", run);
 
     this.activeSessions.set(run.run_id, session);
@@ -202,18 +150,23 @@ export class RunInteractionService {
       this.handleSessionEvent(runId, event);
     });
 
+    let assistantText: string | null = null;
     try {
-      run = await this.runSetupPhase(session, run, input);
-      run = await this.runDoWorkPhase(session, run, input);
+      if (input.resolutionPrompt) {
+        await session.prompt(input.resolutionPrompt);
+        this.scratchpadService.syncScratchpadToCanonical(run);
+        this.scratchpadService.emitChecklistIfChanged(run);
+      }
+      await session.prompt(this.buildDoWorkPrompt(run, undefined, input.workItem, input.projectContext));
+      this.scratchpadService.syncScratchpadToCanonical(run);
+      this.scratchpadService.emitChecklistIfChanged(run);
+      assistantText = session.getLastAssistantText()?.trim() || null;
     } finally {
       unsubscribe();
-      this.disambiguationGates.delete(run.run_id);
       this.activeSessions.delete(run.run_id);
       session.dispose();
     }
 
-    // --- Post-phase completion (session still holds the final text) ---
-    const assistantText = session.getLastAssistantText()?.trim() || null;
     const reasoningSummary = assistantText ? this.extractReasoningSummary(assistantText) : null;
     if (reasoningSummary) {
       this.pushActivity(run.run_id, "reasoning", reasoningSummary);
@@ -222,269 +175,7 @@ export class RunInteractionService {
     return { assistantText, reasoningSummary };
   }
 
-  /**
-   * Phase 4d (#233): setup phase body lifted from `executeRun`.
-   *
-   * Two paths: `hasApprovedPlan` skips the setup agent turn and only
-   * disambiguates if the approved scratchpad has open clarifications
-   * or blockers. The other path runs a setup-phase agent turn,
-   * syncs the scratchpad to canonical, and waits at the approval
-   * gate for the user to review the plan.
-   *
-   * Returns the updated run record so the caller can chain into
-   * `runDoWorkPhase` without re-fetching.
-   */
-  private async runSetupPhase(
-    session: AgentSession,
-    initialRun: ExecutionRunRecord,
-    input: RunSessionInput,
-  ): Promise<ExecutionRunRecord> {
-    const runId = initialRun.run_id;
-    const scratchpadName = `SCRATCHPAD_${workItemSlug(initialRun.work_item_id)}.md`;
-    const shouldRunSetupPhase = input.disambiguate && !input.hasApprovedPlan;
-    let run = initialRun;
-
-    if (input.hasApprovedPlan) {
-      this.pushActivity(
-        runId,
-        "status_change",
-        "Approved plan loaded from canonical — skipping setup phase.",
-      );
-      this.runStore.appendEvent(run, { type: "setup_phase_skipped" });
-
-      // studio-170: if the approved scratchpad still has open
-      // clarifications or blockers, trigger the existing
-      // disambiguation gate before entering the coding phase so the
-      // user can review and resolve them. Honors the `disambiguate`
-      // opt-out flag the same way `shouldRunSetupPhase` does.
-      if (input.disambiguate) {
-        let openItems: { questions: string[]; blockers: string[] } = {
-          questions: [],
-          blockers: [],
-        };
-        try {
-          const scratchpadContent = readFileSync(input.scratchpadPath, "utf8");
-          openItems = this.scratchpadService.parseScratchpadOpenItems(scratchpadContent);
-        } catch (error) {
-          this.logger.warn(
-            `runSetupPhase: failed to read approved scratchpad at ${input.scratchpadPath} ` +
-              `for disambiguation parse: ${this.getErrorMessage(error)}`,
-          );
-        }
-
-        const totalOpen = openItems.questions.length + openItems.blockers.length;
-        if (totalOpen > 0) {
-          const qLabel = `${openItems.questions.length} clarification${openItems.questions.length === 1 ? "" : "s"}`;
-          const bLabel = `${openItems.blockers.length} blocker${openItems.blockers.length === 1 ? "" : "s"}`;
-          const progressSummary = `${qLabel} and ${bLabel} open in approved plan — awaiting review.`;
-
-          this.pushActivity(
-            runId,
-            "info",
-            `Approved plan has open items (${qLabel}, ${bLabel}) — pausing for user review before coding.`,
-          );
-          this.runStore.appendEvent(run, { type: "setup_phase_started" });
-
-          run = this.runStore.updateRun(runId, {
-            status: "disambiguating",
-            progress_message: progressSummary,
-          })!;
-          this.runStore.appendEvent(run, { type: "setup_phase_complete" });
-          this.runStore.emitRun("execution_status", run);
-
-          // Block until the user resolves via
-          // POST /api/execution/resolve-disambiguation.
-          const additionalContext = await this.awaitDisambiguationGate(runId);
-          this.runStore.appendEvent(run, { type: "setup_approved" });
-
-          if (additionalContext) {
-            // The session has no prior orientation in the
-            // approved-plan codepath, so include a minimal prompt
-            // with the scratchpad filename and work item id.
-            await session.prompt(
-              `The approved plan for ${run.work_item_id} (${run.work_item_name}) had open items that the user just resolved with this additional context:\n\n${additionalContext}\n\nRead ${scratchpadName} in the current worktree, update the "### Clarifications Needed" and "## Blockers" sections to reflect the resolution, and make any other edits implied by the user's feedback. Then confirm you're ready to start coding.`,
-            );
-            this.scratchpadService.syncScratchpadToCanonical(run);
-            this.scratchpadService.emitChecklistIfChanged(run);
-          }
-
-          run = this.runStore.updateRun(runId, {
-            status: "running",
-            progress_message: "Plan approved — coding phase started.",
-          })!;
-          this.pushActivity(runId, "status_change", "Plan approved. Coding phase started.");
-          this.runStore.emitRun("execution_status", run);
-        }
-      }
-    }
-
-    if (shouldRunSetupPhase) {
-      run = this.runStore.updateRun(runId, {
-        status: "running",
-        progress_message: "Setup phase — agent is analyzing the issue and planning implementation.",
-      })!;
-      this.pushActivity(runId, "status_change", "Setup phase started — agent analyzing issue and codebase.");
-      this.runStore.appendEvent(run, { type: "setup_phase_started" });
-      this.runStore.emitRun("execution_status", run);
-
-      const setupPrompt = this.buildSetupPrompt(
-        run,
-        input.node,
-        input.workItem,
-        input.issueBody,
-        input.projectContext,
-      );
-      await session.prompt(setupPrompt);
-
-      // Sync the agent's scratchpad edits back to the canonical plan file
-      // (end of setup phase, before the approval gate).
-      this.scratchpadService.syncScratchpadToCanonical(run);
-
-      // Setup prompt finished — now switch to disambiguating so the UI shows the approval gate
-      this.scratchpadService.emitChecklistIfChanged(run);
-      run = this.runStore.updateRun(runId, {
-        status: "disambiguating",
-        progress_message: "Setup complete. Review the implementation plan and approve to start coding.",
-      })!;
-      this.pushActivity(runId, "info", "Setup complete — implementation plan ready for review.");
-      this.runStore.appendEvent(run, { type: "setup_phase_complete" });
-      this.runStore.emitRun("execution_status", run);
-
-      // Block until the user approves — gate is now ready
-      const additionalContext = await this.awaitDisambiguationGate(runId);
-      this.runStore.appendEvent(run, { type: "setup_approved" });
-
-      if (additionalContext) {
-        await session.prompt(
-          `The user provided feedback on your plan:\n\n${additionalContext}\n\nUpdate the ${scratchpadName} implementation plan accordingly, then confirm you're ready to start coding.`
-        );
-        this.scratchpadService.syncScratchpadToCanonical(run);
-        this.scratchpadService.emitChecklistIfChanged(run);
-      }
-
-      run = this.runStore.updateRun(runId, {
-        status: "running",
-        progress_message: "Plan approved — coding phase started.",
-      })!;
-      this.pushActivity(runId, "status_change", "Plan approved. Coding phase started.");
-      this.runStore.emitRun("execution_status", run);
-    }
-
-    return run;
-  }
-
-  /**
-   * Phase 4d (#233): do-work phase body lifted from `executeRun`.
-   * Drives the coding-phase agent turn, syncs scratchpad to canonical,
-   * and emits the final checklist snapshot. No disambiguation at this
-   * boundary — the gate only fires during the setup phase.
-   */
-  private async runDoWorkPhase(
-    session: AgentSession,
-    run: ExecutionRunRecord,
-    input: RunSessionInput,
-  ): Promise<ExecutionRunRecord> {
-    const doWorkPrompt = this.buildDoWorkPrompt(
-      run,
-      input.node,
-      input.workItem,
-      input.projectContext,
-    );
-    await session.prompt(doWorkPrompt);
-
-    // Sync the agent's final scratchpad state back to canonical
-    // (end of do-work phase).
-    this.scratchpadService.syncScratchpadToCanonical(run);
-    this.scratchpadService.emitChecklistIfChanged(run);
-
-    return run;
-  }
-
   // ─── Prompt builders (Phase 4e) ───────────────────────────────────
-
-  /**
-   * Phase 4e (#234): setup phase prompt builder lifted from
-   * ExecutionService. Belongs on the agent lifecycle owner — this
-   * service is the only caller and the prompt shape is an
-   * implementation detail of HOW to talk to the agent.
-   */
-  buildSetupPrompt(
-    run: ExecutionRunRecord,
-    node: ExecutionDispatchNodePreview,
-    workItem: WorkItemRecord,
-    issueBody: string | null,
-    projectContext: string | null,
-  ): string {
-    const scratchpadName = `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`;
-    const owned = node.files_owned.length ? node.files_owned.map((p) => `- ${p}`).join("\n") : "- (none predicted)";
-    const shared = node.files_shared.length
-      ? node.files_shared.map((f) => `- ${f.path} (${f.assessment}/${f.confidence})`).join("\n")
-      : "- (none)";
-    const forbidden = node.files_forbidden.length ? node.files_forbidden.map((p) => `- ${p}`).join("\n") : "- (none)";
-
-    const lines = [
-      `# Setup Phase for ${run.work_item_id}: ${run.work_item_name}`,
-      "",
-      "You are an execution agent running inside a dedicated git worktree created by Escapement Studio.",
-      "This is the SETUP PHASE. Do NOT write any code yet.",
-      "",
-      "## Your task",
-      "",
-      "1. Read and understand the issue scope below",
-      "2. Read relevant source files in the codebase to understand the implementation surface",
-      `3. Update ${scratchpadName} with a detailed implementation plan:`,
-      "   - Fill in the Summary section with your understanding",
-      "   - Fill in Acceptance Criteria from the issue",
-      "   - Replace the placeholder Implementation Plan checklist with specific, concrete tasks",
-      "   - Each task should name the files it will touch",
-      "   - Fill in the Affected Files section",
-      "4. Surface any questions or concerns in the Questions / Concerns section",
-      "5. If everything is clear, say so explicitly",
-      "",
-      "## Issue context",
-      "",
-      `Repo: ${workItem.repo ?? "(not set)"}`,
-      `Issue URL: ${workItem.issue_url ?? "(not set)"}`,
-      `Scope hint: ${workItem.scope_hint ?? "(not set)"}`,
-      `Branch: ${node.branch}`,
-      `Base ref: ${node.default_base_ref}`,
-    ];
-
-    if (issueBody) {
-      lines.push("", "### Issue body", "", issueBody);
-    } else {
-      lines.push("", "(Issue body not available — use `gh issue view` or read from the issue URL if needed)");
-    }
-
-    lines.push(
-      "",
-      "## File ownership",
-      "",
-      "Files owned:",
-      owned,
-      "",
-      "Files shared:",
-      shared,
-      "",
-      "Files forbidden (you may READ these for context, but do NOT modify them):",
-      forbidden,
-    );
-
-    if (projectContext) {
-      lines.push("", "## Project conventions (from AGENTS.md / CLAUDE.md)", "", projectContext);
-    }
-
-    lines.push(
-      "",
-      "## Important",
-      "",
-      "- Do NOT start coding. This is setup only.",
-      `- Update ${scratchpadName} with your detailed plan.`,
-      "- The user will review your plan before coding begins.",
-    );
-
-    return lines.join("\n");
-  }
 
   /**
    * Phase 4e (#234): do-work phase prompt builder lifted from
@@ -492,12 +183,12 @@ export class RunInteractionService {
    */
   buildDoWorkPrompt(
     run: ExecutionRunRecord,
-    node: ExecutionDispatchNodePreview,
+    node: ExecutionDispatchNodePreview | undefined,
     workItem: WorkItemRecord,
     projectContext: string | null,
   ): string {
-    // `node` and `workItem` + `projectContext` are accepted for symmetry with
-    // buildSetupPrompt and so future iterations of the prompt can reference
+    // `node` and `workItem` + `projectContext` are accepted so future
+    // iterations of the prompt can reference
     // scope/file ownership without changing the signature. The current body
     // only needs `run`.
     void node;
@@ -689,42 +380,6 @@ export class RunInteractionService {
     return summary.slice(0, 297) + "...";
   }
 
-  // ─── Disambiguation gate resolution ───────────────────────────────
-
-  async resolveDisambiguation(input: ResolveDisambiguationDto): Promise<ResolveDisambiguationResult> {
-    const runId = input.run_id?.trim();
-    if (!runId) {
-      throw new BadRequestException("run_id is required");
-    }
-
-    const run = this.runStore.getRun(runId);
-    if (!run) {
-      throw new BadRequestException(`Unknown execution run: ${runId}`);
-    }
-
-    if (run.status !== "disambiguating") {
-      return {
-        resolved: false,
-        run_id: runId,
-        error: `Run is in "${run.status}" status; only runs in "disambiguating" status can be resolved.`,
-      };
-    }
-
-    const gate = this.disambiguationGates.get(runId);
-    if (!gate) {
-      return {
-        resolved: false,
-        run_id: runId,
-        error: "No active disambiguation gate found for this run.",
-      };
-    }
-
-    gate.resolve(input.additional_context?.trim() || undefined);
-    this.disambiguationGates.delete(runId);
-    this.pushActivity(runId, "status_change", "Disambiguation resolved — proceeding to coding.");
-    return { resolved: true, run_id: runId };
-  }
-
   // ─── Follow-up turn handler ───────────────────────────────────────
 
   async sendFollowUp(input: FollowUpMessageDto): Promise<FollowUpMessageResult> {
@@ -748,7 +403,7 @@ export class RunInteractionService {
     const session = this.activeSessions.get(runId);
 
     // Active session: steer or follow-up into the live run
-    if (session && (run.status === "running" || run.status === "preparing" || run.status === "disambiguating")) {
+    if (session && (run.status === "running" || run.status === "preparing")) {
       const delivery = input.delivery ?? "followUp";
       try {
         if (delivery === "steer") {
@@ -771,6 +426,7 @@ export class RunInteractionService {
         this.pushActivity(runId, "follow_up", `Starting follow-up turn: ${message.length > 120 ? message.slice(0, 117) + "..." : message}`);
         const updatedRun = this.runStore.updateRun(runId, {
           status: "running",
+          phase: "coding",
           progress_message: "Follow-up turn running.",
         });
         if (!updatedRun) {
@@ -830,7 +486,7 @@ export class RunInteractionService {
       this.pushActivity(run.run_id, "agent_message", assistantText);
     }
 
-    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
+    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path, run.base_ref);
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
     const outcome = classifyExecutionTerminalOutcome({
       phase: "follow_up",
@@ -841,6 +497,7 @@ export class RunInteractionService {
     this.pushActivity(run.run_id, "follow_up", outcome.activityMessage);
     const nextRun = this.runStore.updateRun(run.run_id, {
       status: outcome.status,
+      phase: outcome.status === "completed" ? "completed" : "failed",
       completed_at: this.now(),
       progress_message: outcome.progressMessage,
       result_summary: outcome.resultSummary,
@@ -858,7 +515,7 @@ export class RunInteractionService {
       });
       if (outcome.dispatchRunError) {
         const workItem = this.workItemsService.get(run.work_item_id);
-        if (workItem.state === "in_progress") {
+        if (this.isInProgressState(workItem.state)) {
           await this.hsmService.dispatch(run.work_item_id, {
             type: "run.error",
             run_id: run.run_id,
@@ -897,5 +554,10 @@ export class RunInteractionService {
 
   private getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  private isInProgressState(state: WorkItemRecord["state"]): boolean {
+    const leaf = state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+    return leaf === "in_progress";
   }
 }

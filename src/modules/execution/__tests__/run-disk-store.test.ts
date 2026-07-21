@@ -195,7 +195,7 @@ describe("detectAndMarkOrphans", () => {
     }
   });
 
-  it.each<ExecutionRunStatus>(["queued", "preparing", "running", "disambiguating"])(
+  it.each<ExecutionRunStatus>(["queued", "preparing", "running"])(
     "rewrites %s to error with an orphan activity_log entry",
     (status) => {
       writeRunStatus(runsDir, makeRun(`run_${status}`, { status }));
@@ -212,6 +212,31 @@ describe("detectAndMarkOrphans", () => {
       expect(raw.errors?.some((e) => e.code === "orphaned_by_restart")).toBe(true);
     },
   );
+
+  it("preserves the durable execution-confirmation gate across a restart", () => {
+    writeRunStatus(runsDir, makeRun("run_confirmation", {
+      status: "disambiguating",
+      phase: "awaiting_confirmation",
+      refinement: {
+        status: "awaiting_confirmation",
+        items: [{ id: "question-1", kind: "question", prompt: "Which API should be used?", response: null }],
+        started_at: "2026-04-10T00:00:00.000Z",
+        refined_at: "2026-04-10T00:01:00.000Z",
+      },
+    }));
+
+    expect(detectAndMarkOrphans(runsDir)).toEqual([]);
+
+    const [rehydrated] = loadRunRecordsFromDisk(runsDir);
+    expect(rehydrated).toMatchObject({
+      status: "disambiguating",
+      phase: "awaiting_confirmation",
+      refinement: {
+        status: "awaiting_confirmation",
+        items: [{ id: "question-1", prompt: "Which API should be used?" }],
+      },
+    });
+  });
 
   it("is idempotent — a second call is a no-op", () => {
     writeRunStatus(runsDir, makeRun("run_r", { status: "running" }));

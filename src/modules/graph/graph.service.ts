@@ -19,9 +19,9 @@ import { WorkItemsService } from "./work-items.service.js";
  * Studio-local frontier query.
  *
  * The upstream `queryFrontier` in `escapement/src/core/planner.ts` hard-codes
- * `state = 'planned'`. Under ADR 014, Studio promotes `ready` to a launchable
- * state alongside `planned` (see `docs/adr/014-plans-runs-state-model.md`
- * transition table — `ready → in_progress` is a valid launch transition).
+ * `state = 'planned'`. Under ADR 014, Studio needs both plan candidates and
+ * approved items in its graph planning frontier. Execution applies its own
+ * stricter `ready` gate when it builds the Execute queue.
  *
  * This helper mirrors the upstream SQL exactly except it widens the state
  * filter to `state IN ('planned', 'ready')`. That intentionally keeps

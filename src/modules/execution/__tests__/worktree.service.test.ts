@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -333,13 +334,35 @@ describe("WorktreeService", () => {
   });
 
   describe("listChangedFiles", () => {
-    it("parses git status --short output into paths", () => {
-      // This test hits real execFileSync because listChangedFiles
-      // bypasses runCommand — but we can just verify the parse step
-      // by seeding a real git repo (tiny) and running against it.
-      // Skip for pragmatism: covered by parse-changed-file.test.ts.
-      const service = makeService(tmpRoot);
-      expect(typeof service.listChangedFiles).toBe("function");
+    it("unions clean committed branch changes with uncommitted files", () => {
+      const repo = join(tmpRoot, "repo");
+      mkdirSync(repo);
+      const git = (args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+      git(["init", "-b", "main"]);
+      git(["config", "user.name", "Escapement Test"]);
+      git(["config", "user.email", "test@escapement.local"]);
+      writeFileSync(join(repo, "existing.ts"), "export const value = 1;\n", "utf8");
+      git(["add", "existing.ts"]);
+      git(["commit", "-m", "base"]);
+      git(["switch", "-c", "feature"]);
+      writeFileSync(join(repo, "existing.ts"), "export const value = 2;\n", "utf8");
+      writeFileSync(join(repo, "committed.ts"), "export const committed = true;\n", "utf8");
+      git(["add", "existing.ts", "committed.ts"]);
+      git(["commit", "-m", "feature work"]);
+
+      // A clean worktree must still report committed branch changes.
+      const service = new WorktreeService();
+      expect(service.listChangedFiles(repo, "main")).toEqual([
+        "committed.ts",
+        "existing.ts",
+      ]);
+
+      writeFileSync(join(repo, "uncommitted.ts"), "export const draft = true;\n", "utf8");
+      expect(service.listChangedFiles(repo, "main")).toEqual([
+        "committed.ts",
+        "existing.ts",
+        "uncommitted.ts",
+      ]);
     });
   });
 

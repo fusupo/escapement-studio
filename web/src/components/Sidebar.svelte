@@ -1,5 +1,6 @@
 <script>
   import { getPlan } from "../lib/api.js";
+  import { selectPullRequest } from "../lib/pull-request.js";
 
   // ADR 014 step 8 — work item states where a plan should already exist on
   // disk. For planned items the plan may not exist yet (GET 404). Terminal
@@ -47,6 +48,7 @@
   export let onCreateEdge = () => {};
   export let onDeleteEdge = () => {};
   export let onCloseIssue = () => {};
+  export let onArchiveWorkItem = () => {};
   export let onCancelWorkItem = () => {};
   export let onDeleteWorkItem = () => {};
   export let onLaunchExecution = () => {};
@@ -54,6 +56,7 @@
   export let onApprovePlan = () => {};
   export let onReviewPlan = () => {};
   export let closingIssue = false;
+  export let archivingWorkItem = false;
   export let cancelingWorkItem = false;
   export let deletingWorkItem = false;
   export let preparingPlan = false;
@@ -94,17 +97,15 @@
   // reconciled work-item snapshot rather than triggering live `gh` reads
   // every time the user selects a node.
   $: issueDetails = readObject(selectedItem?.meta?.github_issue);
-  $: linkedPrDetails = readObject(
-    selectedItem?.pull_request
-      ?? selectedItem?.meta?.pull_request
-      ?? selectedItem?.meta?.studio_post_merge_sync?.pull_request,
-  );
+  $: linkedPrDetails = selectPullRequest(selectedItem);
   $: canCloseIssue = Boolean(
     selectedItem?.repo
       && selectedItem?.issue_number
       && leafState(selectedItem?.state) === "merged_pr"
       && issueDetails?.state?.toLowerCase() !== "closed",
   );
+  $: canArchiveWorkItem = leafState(selectedItem?.state) === "done"
+    && !selectedItem?.archive_path;
   $: canCancelWorkItem = selectedItem?.kind === "issue"
     && !!selectedItem?.repo
     && !!selectedItem?.issue_number
@@ -310,6 +311,12 @@
                 {closingIssue ? 'Closing…' : 'Close issue'}
               </button>
             {/if}
+            {#if canArchiveWorkItem}
+              <button class="small" on:click={() => onArchiveWorkItem(selectedItem)} disabled={archivingWorkItem}>
+                {archivingWorkItem ? 'Archiving…' : 'Archive now'}
+              </button>
+              <p class="muted">Archive the completed plan and run artifacts. The GitHub issue is already closed and will not be changed.</p>
+            {/if}
             {#if canCancelWorkItem}
               <button class="small" on:click={() => onCancelWorkItem(selectedItem)} disabled={cancelingWorkItem}>
                 {cancelingWorkItem ? 'Cancelling…' : 'Cancel work item'}
@@ -328,11 +335,23 @@
             {#if linkedPrDetails?.url}
               <a href={linkedPrDetails.url} target="_blank" rel="noreferrer">
                 PR #{linkedPrDetails.number}{linkedPrDetails.is_draft ? ' (draft)' : ''}
+                {#if linkedPrDetails.merged_at}
+                  <span class="status-pill">merged</span>
+                {:else if linkedPrDetails.state?.toUpperCase() === 'OPEN'}
+                  <span class="status-pill">open</span>
+                {:else}
+                  <span class="status-pill">{linkedPrDetails.state?.toLowerCase()}</span>
+                {/if}
               </a>
             {/if}
             {#if canCloseIssue}
               <button class="danger small" on:click={() => onCloseIssue(selectedItem)} disabled={closingIssue}>
                 {closingIssue ? 'Closing…' : 'Close issue'}
+              </button>
+            {/if}
+            {#if canArchiveWorkItem}
+              <button class="small" on:click={() => onArchiveWorkItem(selectedItem)} disabled={archivingWorkItem}>
+                {archivingWorkItem ? 'Archiving…' : 'Archive now'}
               </button>
             {/if}
           {/if}

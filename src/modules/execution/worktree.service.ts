@@ -117,7 +117,11 @@ export class WorktreeService {
     }
     onStatus?.("status_change", "Installing dependencies in worktree...");
     try {
-      execFileSync("npm", ["ci", "--ignore-scripts"], {
+      // The worktree is created from the locally trusted base ref before the
+      // coding agent can modify it. Allow dependency lifecycle scripts here:
+      // native dependencies such as better-sqlite3 otherwise install without
+      // their bindings and make the run's quality checks fail spuriously.
+      execFileSync("npm", ["ci"], {
         cwd: worktreePath,
         encoding: "utf8",
         timeout: 120000,
@@ -129,7 +133,7 @@ export class WorktreeService {
       const message = npmErr instanceof Error ? npmErr.message : String(npmErr);
       onStatus?.("info", `npm ci failed, trying npm install: ${message.slice(0, 200)}`);
       try {
-        execFileSync("npm", ["install", "--ignore-scripts"], {
+        execFileSync("npm", ["install"], {
           cwd: worktreePath,
           encoding: "utf8",
           timeout: 120000,
@@ -266,12 +270,39 @@ export class WorktreeService {
 
   // ─── Worktree queries ─────────────────────────────────────────────
 
-  listChangedFiles(worktreePath: string): string[] {
-    const output = execFileSync("git", ["status", "--short"], { cwd: worktreePath, encoding: "utf8" });
-    return output
+  /**
+   * Return the complete file set changed by an execution branch.
+   *
+   * Agents may commit their work before Studio completes the run. `git status`
+   * alone therefore produces a false empty result for a clean worktree even
+   * though the branch is ahead of its base. Include the merge-base-relative
+   * committed diff whenever a base ref is available, then union any staged,
+   * unstaged, or untracked paths still present in the worktree.
+   */
+  listChangedFiles(worktreePath: string, baseRef?: string): string[] {
+    const statusOutput = this.runGitIn(worktreePath, ["status", "--short"]);
+    const workingTreeFiles = statusOutput
       .split("\n")
       .map((line) => parseChangedFilePath(line))
       .filter((path): path is string => Boolean(path));
+
+    const normalizedBaseRef = baseRef?.trim();
+    if (!normalizedBaseRef) {
+      return [...new Set(workingTreeFiles)].sort();
+    }
+
+    const committedOutput = this.runGitIn(worktreePath, [
+      "diff",
+      "--name-only",
+      "--find-renames",
+      `${normalizedBaseRef}...HEAD`,
+    ]);
+    const committedFiles = committedOutput
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((path) => path.length > 0);
+
+    return [...new Set([...committedFiles, ...workingTreeFiles])].sort();
   }
 
   countCommitsAhead(worktreePath: string, baseRef: string, branch: string): number {

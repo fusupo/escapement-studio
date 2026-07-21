@@ -10,7 +10,7 @@ function makeWorkItem(overrides: Partial<WorkItemRecord> = {}): WorkItemRecord {
     id: "studio-141",
     name: "Gate launch actions to frontier nodes",
     kind: "issue",
-    state: "planned",
+    state: "ready",
     repo: "fusupo/escapement-studio",
     issue_number: 141,
     issue_url: "https://github.com/fusupo/escapement-studio/issues/141",
@@ -334,7 +334,20 @@ describe("launch eligibility", () => {
     expect(node.launch_unavailable_reason).toBeNull();
   });
 
-  it("marks planned work items in progress before launching execution", async () => {
+  it("omits unapproved planned items from the Execute queue", () => {
+    const workItem = makeWorkItem({ state: "planned" });
+    const service = makeService({
+      workItems: [workItem],
+      plan: makePlan([makePlanNode(workItem.id, workItem.name, workItem.branch ?? "studio-141-branch")]),
+    });
+
+    const preview = service.getPreview();
+
+    expect(preview.groups).toEqual([]);
+    expect(preview.summary.dispatchable_now).toBe(0);
+  });
+
+  it("marks approved work items in progress before launching execution", async () => {
     const workItem = makeWorkItem();
     const harness = makeLaunchHarness(workItem);
 
@@ -390,7 +403,7 @@ describe("launch eligibility", () => {
     expect(result.accepted).toBe(false);
     expect(result.run.status).toBe("blocked");
     expect(harness.updateCalls).toEqual([]);
-    expect(harness.getCurrentWorkItem().state).toBe("planned");
+    expect(harness.getCurrentWorkItem().state).toBe("ready");
     expect(harness.executionOrder).toEqual([]);
   });
 
@@ -460,8 +473,9 @@ describe("launch eligibility", () => {
 
   // ADR 014 step 5: the `not_ready` safety check gates launch on work item state.
   describe("launchable_state safety check (ADR 014 step 5)", () => {
-    const launchableStates: WorkItemState[] = ["ready", "planned"];
+    const launchableStates: WorkItemState[] = ["ready"];
     const nonLaunchableStates: WorkItemState[] = [
+      "planned",
       "drafting",
       "in_progress",
       "open_pr",

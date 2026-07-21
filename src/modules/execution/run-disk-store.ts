@@ -4,7 +4,9 @@ import { runsRoot } from "../../lib/context-layout.js";
 import type {
   ActivityLogEntry,
   ExecutionPullRequestRecord,
+  ExecutionRefinementState,
   ExecutionRunRecord,
+  ExecutionRunPhase,
   ExecutionRunStatus,
   ExecutionSafetyCheck,
   ExecutionTerminalOutcome,
@@ -38,7 +40,6 @@ const VALID_RUN_STATUSES: ReadonlySet<ExecutionRunStatus> = new Set<ExecutionRun
 const NON_TERMINAL_STATUSES: ReadonlySet<ExecutionRunStatus> = new Set<ExecutionRunStatus>([
   "queued",
   "preparing",
-  "disambiguating",
   "running",
 ]);
 
@@ -149,10 +150,12 @@ export interface OrphanDetectionResult {
 
 /**
  * Scan every run directory under `runsDir` for runs left in a
- * non-terminal status (`queued`/`preparing`/`disambiguating`/`running`)
+ * active-agent status (`queued`/`preparing`/`running`)
  * and rewrite them to `error` with an explanatory
  * `activity_log` entry. Idempotent — calling twice is a no-op after the
- * first pass.
+ * first pass. `disambiguating` is deliberately excluded: refinement sessions
+ * end before that durable human gate, so those runs are safe to rehydrate and
+ * confirm after a restart.
  *
  * The rewrite uses a write-then-rename flow (`status.json.tmp` → atomic
  * rename) so a crash mid-rewrite leaves the original status.json intact.
@@ -229,13 +232,14 @@ export function detectAndMarkOrphans(
       kind: "status_change",
       message: `orphaned by server restart at ${timestamp}`,
       detail: `Run was in status "${previousStatus}" when the Studio server restarted. ` +
-        `The in-memory AgentSession and disambiguation gate are gone; the run cannot be resumed. ` +
+        `The in-memory AgentSession is gone; the run cannot be resumed. ` +
         `Rewriting to "error" so the reconciler can surface it.`,
     };
 
     const rewritten: ExecutionRunRecord = {
       ...record,
       status: "error",
+      phase: "failed",
       updated_at: timestamp,
       completed_at: record.completed_at ?? timestamp,
       progress_message: `Orphaned by server restart at ${timestamp} (was "${previousStatus}").`,
@@ -306,12 +310,15 @@ export function coerceRecord(raw: unknown): ExecutionRunRecord | null {
     : undefined;
   const pullRequest = coercePullRequestRecord(record.pull_request);
   const terminalOutcome = coerceTerminalOutcome(record.terminal_outcome);
+  const phase = coerceRunPhase(record.phase);
+  const refinement = coerceRefinement(record.refinement);
 
   return {
     ...record,
     run_type: "execution",
     work_item_name: (record.work_item_name as string) ?? record.work_item_id as string,
     status: record.status as ExecutionRunStatus,
+    phase,
     created_at: (record.created_at as string) ?? (record.updated_at as string),
     base_ref: (record.base_ref as string) ?? "",
     worktree_path: (record.worktree_path as string) ?? "",
@@ -325,12 +332,68 @@ export function coerceRecord(raw: unknown): ExecutionRunRecord | null {
     progress_message: typeof record.progress_message === "string" ? record.progress_message : undefined,
     result_summary: typeof record.result_summary === "string" ? record.result_summary : undefined,
     terminal_outcome: terminalOutcome,
+    refinement,
     activity_log: activityLog,
     safety_checks: safetyChecks,
     changed_files: changedFiles,
     pull_request: pullRequest,
     errors,
   } as ExecutionRunRecord;
+}
+
+function coerceRunPhase(raw: unknown): ExecutionRunPhase | undefined {
+  if (typeof raw !== "string") return undefined;
+  const phases: ExecutionRunPhase[] = [
+    "queued",
+    "preparing",
+    "refining_plan",
+    "awaiting_confirmation",
+    "coding",
+    "completed",
+    "failed",
+    "blocked",
+  ];
+  return phases.includes(raw as ExecutionRunPhase) ? raw as ExecutionRunPhase : undefined;
+}
+
+function coerceRefinement(raw: unknown): ExecutionRefinementState | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Record<string, unknown>;
+  if (
+    !["refining", "awaiting_confirmation", "confirmed"].includes(String(value.status))
+    || typeof value.started_at !== "string"
+    || !Array.isArray(value.items)
+  ) {
+    return undefined;
+  }
+  const items = value.items.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const item = candidate as Record<string, unknown>;
+    if (
+      typeof item.id !== "string"
+      || (item.kind !== "question" && item.kind !== "blocker")
+      || typeof item.prompt !== "string"
+    ) {
+      return [];
+    }
+    return [{
+      id: item.id,
+      kind: item.kind as "question" | "blocker",
+      prompt: item.prompt,
+      response: typeof item.response === "string" ? item.response : item.response === null ? null : undefined,
+    }];
+  });
+  return {
+    status: value.status as ExecutionRefinementState["status"],
+    items,
+    started_at: value.started_at,
+    refined_at: typeof value.refined_at === "string" ? value.refined_at : value.refined_at === null ? null : undefined,
+    confirmed_at: typeof value.confirmed_at === "string" ? value.confirmed_at : value.confirmed_at === null ? null : undefined,
+    additional_context: typeof value.additional_context === "string"
+      ? value.additional_context
+      : value.additional_context === null ? null : undefined,
+    confirmed_with_unresolved: value.confirmed_with_unresolved === true,
+  };
 }
 
 function coerceActivityLogEntry(raw: unknown): ActivityLogEntry | null {

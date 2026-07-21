@@ -1,5 +1,6 @@
 import * as d3 from "d3";
 import * as dagreD3 from "dagre-d3-es";
+import { selectPullRequest } from "./pull-request.js";
 
 const STATE_COLORS = {
   planned: "#58a6ff",
@@ -37,11 +38,7 @@ const PR_MERGED_RING_COLOR = "#238636";
 const PR_RING_COLOR = "#a371f7";
 
 function extractPullRequest(item) {
-  const pr =
-    item.pull_request ??
-    item.meta?.pull_request ??
-    item.meta?.studio_post_merge_sync?.pull_request ??
-    null;
+  const pr = selectPullRequest(item);
   if (!pr || !pr.number) return null;
   return pr;
 }

@@ -6,6 +6,7 @@ import { getConfig } from "../../config.js";
 import {
   readPlanMetadata,
   runDir,
+  workItemSlug,
   writePlanMetadata,
 } from "../../lib/context-layout.js";
 import { fetchIssueBody } from "../../lib/github-cli.js";
@@ -15,6 +16,7 @@ import { RunCompletedEvent } from "./events/run-completed.event.js";
 import { PullRequestService } from "./pull-request.service.js";
 import { classifyExecutionTerminalOutcome } from "./run-outcome.js";
 import { RunInteractionService } from "./run-interaction.service.js";
+import { RunRefinementService } from "./run-refinement.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
 import { WorkItemReconcilerService } from "./work-item-reconciler.service.js";
@@ -60,6 +62,7 @@ export class ExecutionService implements OnModuleInit {
     @Inject(WorkItemReconcilerService) private readonly workItemReconciler: WorkItemReconcilerService,
     @Inject(RunStore) private readonly runStore: RunStore,
     @Inject(RunInteractionService) private readonly runInteractionService: RunInteractionService,
+    @Inject(RunRefinementService) private readonly runRefinementService: RunRefinementService,
     @Inject(PullRequestService) private readonly pullRequestService: PullRequestService,
     @Inject(ScratchpadService) private readonly scratchpadService: ScratchpadService,
     @Inject(WorktreeService) private readonly worktreeService: WorktreeService,
@@ -71,10 +74,11 @@ export class ExecutionService implements OnModuleInit {
   }
 
   /**
-   * Issue #176: at startup, rewrite any runs left in a non-terminal
-   * status to `error` (orphaned by server restart), rehydrate
+   * Issue #176: at startup, rewrite runs that require a live agent session
+   * to `error` (orphaned by server restart), rehydrate
    * `recentRuns` from disk so completed runs survive a restart, and
    * run an initial reconcile pass to populate the derived view.
+   * Runs awaiting execution confirmation are deliberately rehydrated intact.
    *
    * This is a read-only-ish pass: the only disk mutation is the orphan
    * rewrite, which happens before the in-memory buffer is populated.
@@ -92,6 +96,7 @@ export class ExecutionService implements OnModuleInit {
 
     try {
       this.runStore.hydrateRecentRunsFromDisk();
+      this.repairCommittedFalseNoopRuns();
     } catch (error) {
       this.logger.warn(
         `Failed to hydrate recentRuns from disk: ${error instanceof Error ? error.message : String(error)}`,
@@ -164,9 +169,16 @@ export class ExecutionService implements OnModuleInit {
           launch_unavailable_code: fallbackChecks[0].code,
           launch_unavailable_reason: fallbackChecks[0].message,
         } satisfies ExecutionDispatchNodePreview;
-      }),
-    }));
+      // Planned nodes still belong to the graph planning frontier, but the
+      // Execute queue starts at the approved-plan boundary. Keep approved
+      // nodes with other safety failures visible as blocked diagnostics.
+      }).filter((node) => node.launch_unavailable_code !== "not_ready"),
+    })).filter((group) => group.nodes.length > 0);
 
+    const dispatchableNow = groups.reduce(
+      (count, group) => count + group.nodes.filter((node) => node.can_launch).length,
+      0,
+    );
     return {
       generated_at: plan.generated_at,
       assumptions: [
@@ -174,7 +186,10 @@ export class ExecutionService implements OnModuleInit {
         `Default working branches: ${JSON.stringify(listDefaultWorkingBranches())}. Fallback: ${getDefaultWorkingBranch(null)}.`,
       ],
       validation_policy: plan.validation_policy,
-      summary: plan.summary,
+      summary: {
+        ...plan.summary,
+        dispatchable_now: dispatchableNow,
+      },
       groups,
       blocked: plan.sequential,
     };
@@ -250,21 +265,7 @@ export class ExecutionService implements OnModuleInit {
         ? "Execution run queued. Work item state updated to in_progress."
         : "Execution run queued.",
     );
-    void this.executeRun(run, node, input.disambiguate !== false).catch((error) => {
-      this.runInteractionService.pushActivity(run.run_id, "error", `Execution failed: ${this.getErrorMessage(error)}`);
-      const failedRun = this.runStore.updateRun(run.run_id, {
-        status: "error",
-        completed_at: this.now(),
-        progress_message: `Execution failed: ${this.getErrorMessage(error)}`,
-        result_summary: `Execution failed: ${this.getErrorMessage(error)}`,
-        errors: [{ code: "execution_failed", message: this.getErrorMessage(error) }],
-      });
-      if (failedRun) {
-        this.runStore.writeSummary(failedRun);
-        this.runStore.appendEvent(failedRun, { type: "run_failed", error: this.getErrorMessage(error) });
-        this.runStore.emitRun("execution_result", failedRun);
-      }
-    });
+    void this.executeRun(run, node).catch((error) => this.failRun(run.run_id, error));
 
     return { accepted: true, run };
   }
@@ -310,7 +311,12 @@ export class ExecutionService implements OnModuleInit {
   cleanupAllStale(): CleanupWorktreeResult[] {
     const results: CleanupWorktreeResult[] = [];
     for (const run of this.runStore.listRecentRuns()) {
-      if (run.status !== "running" && run.status !== "preparing" && run.status !== "queued") {
+      if (
+        run.status !== "running"
+        && run.status !== "preparing"
+        && run.status !== "queued"
+        && run.status !== "disambiguating"
+      ) {
         const result = this.worktreeService.safeCleanupRun(run);
         if (result) {
           results.push(result);
@@ -321,7 +327,90 @@ export class ExecutionService implements OnModuleInit {
   }
 
   async resolveDisambiguation(input: ResolveDisambiguationDto): Promise<ResolveDisambiguationResult> {
-    return this.runInteractionService.resolveDisambiguation(input);
+    const runId = input.run_id?.trim();
+    if (!runId) {
+      throw new BadRequestException("run_id is required");
+    }
+    const run = this.runStore.getRun(runId);
+    if (!run) {
+      throw new BadRequestException(`Unknown execution run: ${runId}`);
+    }
+    if (run.status !== "disambiguating" || run.phase !== "awaiting_confirmation") {
+      return {
+        resolved: false,
+        run_id: runId,
+        error: `Run is in status "${run.status}" / phase "${run.phase ?? "unknown"}"; expected execution confirmation.`,
+      };
+    }
+    if (!run.refinement || run.refinement.status !== "awaiting_confirmation") {
+      return {
+        resolved: false,
+        run_id: runId,
+        error: "Run has no persisted refinement result to confirm.",
+      };
+    }
+
+    const responseById = new Map<string, string>();
+    for (const response of input.responses ?? []) {
+      const itemId = response.item_id?.trim();
+      const text = response.response?.trim();
+      if (itemId && text) responseById.set(itemId, text);
+    }
+    const knownIds = new Set(run.refinement.items.map((item) => item.id));
+    const unknownIds = [...responseById.keys()].filter((id) => !knownIds.has(id));
+    if (unknownIds.length > 0) {
+      return {
+        resolved: false,
+        run_id: runId,
+        error: `Unknown refinement item response(s): ${unknownIds.join(", ")}`,
+      };
+    }
+
+    const items = run.refinement.items.map((item) => ({
+      ...item,
+      response: responseById.get(item.id) ?? item.response ?? null,
+    }));
+    const unresolved = items.filter((item) => !item.response?.trim());
+    if (unresolved.length > 0 && input.confirm_unresolved !== true) {
+      return {
+        resolved: false,
+        run_id: runId,
+        error: `Answer all refinement items or explicitly confirm ${unresolved.length} unresolved item(s).`,
+      };
+    }
+
+    const confirmedAt = this.now();
+    const confirmedRun = this.runStore.updateRun(runId, {
+      status: "queued",
+      phase: "coding",
+      progress_message: "Execution confirmed — coding session queued.",
+      refinement: {
+        ...run.refinement,
+        status: "confirmed",
+        items,
+        confirmed_at: confirmedAt,
+        additional_context: input.additional_context?.trim() || null,
+        confirmed_with_unresolved: unresolved.length > 0,
+      },
+    });
+    if (!confirmedRun) {
+      throw new BadRequestException(`Execution run disappeared while confirming: ${runId}`);
+    }
+    this.runInteractionService.pushActivity(
+      runId,
+      "status_change",
+      unresolved.length > 0
+        ? `Execution confirmed with ${unresolved.length} unresolved item(s) — coding queued.`
+        : "Execution plan confirmed — coding queued.",
+    );
+    this.runStore.appendEvent(confirmedRun, {
+      type: "execution_confirmed",
+      response_count: items.length - unresolved.length,
+      unresolved_count: unresolved.length,
+    });
+    this.runStore.emitRun("execution_status", confirmedRun);
+    void this.continueRunAfterConfirmation(confirmedRun).catch((error) => this.failRun(runId, error));
+    return { resolved: true, run_id: runId, run: confirmedRun };
   }
 
   /** Read AGENTS.md or CLAUDE.md from a directory if it exists. */
@@ -335,9 +424,10 @@ export class ExecutionService implements OnModuleInit {
     return null;
   }
 
-  private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview, disambiguate = true) {
+  private async executeRun(initialRun: ExecutionRunRecord, node: ExecutionDispatchNodePreview) {
     let run = this.runStore.updateRun(initialRun.run_id, {
       status: "preparing",
+      phase: "preparing",
       progress_message: "Creating isolated git worktree.",
     });
     if (!run) {
@@ -366,47 +456,57 @@ export class ExecutionService implements OnModuleInit {
     this.runInteractionService.pushActivity(run.run_id, "status_change", `Context gathered: issue body ${issueBody ? "found" : "not found"}, project conventions ${projectContext ? "found" : "not found"}`);
 
     // --- Write initial scratchpad ---
-    // ADR 014 step 5: when the plan reached `ready` via PlansService.approve,
-    // the canonical scratchpad is the executable contract — copied into the
-    // worktree verbatim and the setup-phase agent turn is skipped below.
-    // Otherwise (fallback for `planned` items) a skeleton is synthesized.
-    const scratchpadResult = this.scratchpadService.writeScratchpad(run, node);
+    // Strict plan/run boundary: launch only consumes an approved canonical
+    // scratchpad. Synthesis belongs to plan preparation, never execution.
+    const scratchpadResult = this.scratchpadService.writeScratchpad(run, node, { requireApproved: true });
     const scratchpadPath = scratchpadResult.path;
-    const hasApprovedPlan = scratchpadResult.source === "canonical_ready";
     this.runInteractionService.pushActivity(
       run.run_id,
       "status_change",
-      hasApprovedPlan
-        ? `Approved plan loaded from canonical scratchpad at ${scratchpadPath}`
-        : `Scratchpad written to ${scratchpadPath}`,
+      `Approved plan loaded from canonical scratchpad at ${scratchpadPath}`,
     );
     this.runStore.appendEvent(run, { type: "scratchpad_written", path: scratchpadPath });
     this.scratchpadService.emitChecklistIfChanged(run);
 
-    // --- Delegate session lifecycle to RunInteractionService ---
-    // Phase 4d (#233) + Phase 4e (#234): the full session lifecycle +
-    // prompt construction now lives inside RunInteractionService.runSession.
-    // ExecutionService.executeRun passes the raw materials (node,
-    // workItem, issueBody, projectContext) in the input envelope and
-    // runSession builds its own prompts internally.
-    const { assistantText } = await this.runInteractionService.runSession(run, {
+    // The refinement session ends before the durable human gate. Coding is
+    // started later by resolveDisambiguation in a fresh agent session.
+    await this.runRefinementService.refine(run, {
       node,
       workItem,
       scratchpadPath,
-      hasApprovedPlan,
-      disambiguate,
       issueBody,
       projectContext,
     });
+  }
 
-    // Re-fetch the run record — runSession mutated status/progress_message
-    // multiple times during the phase bodies. The final state after
-    // runSession returns is "running" from the last setup-phase update;
-    // the completion-state write below flips it to "completed".
-    run = this.runStore.getRun(initialRun.run_id) ?? run;
+  private async continueRunAfterConfirmation(initialRun: ExecutionRunRecord): Promise<void> {
+    const run = this.runStore.getRun(initialRun.run_id) ?? initialRun;
+    if (!existsSync(run.worktree_path)) {
+      throw new Error(`Execution worktree is missing: ${run.worktree_path}`);
+    }
+    const workItem = this.workItemsService.get(run.work_item_id);
+    const scratchpadPath = join(
+      run.worktree_path,
+      `SCRATCHPAD_${workItemSlug(run.work_item_id)}.md`,
+    );
+    if (!existsSync(scratchpadPath)) {
+      throw new Error(`Refined execution scratchpad is missing: ${scratchpadPath}`);
+    }
+    const projectContext = this.readProjectContext(run.worktree_path);
+    const resolutionPrompt = this.runRefinementService.buildResolutionPrompt(run);
+    const { assistantText } = await this.runInteractionService.runCodingSession(run, {
+      workItem,
+      scratchpadPath,
+      projectContext,
+      resolutionPrompt,
+    });
+    await this.completeCodingRun(run.run_id, assistantText);
+  }
 
-    // --- Completion ---
-    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path);
+  private async completeCodingRun(runId: string, assistantText: string | null): Promise<void> {
+    let run = this.runStore.getRun(runId);
+    if (!run) return;
+    const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path, run.base_ref);
     const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
     writeFileSync(join(run.artifact_dir, "outputs", "response.json"), JSON.stringify({ assistant_text: assistantText, changed_files: changedFiles, actual_files_sync: actualFilesSync }, null, 2), "utf8");
@@ -428,8 +528,9 @@ export class ExecutionService implements OnModuleInit {
       : outcome.progressMessage;
 
     this.runInteractionService.pushActivity(run.run_id, "status_change", outcome.activityMessage);
-    run = this.runStore.updateRun(initialRun.run_id, {
+    run = this.runStore.updateRun(runId, {
       status: outcome.status,
+      phase: outcome.status === "completed" ? "completed" : "failed",
       completed_at: this.now(),
       progress_message: progressMessage,
       result_summary: resultSummary,
@@ -437,7 +538,7 @@ export class ExecutionService implements OnModuleInit {
       changed_files: changedFiles,
       errors: outcome.errors,
     })!;
-    this.runStore.writeSummary(run, node);
+    this.runStore.writeSummary(run);
     this.runStore.appendEvent(run, {
       type: outcome.eventType,
       changed_files: changedFiles,
@@ -447,7 +548,7 @@ export class ExecutionService implements OnModuleInit {
 
     if (outcome.dispatchRunError) {
       const workItem = this.workItemsService.get(run.work_item_id);
-      if (workItem.state === "in_progress") {
+      if (this.isInProgressState(workItem.state)) {
         await this.hsmService.dispatch(run.work_item_id, {
           type: "run.error",
           run_id: run.run_id,
@@ -471,6 +572,113 @@ export class ExecutionService implements OnModuleInit {
           run.pull_request ?? null,
         ),
       );
+    }
+  }
+
+  /**
+   * Repair terminal records written by older Studio builds that only looked
+   * at `git status` when deciding whether an agent changed files. A clean
+   * worktree with commits ahead of the base was consequently persisted as a
+   * suspect no-op. The branch diff is authoritative enough to recover those
+   * records on startup without re-running the coding agent.
+   */
+  private repairCommittedFalseNoopRuns(): void {
+    for (const run of this.runStore.listRecentRuns()) {
+      if (
+        run.status !== "error" ||
+        !["no_changes", "no_changes_and_missing_summary"].includes(run.terminal_outcome?.code ?? "") ||
+        !existsSync(run.worktree_path)
+      ) {
+        continue;
+      }
+
+      const changedFiles = this.worktreeService.listChangedFiles(run.worktree_path, run.base_ref);
+      if (changedFiles.length === 0) continue;
+
+      const assistantText = this.readRunAssistantText(run);
+      const outcome = classifyExecutionTerminalOutcome({
+        phase: "initial",
+        assistantText,
+        changedFiles,
+      });
+      const actualFilesSync = this.syncActualFiles(run.work_item_id, changedFiles);
+      mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
+      writeFileSync(
+        join(run.artifact_dir, "outputs", "response.json"),
+        JSON.stringify({ assistant_text: assistantText, changed_files: changedFiles, actual_files_sync: actualFilesSync }, null, 2),
+        "utf8",
+      );
+      const resultSummary = actualFilesSync.ok
+        ? `${outcome.resultSummary}\n\nactual_files synced: ${changedFiles.length} file(s).`
+        : outcome.resultSummary;
+      const progressMessage = actualFilesSync.ok && outcome.status === "completed"
+        ? "Execution run completed. Committed branch changes recovered and actual_files updated."
+        : outcome.progressMessage;
+
+      this.runInteractionService.pushActivity(
+        run.run_id,
+        "status_change",
+        `Recovered ${changedFiles.length} committed file change(s) that the original completion check missed.`,
+      );
+      const repairedRun = this.runStore.updateRun(run.run_id, {
+        status: outcome.status,
+        phase: outcome.status === "completed" ? "completed" : "failed",
+        progress_message: progressMessage,
+        result_summary: resultSummary,
+        terminal_outcome: outcome.terminalOutcome,
+        changed_files: changedFiles,
+        errors: outcome.errors,
+      });
+      if (!repairedRun) continue;
+
+      this.runStore.writeSummary(repairedRun);
+      this.runStore.appendEvent(repairedRun, {
+        type: "run_outcome_recovered",
+        changed_files: changedFiles,
+        actual_files_sync: actualFilesSync,
+        terminal_outcome: outcome.terminalOutcome,
+      });
+    }
+  }
+
+  private readRunAssistantText(run: ExecutionRunRecord): string | null {
+    try {
+      const response = JSON.parse(readFileSync(join(run.artifact_dir, "outputs", "response.json"), "utf8")) as {
+        assistant_text?: unknown;
+      };
+      return typeof response.assistant_text === "string" && response.assistant_text.trim().length > 0
+        ? response.assistant_text.trim()
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async failRun(runId: string, error: unknown): Promise<void> {
+    const message = this.getErrorMessage(error);
+    this.runInteractionService.pushActivity(runId, "error", `Execution failed: ${message}`);
+    const failedRun = this.runStore.updateRun(runId, {
+      status: "error",
+      phase: "failed",
+      completed_at: this.now(),
+      progress_message: `Execution failed: ${message}`,
+      result_summary: `Execution failed: ${message}`,
+      errors: [{ code: "execution_failed", message }],
+    });
+    if (!failedRun) return;
+    this.runStore.writeSummary(failedRun);
+    this.runStore.appendEvent(failedRun, { type: "run_failed", error: message });
+    this.runStore.emitRun("execution_result", failedRun);
+    const workItem = this.workItemsService.get(failedRun.work_item_id);
+    const leaf = workItem.state.startsWith("pre_pr.")
+      ? workItem.state.slice("pre_pr.".length)
+      : workItem.state;
+    if (leaf === "in_progress") {
+      await this.hsmService.dispatch(failedRun.work_item_id, {
+        type: "run.error",
+        run_id: failedRun.run_id,
+        reason: message,
+      });
     }
   }
 
@@ -614,19 +822,18 @@ export class ExecutionService implements OnModuleInit {
   /**
    * ADR 014 step 5: gate launch on work item state.
    *
-   * A work item is launchable when its state is `ready` (an approved plan
-   * produced by `PlansService.approve`) or — under the transitional fallback
-   * until step 4 is broadly rolled out — `planned` (inline scratchpad
-   * synthesis at launch time). Every other state fails with `not_ready` so
-   * the reason is visible in dispatch previews.
-   *
-   * TODO(ADR 014 step 5 follow-up): once every caller goes through
-   * prepare→approve, drop `planned` from the launchable set and make the
-   * gate strictly `ready`.
+   * A work item is launchable only when its plan was explicitly approved and
+   * the HSM leaf state is `ready`. Plan preparation and execution are separate
+   * durable phases; execution never synthesizes a fallback plan.
    */
   private isLaunchableState(state: WorkItemState): boolean {
     const leaf = state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
-    return leaf === "ready" || leaf === "planned";
+    return leaf === "ready";
+  }
+
+  private isInProgressState(state: WorkItemState): boolean {
+    const leaf = state.startsWith("pre_pr.") ? state.slice("pre_pr.".length) : state;
+    return leaf === "in_progress";
   }
 
   private checkLaunchableState(workItem: WorkItemRecord): ExecutionSafetyCheck {
@@ -642,7 +849,7 @@ export class ExecutionService implements OnModuleInit {
       status: "fail",
       message:
         `Work item state '${workItem.state}' is not launchable. ` +
-        "Expected 'ready' (approved plan) or 'planned' (fallback).",
+        "Prepare and approve the plan first; expected 'ready'.",
     };
   }
 
@@ -718,6 +925,9 @@ export class ExecutionService implements OnModuleInit {
       work_item_id: input.workItem.id,
       work_item_name: input.workItem.name,
       status: input.status,
+      phase: input.status === "queued"
+        ? "queued"
+        : input.status === "blocked" ? "blocked" : undefined,
       created_at: createdAt,
       updated_at: createdAt,
       repo: input.workItem.repo,
@@ -752,9 +962,7 @@ export class ExecutionService implements OnModuleInit {
     // else before this method is reached; this guard is defensive.
     //
     // `ready` items launch after a human reviewer approved a plan via
-    // `PlansService.approve`. `planned` items are a transitional fallback
-    // until step 4 is broadly rolled out — the inline setup-phase scratchpad
-    // synthesis still handles these.
+    // `PlansService.approve`.
     if (!this.isLaunchableState(workItem.state)) {
       return { workItem, transitioned: false };
     }

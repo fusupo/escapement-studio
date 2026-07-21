@@ -15,6 +15,7 @@ import { HsmActionHandlers } from "./hsm-action-handlers.js";
 import { PullRequestService } from "./pull-request.service.js";
 import { RunDispositionService } from "./run-disposition.service.js";
 import { RunInteractionService } from "./run-interaction.service.js";
+import { RunRefinementService } from "./run-refinement.service.js";
 import { RunStore } from "./run-store.service.js";
 import { ScratchpadService } from "./scratchpad.service.js";
 import { WorkItemReconcilerController } from "./work-item-reconciler.controller.js";
@@ -30,6 +31,7 @@ import { WorktreeService } from "./worktree.service.js";
     PullRequestService,
     RunDispositionService,
     RunInteractionService,
+    RunRefinementService,
     RunStore,
     ScratchpadService,
     WorktreeService,
@@ -47,6 +49,7 @@ import { WorktreeService } from "./worktree.service.js";
     PullRequestService,
     RunDispositionService,
     RunInteractionService,
+    RunRefinementService,
     RunStore,
     ScratchpadService,
     WorktreeService,

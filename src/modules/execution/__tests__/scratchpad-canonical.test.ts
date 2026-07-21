@@ -250,6 +250,21 @@ describe("ScratchpadService canonical flow", () => {
       expect(readFileSync(result.path, "utf8")).toBe("legacy content");
     });
 
+    it("rejects an unapproved canonical plan when execution requires approval", () => {
+      const run = makeRun({ worktree_path: worktree });
+      const service = makeScratchpadService(tmpRoot);
+
+      ensurePlanDir(tmpRoot, run.work_item_id);
+      writeFileSync(canonicalScratchpadPath(tmpRoot, run.work_item_id), "draft plan content", "utf8");
+
+      expect(() => service.writeScratchpad(
+        run,
+        makeNode(run.work_item_id),
+        { requireApproved: true },
+      )).toThrow(/approved_plan_required/);
+      expect(existsSync(join(worktree, "SCRATCHPAD_studio_999.md"))).toBe(false);
+    });
+
     it("synthesizes a skeleton when no canonical file exists (fallback)", () => {
       const run = makeRun({ worktree_path: worktree });
       const service = makeScratchpadService(tmpRoot);

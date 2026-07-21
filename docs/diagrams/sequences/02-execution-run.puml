@@ -10,6 +10,7 @@ participant "WorkItemHsmService" as Hsm
 participant "WorktreeService" as Tree
 participant "ScratchpadService" as Scratch
 participant "RunStore" as Store
+participant "RunRefinementService" as Refine
 participant "RunInteractionService" as Inter
 participant "pi AgentSession" as Pi
 participant "WorkItemsService" as Items
@@ -17,7 +18,7 @@ participant "EventBus" as Bus
 queue "SSE\n/api/execution/stream" as Sse
 
 == Launch ==
-User -> Ctrl : POST /api/execution/launch\n{ work_item_id, disambiguate? }
+User -> Ctrl : POST /api/execution/launch\n{ work_item_id }
 Ctrl -> Svc : launch(input)
 Svc -> Svc : resolveLaunchEligibility\n(plan, safety checks,\nlaunchable state)
 
@@ -41,40 +42,39 @@ Svc -> Store : updateRun(preparing)
 Store --> Sse : execution_status
 Svc -> Tree : createWorktree(branch, base_ref, path)
 Svc -> Tree : installDependencies(path)
-Svc -> Scratch : writeScratchpad(run, node)
+Svc -> Scratch : writeScratchpad(run, node,\nrequireApproved=true)
 note right of Scratch
-  source =
-  canonical_ready | carried_forward |
-  synthesized. Skips setup phase
-  when plan was approved.
+  Launch fails closed unless plan
+  metadata and canonical scratchpad
+  are both ready.
 end note
-Svc -> Inter : runSession({ node, workItem,\nscratchpadPath, hasApprovedPlan,\ndisambiguate, issueBody,\nprojectContext })
+Svc -> Refine : refine(worktree context)
+Refine -> Pi : create short refinement session
+Refine -> Store : updateRun(refining_plan)
+Refine -> Pi : prompt(inspect checkout, refine scratchpad, no code)
+Pi --> Refine : tool events + refined scratchpad
+Refine -> Scratch : syncScratchpadToCanonical
+Refine -> Refine : parse structured questions + blockers
+Refine -> Pi : dispose session
+Refine -> Store : updateRun(disambiguating,\nphase=awaiting_confirmation, items)
+Store --> Sse : execution_status
 
-Inter -> Pi : createAgentSession (worktree cwd)
-Inter -> Store : updateRun(running, session_id)
-
-== Setup phase ==
-alt disambiguate && !hasApprovedPlan
-  Inter -> Pi : prompt(setupPrompt)
-  Pi --> Inter : tool events + assistant text
-  Inter -> Scratch : syncScratchpadToCanonical
-  Inter -> Store : updateRun(disambiguating)
-  Store --> Sse : execution_status
-  Inter -> Inter : await disambiguationGate
-
-  User -> Ctrl : POST /api/execution/resolve-disambiguation\n{ run_id, additional_context? }
-  Ctrl -> Inter : resolveDisambiguation
-  Inter -> Inter : gate.resolve(additional_context)
-
-  alt additional_context
-    Inter -> Pi : prompt(feedback + update plan)
-    Inter -> Scratch : syncScratchpadToCanonical
-  end
-
-  Inter -> Store : updateRun(running)
-end
+== Durable execution confirmation ==
+User -> Ctrl : POST /api/execution/resolve-disambiguation\n{ run_id, responses[], additional_context?,\nconfirm_unresolved? }
+Ctrl -> Svc : resolveDisambiguation
+Svc -> Store : persist responses + confirmed state
+Svc ->> Svc : continueRunAfterConfirmation async
+Svc --> Ctrl : { resolved: true, run }
+Ctrl --> User : 200
 
 == Do-work phase ==
+Svc -> Inter : runCodingSession(confirmed refinement)
+Inter -> Pi : create fresh coding session
+Inter -> Store : updateRun(running, phase=coding)
+opt responses or additional context
+  Inter -> Pi : prompt(record decisions in scratchpad)
+  Inter -> Scratch : syncScratchpadToCanonical
+end
 Inter -> Pi : prompt(doWorkPrompt)
 loop turns
   Pi --> Inter : tool_execution_start/end,\nmessage_end

@@ -20,11 +20,11 @@ describe("disambiguation types", () => {
     expect(dto.disambiguate).toBe(true);
   });
 
-  it("LaunchExecutionRunDto disambiguate is optional — omitting it enables Q&A by default", () => {
+  it("LaunchExecutionRunDto disambiguate is optional — refinement is mandatory when omitted", () => {
     const dto: LaunchExecutionRunDto = {
       work_item_id: "studio-96",
     };
-    // When omitted, the service treats it as true (Q&A is the default workflow)
+    // The field is deprecated; launch always enters refinement.
     expect(dto.disambiguate).toBeUndefined();
     expect(dto.disambiguate !== false).toBe(true);
   });

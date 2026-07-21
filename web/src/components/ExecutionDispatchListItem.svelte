@@ -12,7 +12,7 @@
     const warned = checks.filter((check) => check.status === "warn").length;
     if (failed > 0) return `${failed} blocking`;
     if (warned > 0) return `${warned} warn`;
-    return "ready";
+    return "checks passed";
   }
 </script>
 
@@ -31,7 +31,7 @@
 >
   <div class="dispatch-item-top">
     <strong class="dispatch-item-id">{node.id}</strong>
-    <span class="status-pill {node.can_launch ? 'healthy' : 'warn'}">{node.can_launch ? 'ready' : 'blocked'}</span>
+    <span class="status-pill {node.can_launch ? 'healthy' : 'warn'}">{node.can_launch ? 'approved' : 'blocked'}</span>
   </div>
   <span class="dispatch-item-name muted">{node.name}</span>
   <div class="dispatch-item-meta">

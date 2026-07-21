@@ -786,6 +786,42 @@ describe("ADR 014 step 7: disposition flow", () => {
       expect(result.closed_issue).toBeNull(); // No closeGhIssue from closed
       expect(result.archive).toEqual(archiveResult);
     });
+
+    it("archives an already-done item without closing GitHub again", async () => {
+      const archiveResult = {
+        archive_path: archiveDir(tmpRoot, "studio-157"),
+        readme_path: null,
+        archived_run_ids: [],
+        skipped_run_ids: [],
+      };
+      const dispatchMock = vi.fn(async () =>
+        makeDispatchResult({
+          prev_state: "done",
+          next_state: "archived" as WorkItemState,
+          event: { type: "user.archive_and_finalize" },
+          applied_actions: ["runArchiver"],
+          handler_data: { archive_result: archiveResult },
+        }),
+      );
+      const service = makeService({
+        artifactRoot: tmpRoot,
+        workItem: makeWorkItem({ state: "done" }),
+        hsmDispatch: dispatchMock,
+      });
+      (service as any).workItemsService.get = vi.fn(() =>
+        makeWorkItem({ state: "archived", archive_path: archiveDir(tmpRoot, "studio-157") }),
+      );
+
+      const result = await service.archiveAndCloseMergedPullRequest("studio-157");
+
+      expect(result.work_item.state).toBe("archived");
+      expect(result.closed_issue).toBeNull();
+      expect(result.archive).toEqual(archiveResult);
+      expect(dispatchMock).toHaveBeenCalledWith("studio-157", {
+        type: "user.archive_and_finalize",
+      });
+      expect(service.githubService.closeIssue).not.toHaveBeenCalled();
+    });
   });
 
   describe("cancelWorkItem", () => {

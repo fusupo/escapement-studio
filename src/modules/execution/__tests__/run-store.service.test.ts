@@ -349,6 +349,24 @@ describe("RunStore", () => {
       const snapshot = store.captureRunSnapshotForWorkItem("studio-230");
       expect(snapshot.map((r) => r.run_id)).toEqual(["run_match"]);
     });
+
+    it("includes a disposed terminal run for post-close archival", () => {
+      writeRunToDisk(artifactRoot, makeRun("run_disposed", {
+        status: "completed",
+        disposed_at: "2026-04-13T12:00:00.000Z",
+      }));
+      const store = makeStore(artifactRoot);
+
+      const snapshot = store.captureRunSnapshotForWorkItem("studio-230");
+
+      expect(snapshot).toEqual([
+        expect.objectContaining({
+          run_id: "run_disposed",
+          status: "completed",
+          disposed_at: "2026-04-13T12:00:00.000Z",
+        }),
+      ]);
+    });
   });
 
   describe("emitRun / emitEvent / stream", () => {

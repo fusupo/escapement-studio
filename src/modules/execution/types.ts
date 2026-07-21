@@ -1,4 +1,13 @@
 export type ExecutionRunStatus = "queued" | "blocked" | "preparing" | "disambiguating" | "running" | "completed" | "error";
+export type ExecutionRunPhase =
+  | "queued"
+  | "preparing"
+  | "refining_plan"
+  | "awaiting_confirmation"
+  | "coding"
+  | "completed"
+  | "failed"
+  | "blocked";
 export type ExecutionSafetyStatus = "pass" | "warn" | "fail";
 export type ExecutionTerminalOutcomeCode = "success" | "no_changes" | "missing_summary" | "no_changes_and_missing_summary";
 export type ExecutionTerminalOutcomeSeverity = "success" | "warn";
@@ -95,8 +104,27 @@ export interface LaunchExecutionRunDto {
   work_item_id: string;
   base_ref?: string;
   prompt?: string;
-  /** When true, run a Q&A disambiguation phase before coding starts. Default: true */
+  /** @deprecated Refinement and confirmation are mandatory for every launch. */
   disambiguate?: boolean;
+}
+
+export type ExecutionRefinementItemKind = "question" | "blocker";
+
+export interface ExecutionRefinementItem {
+  id: string;
+  kind: ExecutionRefinementItemKind;
+  prompt: string;
+  response?: string | null;
+}
+
+export interface ExecutionRefinementState {
+  status: "refining" | "awaiting_confirmation" | "confirmed";
+  items: ExecutionRefinementItem[];
+  started_at: string;
+  refined_at?: string | null;
+  confirmed_at?: string | null;
+  additional_context?: string | null;
+  confirmed_with_unresolved?: boolean;
 }
 
 /**
@@ -112,6 +140,8 @@ export interface ExecutionRunRecord {
   work_item_id: string;
   work_item_name: string;
   status: ExecutionRunStatus;
+  /** Durable phase boundary used by the Execute UI and restart recovery. */
+  phase?: ExecutionRunPhase;
   created_at: string;
   updated_at: string;
   started_at?: string;
@@ -136,6 +166,8 @@ export interface ExecutionRunRecord {
   progress_message?: string;
   result_summary?: string;
   terminal_outcome?: ExecutionTerminalOutcome;
+  /** Worktree-specific plan refinement and the user's persisted responses. */
+  refinement?: ExecutionRefinementState;
   activity_log: ActivityLogEntry[];
   changed_files?: string[];
   pull_request?: ExecutionPullRequestRecord;
@@ -279,13 +311,18 @@ export interface ExecutionChecklistSnapshot {
 
 export interface ResolveDisambiguationDto {
   run_id: string;
-  /** Optional additional context or answers to pass to the coding agent when it starts. */
+  /** Structured responses keyed to `run.refinement.items[].id`. */
+  responses?: Array<{ item_id: string; response: string }>;
+  /** Optional general steering supplied alongside item-specific responses. */
   additional_context?: string;
+  /** Explicitly allow coding to begin while one or more items lack responses. */
+  confirm_unresolved?: boolean;
 }
 
 export interface ResolveDisambiguationResult {
   resolved: boolean;
   run_id: string;
+  run?: ExecutionRunRecord;
   /** Present when resolved is false */
   error?: string;
 }

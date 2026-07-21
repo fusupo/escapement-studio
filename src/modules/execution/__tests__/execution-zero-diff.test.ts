@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -90,7 +90,6 @@ describe("ExecutionService zero-diff terminal handling", () => {
     const service = Object.create(ExecutionService.prototype) as any;
     const run = makeRun(root);
     const workItem = makeWorkItem();
-    const node = makeNode(run);
     const appendedEvents: Array<Record<string, unknown>> = [];
     const publishedEvents: unknown[] = [];
     const updatedRuns = new Map<string, ExecutionRunRecord>([[run.run_id, run]]);
@@ -120,13 +119,8 @@ describe("ExecutionService zero-diff terminal handling", () => {
       get: vi.fn(() => workItem),
       update: vi.fn(),
     };
-    service.scratchpadService = {
-      writeScratchpad: vi.fn(() => ({ path: join(root, "worktree", "SCRATCHPAD_studio_270.md"), source: "canonical_ready" })),
-      emitChecklistIfChanged: vi.fn(),
-    };
     service.runInteractionService = {
       pushActivity: vi.fn(),
-      runSession: vi.fn(async () => ({ assistantText: null, reasoningSummary: null })),
     };
     service.hsmService = {
       dispatch: vi.fn(async () => ({ ok: true })),
@@ -135,7 +129,7 @@ describe("ExecutionService zero-diff terminal handling", () => {
       publish: vi.fn((event: unknown) => publishedEvents.push(event)),
     };
 
-    await service.executeRun(run, node, true);
+    await service.completeCodingRun(run.run_id, null);
 
     const finalRun = updatedRuns.get(run.run_id)!;
     expect(finalRun.status).toBe("error");
@@ -157,5 +151,69 @@ describe("ExecutionService zero-diff terminal handling", () => {
       reason: expect.stringMatching(/without changing files/),
     });
     expect(publishedEvents).toEqual([]);
+  });
+
+  it("repairs a persisted false no-op when the clean branch contains commits", () => {
+    const service = Object.create(ExecutionService.prototype) as any;
+    const run = makeRun(root, {
+      status: "error",
+      phase: "failed",
+      terminal_outcome: {
+        code: "no_changes",
+        severity: "warn",
+        label: "no-op suspect",
+        detail: "Execution run ended without changing files.",
+        changed_file_count: 0,
+        summary_present: true,
+      },
+      changed_files: [],
+      errors: [{ code: "no_changes", message: "Execution run ended without changing files." }],
+    });
+    const updatedRuns = new Map<string, ExecutionRunRecord>([[run.run_id, run]]);
+    const outputDir = join(run.artifact_dir, "outputs");
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(
+      join(outputDir, "response.json"),
+      JSON.stringify({ assistant_text: "Implemented and committed the feature.", changed_files: [] }),
+      "utf8",
+    );
+
+    service.runStore = {
+      listRecentRuns: vi.fn(() => [...updatedRuns.values()]),
+      updateRun: vi.fn((runId: string, patch: Partial<ExecutionRunRecord>) => {
+        const next = { ...updatedRuns.get(runId)!, ...patch } as ExecutionRunRecord;
+        updatedRuns.set(runId, next);
+        return next;
+      }),
+      writeSummary: vi.fn(),
+      appendEvent: vi.fn(),
+    };
+    service.worktreeService = {
+      listChangedFiles: vi.fn(() => ["src/committed.ts", "src/other.ts"]),
+    };
+    service.runInteractionService = { pushActivity: vi.fn() };
+    service.syncActualFiles = vi.fn(() => ({ ok: true, actual_files: ["src/committed.ts", "src/other.ts"] }));
+
+    service.repairCommittedFalseNoopRuns();
+
+    expect(service.worktreeService.listChangedFiles).toHaveBeenCalledWith(run.worktree_path, run.base_ref);
+    expect(updatedRuns.get(run.run_id)).toMatchObject({
+      status: "completed",
+      phase: "completed",
+      changed_files: ["src/committed.ts", "src/other.ts"],
+      terminal_outcome: {
+        code: "success",
+        changed_file_count: 2,
+        summary_present: true,
+      },
+      errors: [],
+    });
+    expect(service.runStore.appendEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ type: "run_outcome_recovered" }),
+    );
+    expect(JSON.parse(readFileSync(join(outputDir, "response.json"), "utf8"))).toMatchObject({
+      changed_files: ["src/committed.ts", "src/other.ts"],
+    });
   });
 });

@@ -118,7 +118,9 @@ function makeService(params: {
         seen.add(run.run_id);
       }
       try {
-        const diskRuns = loadRunRecordsForArtifactRoot(params.artifactRoot);
+        const diskRuns = loadRunRecordsForArtifactRoot(params.artifactRoot, {
+          includeDisposed: true,
+        });
         for (const run of diskRuns) {
           if (run.work_item_id !== workItemId) continue;
           if (seen.has(run.run_id)) continue;
@@ -161,6 +163,31 @@ describe("RunDispositionService.archiveRunArtifacts", () => {
     const readme = readFileSync(result.readme_path!, "utf8");
     expect(readme).toContain("studio-86");
     expect(readme).toContain("exec_from_memory");
+  });
+
+  it("archives a disposed terminal run after the work item was already closed", () => {
+    const run = makeRun({
+      run_id: "exec_closed_then_archived",
+      status: "completed",
+      disposed_at: "2026-04-10T12:30:00.000Z",
+    });
+    const sourceDir = seedRunDir(tmpRoot, run);
+    const service = makeService({
+      artifactRoot: tmpRoot,
+      workItem: makeWorkItem({ state: "done" }),
+    });
+
+    const result = service.archiveRunArtifacts("studio-86");
+
+    expect(result.archived_run_ids).toEqual(["exec_closed_then_archived"]);
+    expect(existsSync(sourceDir)).toBe(false);
+    expect(existsSync(join(
+      archiveDir(tmpRoot, "studio-86"),
+      "runs",
+      "exec_closed_then_archived",
+      "status.json",
+    ))).toBe(true);
+    expect(readFileSync(result.readme_path!, "utf8")).toContain("exec_closed_then_archived");
   });
 
   it("falls back to the disk scan when recentRuns is empty (post-restart case)", () => {

@@ -371,13 +371,14 @@ export class RunStore {
 
   /**
    * Phase 4a: merges the in-memory `recentRuns` buffer with the
-   * on-disk scan, filtered to one work item, deduped by `run_id`
+   * on-disk scan (including already-disposed records), filtered to one work
+   * item, deduped by `run_id`
    * (in-memory wins because it carries the freshest activity log).
    *
    * Used by RunDispositionService's disposition flows to hand the
-   * archiver a list that survives the downstream
-   * `disposeRunsForWorkItem` finalizer stamping `disposed_at` on
-   * each record.
+   * archiver a list that survives both orderings: archive-before-dispose in
+   * the combined flow, and dispose-before-archive when a user chose plain
+   * Close and archives the completed item later.
    */
   captureRunSnapshotForWorkItem(workItemId: string): ExecutionRunRecord[] {
     const seen = new Set<string>();
@@ -389,7 +390,9 @@ export class RunStore {
       seen.add(run.run_id);
     }
     try {
-      const diskRuns = loadRunRecordsForArtifactRoot(this.artifactRoot);
+      const diskRuns = loadRunRecordsForArtifactRoot(this.artifactRoot, {
+        includeDisposed: true,
+      });
       for (const run of diskRuns) {
         if (run.work_item_id !== workItemId) continue;
         if (seen.has(run.run_id)) continue;
