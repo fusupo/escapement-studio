@@ -109,11 +109,23 @@ export interface LaunchExecutionRunDto {
 }
 
 export type ExecutionRefinementItemKind = "question" | "blocker";
+export type ExecutionRefinementOptionAction = "cancel_execution";
+
+export interface ExecutionRefinementOption {
+  id: string;
+  label: string;
+  description?: string;
+  action?: ExecutionRefinementOptionAction;
+}
 
 export interface ExecutionRefinementItem {
   id: string;
   kind: ExecutionRefinementItemKind;
   prompt: string;
+  options?: ExecutionRefinementOption[];
+  recommended_option_id?: string;
+  allow_other?: boolean;
+  selected_option_id?: string | null;
   response?: string | null;
 }
 
@@ -323,7 +335,7 @@ export interface ExecutionChecklistSnapshot {
 export interface ResolveDisambiguationDto {
   run_id: string;
   /** Structured responses keyed to `run.refinement.items[].id`. */
-  responses?: Array<{ item_id: string; response: string }>;
+  responses?: Array<{ item_id: string; selected_option_id?: string; response?: string }>;
   /** Optional general steering supplied alongside item-specific responses. */
   additional_context?: string;
   /** Explicitly allow coding to begin while one or more items lack responses. */
