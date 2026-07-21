@@ -68,6 +68,15 @@ describe("execution recovery projection", () => {
     expect(result).toMatchObject({ canRedispatch: false, reason: "Dependency is incomplete.", safetyChecks });
   });
 
+  it("does not use a stale investigate event after an item reaches ready", () => {
+    const result = project({
+      eligibility: { ...eligible, can_launch: false, launch_unavailable_reason: "Dependency is incomplete." },
+      reconciled: { enabled_events: ["user.investigate"] },
+    });
+
+    expect(result).toMatchObject({ canRedispatch: false, canInvestigate: false });
+  });
+
   it("offers chained Re-dispatch for run_errored with investigate enabled", () => {
     const result = project({
       workItem: { id: "studio-271", state: "pre_pr.run_errored" },

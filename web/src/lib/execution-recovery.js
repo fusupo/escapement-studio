@@ -38,7 +38,8 @@ export function projectExecutionRecovery({
   const graphState = workItem?.state || "unknown";
   const lookupErrorMessage = errorMessage(lookupError);
   const actionErrorMessage = errorMessage(actionError);
-  const canInvestigate = reconciled?.enabled_events?.includes("user.investigate") === true;
+  const canInvestigate = !isReadyState(workItem?.state)
+    && reconciled?.enabled_events?.includes("user.investigate") === true;
   const canLaunchDirectly = isReadyState(workItem?.state)
     && eligibility?.issue_backed === true
     && eligibility?.can_launch === true;
