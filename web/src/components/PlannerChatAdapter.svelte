@@ -828,9 +828,15 @@
             <strong>{operation.summary}</strong>
             <p>{operation.rationale}</p>
             {#if operation.preview}
-            <div class="sync-preview-grid">
-              <div><div class="muted">Current block</div><pre>{operation.preview.before}</pre></div>
-              <div><div class="muted">Proposed block</div><pre>{operation.preview.after}</pre></div>
+            <div class="sync-preview-stack">
+              <div>
+                <div class="muted">Unified diff</div>
+                <pre>{operation.preview.unified_diff}</pre>
+              </div>
+              <div class="sync-preview-grid">
+                <div><div class="muted">Current content</div><pre>{operation.preview.before}</pre></div>
+                <div><div class="muted">Proposed content</div><pre>{operation.preview.after}</pre></div>
+              </div>
             </div>
             {/if}
           </label>
@@ -932,6 +938,17 @@
   .approval-header h3 {
     margin: 0;
     font-size: 1rem;
+  }
+
+  .sync-preview-stack {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .sync-preview-grid {
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
 
   .approval-actions {

@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import type { Api, Model } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { SQLiteService } from "../../platform/sqlite.service.js";
 import { getConfig } from "../../config.js";
 import { ModelRegistryService } from "./model-registry.service.js";

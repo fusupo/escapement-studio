@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable, Logger, MessageEvent, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { createAgentSession, SessionManager, type AgentSession, type AgentSessionEvent, type SessionEntry } from "@mariozechner/pi-coding-agent";
+import { createAgentSession, SessionManager, type AgentSession, type AgentSessionEvent, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Observable, Subject } from "rxjs";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";

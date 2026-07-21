@@ -2,22 +2,17 @@ import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common"
 import { EventBus } from "@nestjs/cqrs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { Database as DatabaseType } from "better-sqlite3";
 import { PullRequestTruthRefreshedEvent } from "../execution/events/pull-request-truth-refreshed.event.js";
-import { SQLiteService } from "../../platform/sqlite.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
+import { GitHubIssueBodySyncService } from "./github-issue-body-sync.service.js";
 import type { UpdateWorkItemDto, WorkItemRecord } from "../graph/types.js";
 import type {
   GitHubIssueDetails,
   GitHubIssueAssignee,
   GitHubIssueLabel,
   GitHubSyncApplyResult,
-  GitHubSyncOperation,
   GitHubSyncProposal,
 } from "../planning/types.js";
-
-const START_MARKER = "<!-- studio-sync:start -->";
-const END_MARKER = "<!-- studio-sync:end -->";
 
 interface RawIssueResponse {
   number: number;
@@ -112,14 +107,10 @@ export class GitHubService {
   private readonly logger = new Logger(GitHubService.name);
 
   constructor(
-    @Inject(SQLiteService) private readonly sqlite: SQLiteService,
     @Inject(WorkItemsService) private readonly workItems: WorkItemsService,
     @Inject(EventBus) private readonly eventBus: EventBus,
+    @Inject(GitHubIssueBodySyncService) private readonly issueBodySync: GitHubIssueBodySyncService,
   ) {}
-
-  private get db(): DatabaseType {
-    return this.sqlite.getDb();
-  }
 
   async createIssue(input: GitHubCreateIssueInput): Promise<GitHubCreatedIssue> {
     const { repo, title, body, labels } = input;
@@ -239,7 +230,7 @@ export class GitHubService {
     ]);
 
     const body = raw.body ?? "";
-    const managedBlock = this.extractManagedBlock(body);
+    const managedBlock = this.issueBodySync.extractManagedBlock(body);
     const labels = this.normalizeIssueLabels((raw.labels ?? []).map((label): GitHubIssueLabel => ({
       name: label.name ?? "",
       description: label.description,
@@ -399,56 +390,14 @@ export class GitHubService {
   }
 
   async stageManagedBlockSync(workItemId: string) {
-    const workItem = this.workItems.get(workItemId);
-    if (!workItem.repo || !workItem.issue_number || !workItem.issue_url) {
-      throw new BadRequestException(`Work item ${workItemId} is not linked to a GitHub issue`);
-    }
+    return this.issueBodySync.stageManagedBlockSync(workItemId, (repo, issueNumber) => this.readIssue(repo, issueNumber));
+  }
 
-    const issue = await this.readIssue(workItem.repo, workItem.issue_number);
-    const replacement = this.replaceManagedBlock(issue.body, this.renderManagedBlock(workItemId));
-
-    if (!replacement.ok) {
-      throw new BadRequestException(replacement.message);
-    }
-
-    const operation: GitHubSyncOperation = {
-      id: "op1",
-      kind: "update_managed_body_block",
-      summary: `Update managed Studio planning block for issue #${issue.number}`,
-      rationale: `Sync planning metadata from Studio work item ${workItemId} into the machine-managed issue body block.`,
-      target: {
-        repo: workItem.repo,
-        issue_number: workItem.issue_number,
-        work_item_id: workItemId,
-      },
-      preview: {
-        before: replacement.currentBlock,
-        after: replacement.nextBlock,
-      },
-    };
-
-    return {
-      issue,
-      work_item_id: workItemId,
-      based_on_body_hash: issue.body_hash,
-      operations: [operation],
-    };
+  async stageIssueBodySync(workItemId: string, bodyAfter: string) {
+    return this.issueBodySync.stageIssueBodySync(workItemId, bodyAfter, (repo, issueNumber) => this.readIssue(repo, issueNumber));
   }
 
   async applySyncProposal(proposal: GitHubSyncProposal, approvedOperationIds: string[]): Promise<{ result: GitHubSyncApplyResult; issue: GitHubIssueDetails | null }> {
-    const uniqueIds = Array.from(new Set(approvedOperationIds));
-    const operations = uniqueIds.map((id) => {
-      const operation = proposal.operations.find((candidate) => candidate.id === id);
-      if (!operation) {
-        throw new BadRequestException(`Unknown GitHub sync operation id: ${id}`);
-      }
-      return operation;
-    });
-
-    if (operations.length === 0) {
-      throw new BadRequestException("approved_operation_ids must contain at least one operation id");
-    }
-
     const issue = await this.readIssue(proposal.issue.repo, proposal.issue.issue_number);
     if (issue.body_hash !== proposal.based_on_body_hash) {
       return {
@@ -462,28 +411,12 @@ export class GitHubService {
       };
     }
 
-    const errors: Array<{ operation_id: string; message: string }> = [];
-    let nextBody = issue.body;
-
-    for (const operation of operations) {
-      if (operation.kind !== "update_managed_body_block") {
-        errors.push({ operation_id: operation.id, message: `Unsupported GitHub sync operation kind: ${operation.kind}` });
-        continue;
-      }
-
-      const replacement = this.replaceManagedBlock(nextBody, operation.preview.after);
-      if (!replacement.ok) {
-        errors.push({ operation_id: operation.id, message: replacement.message });
-        continue;
-      }
-      nextBody = replacement.body;
-    }
-
-    if (errors.length > 0) {
+    const nextBody = this.issueBodySync.buildApprovedBody(issue, proposal, approvedOperationIds);
+    if (!nextBody.ok) {
       return {
         result: {
           status: "validation_failed",
-          errors,
+          errors: nextBody.errors,
         },
         issue,
       };
@@ -497,13 +430,13 @@ export class GitHubService {
       proposal.issue.repo,
       "--body-file",
       "-",
-    ], nextBody);
+    ], nextBody.body);
 
     const updatedIssue = await this.readIssue(proposal.issue.repo, proposal.issue.issue_number);
     return {
       result: {
         status: "applied",
-        applied_operation_ids: uniqueIds,
+        applied_operation_ids: nextBody.applied_operation_ids,
         previous_body_hash: issue.body_hash,
         new_body_hash: updatedIssue.body_hash,
       },
@@ -628,96 +561,6 @@ export class GitHubService {
     };
   }
 
-  private renderManagedBlock(workItemId: string): string {
-    const workItem = this.workItems.get(workItemId);
-    const dependsOn = this.listRelatedIds(workItemId, "depends_on", "to_id");
-    const partOf = this.listRelatedIds(workItemId, "is_part_of", "to_id");
-    const predictedFiles = workItem.predicted_files ?? [];
-
-    const lines = [
-      START_MARKER,
-      "## Studio Planning Metadata",
-      `- State: ${workItem.state}`,
-    ];
-
-    if (workItem.scope_hint) {
-      lines.push(`- Scope hint: ${workItem.scope_hint}`);
-    }
-
-    lines.push("- Predicted files:");
-    if (predictedFiles.length === 0) {
-      lines.push("  - (none)");
-    } else {
-      for (const file of predictedFiles) {
-        lines.push(`  - \`${file}\``);
-      }
-    }
-
-    lines.push("- Depends on:");
-    if (dependsOn.length === 0) {
-      lines.push("  - (none)");
-    } else {
-      for (const id of dependsOn) {
-        lines.push(`  - ${id}`);
-      }
-    }
-
-    lines.push("- Part of:");
-    if (partOf.length === 0) {
-      lines.push("  - (none)");
-    } else {
-      for (const id of partOf) {
-        lines.push(`  - ${id}`);
-      }
-    }
-
-    lines.push(END_MARKER);
-    return lines.join("\n");
-  }
-
-  private listRelatedIds(workItemId: string, rel: string, column: "to_id" | "from_id"): string[] {
-    const rows = this.db
-      .prepare(`SELECT ${column} FROM edges WHERE ${column === "to_id" ? "from_id" : "to_id"} = ? AND rel = ? ORDER BY ${column}`)
-      .all(workItemId, rel) as Array<{ to_id?: string; from_id?: string }>;
-
-    return rows
-      .map((row) => row[column])
-      .filter((value): value is string => typeof value === "string");
-  }
-
-  private extractManagedBlock(body: string) {
-    const matches = [...body.matchAll(new RegExp(`${this.escapeRegExp(START_MARKER)}[\\s\\S]*?${this.escapeRegExp(END_MARKER)}`, "g"))];
-    if (matches.length === 0) {
-      return null;
-    }
-    if (matches.length > 1) {
-      throw new BadRequestException("GitHub issue body has multiple studio-sync blocks and cannot be updated safely");
-    }
-
-    return {
-      content: matches[0][0],
-      start_marker: START_MARKER,
-      end_marker: END_MARKER,
-    };
-  }
-
-  private replaceManagedBlock(body: string, nextBlock: string): { ok: true; body: string; currentBlock: string; nextBlock: string } | { ok: false; message: string } {
-    const matches = [...body.matchAll(new RegExp(`${this.escapeRegExp(START_MARKER)}[\\s\\S]*?${this.escapeRegExp(END_MARKER)}`, "g"))];
-    if (matches.length === 0) {
-      return { ok: false, message: "GitHub issue body is missing the managed studio-sync block and cannot be synced safely." };
-    }
-    if (matches.length > 1) {
-      return { ok: false, message: "GitHub issue body has multiple managed studio-sync blocks and cannot be synced safely." };
-    }
-
-    const currentBlock = matches[0][0];
-    return {
-      ok: true,
-      body: body.replace(currentBlock, nextBlock),
-      currentBlock,
-      nextBlock,
-    };
-  }
 
   private samePullRequestSnapshot(stored: unknown, pullRequest: GitHubPullRequestDetails): boolean {
     const snapshot = this.readObject(stored);
@@ -873,7 +716,4 @@ export class GitHubService {
     return createHash("sha1").update(value).digest("hex");
   }
 
-  private escapeRegExp(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
 }

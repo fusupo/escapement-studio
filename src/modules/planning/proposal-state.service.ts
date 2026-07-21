@@ -30,7 +30,7 @@ import type {
  *
  * Injects:
  *   - `GraphService` — for `graph_version` in `normalizeProposal`
- *   - `GitHubService` — for `stageManagedBlockSync` in `normalizeGitHubSync`
+ *   - `GitHubService` — for managed-block or broader issue-body staging in `normalizeGitHubSync`
  *   - `MemoryService` — for `content_hash` in `normalizeMemoryChange`
  *     + the refreshed hash in `updateActiveMemoryChangeAfterApply`
  *
@@ -449,7 +449,10 @@ export class ProposalStateService {
     input: GitHubSyncToolInput,
     defaults: { currentTurnId: string | null; sessionId: string },
   ): Promise<GitHubSyncProposal> {
-    const staged = await this.githubService.stageManagedBlockSync(input.work_item_id);
+    const staged = input.body_after !== undefined
+      ? await this.githubService.stageIssueBodySync(input.work_item_id, input.body_after)
+      : await this.githubService.stageManagedBlockSync(input.work_item_id);
+
     return {
       sync_id: input.sync_id?.trim() || `ghsync_${Date.now()}`,
       created_at: input.created_at?.trim() || this.now(),

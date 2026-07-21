@@ -1,6 +1,6 @@
-import { Injectable, Logger } from "@nestjs/common";
-import { ModelRegistry, AuthStorage } from "@mariozechner/pi-coding-agent";
-import type { Api, Model } from "@mariozechner/pi-ai";
+import { Injectable, Logger, type OnModuleInit } from "@nestjs/common";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, type Api, type Model } from "@earendil-works/pi-ai";
 
 export interface ModelInfo {
   provider: string;
@@ -12,28 +12,30 @@ export interface ModelInfo {
 }
 
 /**
- * Wraps pi-coding-agent's ModelRegistry as a NestJS singleton.
+ * Wraps pi-coding-agent's ModelRuntime as a NestJS singleton.
  * Exposes available models for the settings UI and resolves
  * persisted model selections to Model instances.
  */
 @Injectable()
-export class ModelRegistryService {
+export class ModelRegistryService implements OnModuleInit {
   private readonly logger = new Logger(ModelRegistryService.name);
-  private registry: ModelRegistry;
+  private runtime: ModelRuntime | null = null;
 
-  constructor() {
+  async onModuleInit(): Promise<void> {
     try {
-      const authStorage = AuthStorage.create();
-      this.registry = ModelRegistry.create(authStorage);
-      const error = this.registry.getError();
+      this.runtime = await ModelRuntime.create();
+      const error = this.runtime.getError();
       if (error) {
-        this.logger.warn(`ModelRegistry loaded with warnings: ${error}`);
+        this.logger.warn(`ModelRuntime loaded with warnings: ${error}`);
       }
     } catch (err) {
-      this.logger.error(`Failed to create ModelRegistry: ${err}`);
+      this.logger.error(`Failed to create ModelRuntime: ${err}`);
       // Create an in-memory fallback so the service doesn't crash
-      const authStorage = AuthStorage.inMemory();
-      this.registry = ModelRegistry.inMemory(authStorage);
+      this.runtime = await ModelRuntime.create({
+        credentials: new InMemoryCredentialStore(),
+        modelsPath: null,
+        allowModelNetwork: false,
+      });
     }
   }
 
@@ -41,14 +43,17 @@ export class ModelRegistryService {
    * List all models with availability info for the frontend.
    */
   listModels(): ModelInfo[] {
-    const all = this.registry.getAll();
+    const runtime = this.runtime;
+    if (!runtime) return [];
+
+    const all = runtime.getModels();
     return all.map((m) => ({
       provider: m.provider,
       id: m.id,
       name: m.name,
       reasoning: m.reasoning,
       contextWindow: m.contextWindow,
-      available: this.registry.hasConfiguredAuth(m),
+      available: runtime.hasConfiguredAuth(m.provider),
     }));
   }
 
@@ -57,6 +62,6 @@ export class ModelRegistryService {
    * Returns undefined if the model is not in the registry.
    */
   find(provider: string, modelId: string): Model<Api> | undefined {
-    return this.registry.find(provider, modelId);
+    return this.runtime?.getModel(provider, modelId);
   }
 }

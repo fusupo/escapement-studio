@@ -1,11 +1,8 @@
 import { Injectable, Inject, Logger } from "@nestjs/common";
 import {
   createAgentSession,
-  createBashTool,
-  createGrepTool,
-  createReadTool,
   SessionManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { WorkItemRecord } from "../graph/types.js";
@@ -159,11 +156,7 @@ export class PlanDrafterService {
       cwd,
       sessionManager: SessionManager.inMemory(cwd),
       model: this.settingsService.getSelectedModel(),
-      tools: [
-        createReadTool(cwd),
-        createGrepTool(cwd),
-        createBashTool(cwd),
-      ],
+      tools: ["read", "grep", "bash"],
     });
 
     if (modelFallbackMessage) {

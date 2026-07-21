@@ -1,11 +1,10 @@
 import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
 import {
   createAgentSession,
-  createCodingTools,
   SessionManager,
   type AgentSession,
   type AgentSessionEvent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { workItemSlug } from "../../lib/context-layout.js";
 import { RunStore } from "./run-store.service.js";
@@ -113,7 +112,7 @@ export class RunInteractionService {
     const result = await createAgentSession({
       cwd: run.worktree_path,
       sessionManager: SessionManager.inMemory(run.worktree_path),
-      tools: createCodingTools(run.worktree_path),
+      tools: ["read", "bash", "edit", "write"],
       model: this.settingsService.getSelectedModel(),
     });
     return {
