@@ -908,10 +908,10 @@
             {/if}
 
             <!-- Checklist (collapsible, open by default) -->
-            {#if checklist?.items?.length}
+            {#if checklist}
               <details class="workspace-expandable" open>
-                <summary>Checklist ({checklist.items.filter(i => i.checked).length}/{checklist.items.length})</summary>
-                <ExecutionChecklist items={checklist.items} />
+                <summary>Implementation ({checklist.completed}/{checklist.total})</summary>
+                <ExecutionChecklist snapshot={checklist} />
               </details>
             {/if}
 

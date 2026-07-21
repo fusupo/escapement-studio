@@ -55,6 +55,7 @@ For execution runs, `status.json` is expected to carry the full `ExecutionRunRec
 - user-visible detail fields: `progress_message`, `result_summary`, `changed_files`, `pull_request`, `errors`
 - durable chat/activity state: `activity_log`
 - launch safety context: `safety_checks`
+- latest checklist projection: optional `checklist` (described below)
 
 Loader behavior (`src/modules/execution/run-disk-store.ts`):
 
@@ -62,6 +63,33 @@ Loader behavior (`src/modules/execution/run-disk-store.ts`):
 - snapshots with unknown execution statuses are skipped with a warning
 - disposed runs (`disposed_at != null`) are excluded from the live recent-runs hydration path by default
 - optional arrays/objects are sanitized so malformed entries do not poison restart recovery
+
+#### Durable execution checklist
+
+The latest checklist is embedded in `status.json.checklist`; there is no separate `checklist.json` artifact:
+
+```json
+{
+  "run_id": "exec_123",
+  "revision": 4,
+  "updated_at": "2026-07-21T12:34:56.000Z",
+  "items": [
+    { "text": "Implement persistence", "checked": true, "category": "implementation" },
+    { "text": "Progress survives restart", "checked": true, "category": "acceptance" },
+    { "text": "Run npm test", "checked": false, "category": "verification" }
+  ],
+  "completed": 1,
+  "total": 1
+}
+```
+
+- Categories are `implementation`, `acceptance`, and `verification`. `Quality Checks` and `Manual Verification` both project to `verification`.
+- `completed` and `total` count implementation items only. Acceptance and verification are independent evidence and are displayed separately.
+- Revisions start at 1 and increase only when projected content changes. `updated_at` is the ISO time of that transition. A response with no persisted or readable source uses revision 0 and `updated_at: null`.
+- Studio writes the updated `status.json` before publishing `execution_checklist` over SSE. A failed artifact write therefore cannot advertise non-durable progress.
+- SSE is best-effort transport, not a replay log. Browsers converge through checklist GETs on initial load, stream reconnect, focus, and visible-tab resume. REST and SSE clients accept only a strictly newer revision for the same run.
+- A readable worktree scratchpad can project and persist newer content during GET or session observation. If the worktree is missing or unreadable, the durable `status.json.checklist` remains authoritative and is never replaced by an empty projection.
+- The coding agent owns the implementation completion transition: implement the task, run its relevant automated checks, mark the implementation checkbox and append the Work Log entry, then commit and continue. Acceptance and verification boxes are marked only when their evidence is actually satisfied or performed.
 
 ### `events.jsonl`
 Append-only durable event log.
@@ -137,14 +165,14 @@ This means operators can rely on the following restart semantics:
 | `GET /api/execution/runs` | live in-memory buffer rehydrated from `status.json` | capped to the service recent-run limit |
 | `GET /api/execution/runs/:runId/chat` | `status.json.activity_log` | only `user_message` / `agent_message` entries are surfaced |
 | `GET /api/execution/runs/:runId/scratchpad` | canonical `plans/<slug>/SCRATCHPAD_<slug>.md` | falls back to the surviving worktree scratchpad when canonical is absent |
-| `GET /api/execution/runs/:runId/checklist` | surviving worktree `SCRATCHPAD_<slug>.md` | best-effort only; returns an empty checklist if the worktree was cleaned up |
+| `GET /api/execution/runs/:runId/checklist` | readable worktree `SCRATCHPAD_<slug>.md`, projected into `status.json.checklist` | falls back to the durable snapshot after restart or worktree removal; revision-0 empty shape only when neither source exists |
 
 ### Archive/restart edge cases
 
 - Archived/disposed runs are intentionally excluded from the live recent-runs list after restart; they are surfaced through the archived-runs endpoints instead.
 - If only an archive bundle survives, the archived-runs readers can still expose summary/history data, but the live Execute tab should not resurrect the disposed run into `/api/execution/runs`.
-- Scratchpad restoration is strongest when the canonical plan file still exists; checklist restoration is strongest when the worktree still exists.
-- If a worktree has already been removed, `getRunChecklist()` may legitimately return an empty checklist even though the run summary, chat history, and PR metadata remain available.
+- Scratchpad restoration is strongest when the canonical plan file still exists. Checklist restoration remains available from `status.json.checklist` even after worktree removal.
+- Legacy runs without a persisted checklist return the revision-0 empty shape when no readable worktree survives.
 
 ## Archive bundle layout
 
