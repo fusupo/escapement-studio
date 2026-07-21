@@ -825,6 +825,7 @@
           canDispose={selectedRun ? canDisposeRun(selectedRun) : false}
           disposing={selectedRun ? disposingRunIds.includes(selectedRun.run_id) : false}
           dispositionError={selectedRun ? (dispositionErrors[selectedRun.run_id] || "") : ""}
+          recovery={selectedRecovery}
           assumptions={preview.assumptions || []}
           validationPolicy={preview.validation_policy}
           on:copybranch={() => {
@@ -838,6 +839,7 @@
           on:openpr={() => selectedRun && handleOpenPR(selectedRun)}
           on:closeRun={() => selectedRun && handleCloseRun(selectedRun)}
           on:archiveAndCloseRun={() => selectedRun && handleArchiveAndCloseRun(selectedRun)}
+          on:redispatch={() => selectedRun && handleRedispatch(selectedRun)}
           on:launch={() => selectedDispatch && launchNode(selectedDispatch)}
           scratchpadContent={selectedRun ? scratchpadContent[selectedRun.run_id] : undefined}
           scratchpadLoading={selectedRun ? !!scratchpadLoading[selectedRun.run_id] : false}

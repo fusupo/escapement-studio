@@ -11,6 +11,16 @@
   export let validationPolicy = null;
   export let scratchpadContent = undefined;
   export let scratchpadLoading = false;
+  export let recovery = {
+    active: false,
+    graphState: null,
+    canRedispatch: false,
+    reason: "",
+    safetyChecks: [],
+    loading: false,
+    actionInFlight: false,
+    error: "",
+  };
   // studio-203: disposition props. The parent computes `canDispose` from
   // the HSM's enabled_events (user.finalize / user.archive_and_finalize)
   // and sets `disposing` while a request is in flight.
@@ -97,6 +107,40 @@
         <p class="muted">Available after completion.</p>
       {/if}
     </div>
+
+    {#if run.status === "error" && recovery.active}
+      <div class="detail-card recovery-card">
+        <div class="detail-card-hdr">
+          <h3>RECOVERY</h3>
+          <span class="status-pill {recovery.canRedispatch ? 'healthy' : 'warn'}">
+            {recovery.loading ? "checking" : recovery.graphState || "unknown"}
+          </span>
+        </div>
+        <div class="detail-kv">
+          <span class="muted">Work-item state</span>
+          <code>{recovery.graphState || "unknown"}</code>
+        </div>
+        <p
+          class="recovery-reason"
+          class:recovery-error={!!recovery.error}
+          aria-live="polite"
+        >{recovery.reason}</p>
+        {#if recovery.safetyChecks?.some((check) => check.status === "fail" || check.status === "warn")}
+          <div class="recovery-checks">
+            {#each recovery.safetyChecks.filter((check) => check.status === "fail" || check.status === "warn") as check}
+              <div class="check-row {check.status}"><strong>{check.code}</strong>: {check.message}</div>
+            {/each}
+          </div>
+        {/if}
+        {#if recovery.canRedispatch || recovery.actionInFlight}
+          <div class="detail-actions">
+            <button on:click={() => dispatch("redispatch")} disabled={recovery.actionInFlight || recovery.loading}>
+              {recovery.actionInFlight ? "Re-dispatching..." : "Re-dispatch"}
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <!-- studio-84: merged-PR disposition actions. Only rendered when the
          parent says the run is ready (reconciled next_action === 'close_out'). -->
@@ -319,6 +363,26 @@
   .check-row.fail strong { color: var(--red, #f85149); }
   .check-row.warn strong { color: var(--yellow, #d29922); }
   .check-row.pass strong { color: var(--green, #3fb950); }
+
+  .recovery-card {
+    border: 1px solid rgba(248, 81, 73, 0.28);
+  }
+
+  .recovery-reason {
+    margin: 0;
+    color: var(--text-secondary, #8b95a5);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .recovery-reason.recovery-error {
+    color: var(--red, #f85149);
+  }
+
+  .recovery-checks {
+    display: grid;
+    gap: 2px;
+  }
 
   .detail-inline-expandable summary {
     cursor: pointer;
