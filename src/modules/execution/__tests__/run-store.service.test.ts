@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { firstValueFrom } from "rxjs";
 import { take, toArray } from "rxjs/operators";
 import { RunStore } from "../run-store.service.js";
-import type { ActivityLogEntry, ExecutionRunRecord } from "../types.js";
+import type { ActivityLogEntry, ChecklistItem, ExecutionRunRecord } from "../types.js";
 
 /**
  * Phase 4a (#230): direct coverage for RunStore, the newly-extracted
@@ -32,6 +32,7 @@ interface HarnessStore {
   updateRun: RunStore["updateRun"];
   hydrateRecentRunsFromDisk: RunStore["hydrateRecentRunsFromDisk"];
   persistRun: RunStore["persistRun"];
+  persistChecklistProjection: RunStore["persistChecklistProjection"];
   writeStatus: RunStore["writeStatus"];
   writeMetadata: RunStore["writeMetadata"];
   writeSummary: RunStore["writeSummary"];
@@ -219,6 +220,94 @@ describe("RunStore", () => {
       expect(store.recentRuns.length).toBe(16);
       expect(store.recentRuns[0].run_id).toBe("run_19");
       expect(store.recentRuns.at(-1)?.run_id).toBe("run_04");
+    });
+  });
+
+  describe("persistChecklistProjection", () => {
+    const pending: ChecklistItem[] = [
+      { text: "Implement it", checked: false, category: "implementation" },
+      { text: "Verify it", checked: false, category: "verification" },
+    ];
+
+    function checklistStore(existing?: ExecutionRunRecord["checklist"]) {
+      const artifactDir = join(artifactRoot, "runs", "run_checklist");
+      mkdirSync(artifactDir, { recursive: true });
+      return makeStore(artifactRoot, [makeRun("run_checklist", { artifact_dir: artifactDir, checklist: existing })]);
+    }
+
+    it("starts at revision 1 and increments sequential content changes", () => {
+      const store = checklistStore();
+
+      const first = store.persistChecklistProjection("run_checklist", pending);
+      const second = store.persistChecklistProjection("run_checklist", [
+        { ...pending[0], checked: true },
+        pending[1],
+      ]);
+
+      expect(first).toMatchObject({ revision: 1, completed: 0, total: 1 });
+      expect(first?.updated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(second).toMatchObject({ revision: 2, completed: 1, total: 1 });
+    });
+
+    it("deduplicates identical projections using the freshest buffered record", () => {
+      const existing = {
+        run_id: "run_checklist",
+        revision: 7,
+        updated_at: "2026-04-13T01:00:00.000Z",
+        items: pending,
+        completed: 0,
+        total: 1,
+      };
+      const store = checklistStore(existing);
+      const writeSpy = vi.spyOn(store, "writeStatus");
+      const emitSpy = vi.spyOn(store, "emitEvent");
+
+      const result = store.persistChecklistProjection("run_checklist", pending);
+
+      expect(result).toBe(existing);
+      expect(result?.revision).toBe(7);
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(emitSpy).not.toHaveBeenCalled();
+    });
+
+    it("persists the replacement before publishing it", () => {
+      const store = checklistStore();
+      const writeSpy = vi.spyOn(store, "writeStatus");
+      const emitSpy = vi.spyOn(store, "emitEvent");
+
+      const result = store.persistChecklistProjection("run_checklist", pending);
+
+      expect(writeSpy).toHaveBeenCalledWith(expect.objectContaining({ checklist: result }));
+      expect(writeSpy.mock.invocationCallOrder[0]).toBeLessThan(emitSpy.mock.invocationCallOrder[0]);
+      const persisted = JSON.parse(readFileSync(join(artifactRoot, "runs", "run_checklist", "status.json"), "utf8"));
+      expect(persisted.checklist).toEqual(result);
+    });
+
+    it("does not mutate the buffer or publish when persistence fails", () => {
+      const store = checklistStore();
+      vi.spyOn(store, "writeStatus").mockImplementation(() => { throw new Error("disk full"); });
+      const emitSpy = vi.spyOn(store, "emitEvent");
+
+      expect(() => store.persistChecklistProjection("run_checklist", pending)).toThrow("disk full");
+      expect(store.getRun("run_checklist")?.checklist).toBeUndefined();
+      expect(emitSpy).not.toHaveBeenCalled();
+    });
+
+    it("can republish an unchanged durable snapshot without changing metadata", () => {
+      const store = checklistStore();
+      const first = store.persistChecklistProjection("run_checklist", pending)!;
+      const emitSpy = vi.spyOn(store, "emitEvent");
+      const writeSpy = vi.spyOn(store, "writeStatus");
+
+      const repeated = store.persistChecklistProjection("run_checklist", pending, { republishUnchanged: true });
+
+      expect(repeated).toEqual(first);
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(emitSpy).toHaveBeenCalledWith("execution_checklist", "run_checklist", first);
+    });
+
+    it("returns null for a run outside the current buffer", () => {
+      expect(makeStore(artifactRoot).persistChecklistProjection("missing", pending)).toBeNull();
     });
   });
 

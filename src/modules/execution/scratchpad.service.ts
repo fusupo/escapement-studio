@@ -39,9 +39,6 @@ import type {
 export class ScratchpadService {
   private readonly logger = new Logger(ScratchpadService.name);
   private readonly artifactRoot = resolve(getConfig().artifactRoot);
-  /** Last-emitted checklist snapshots per run — used for dedup */
-  private readonly lastChecklistSnapshots = new Map<string, string>();
-
   constructor(
     @Inject(RunStore) private readonly runStore: RunStore,
     @Inject(WorktreeService) private readonly worktreeService: WorktreeService,
@@ -141,23 +138,9 @@ export class ScratchpadService {
     }
   }
 
-  emitChecklistIfChanged(run: ExecutionRunRecord): void {
+  emitChecklistIfChanged(run: ExecutionRunRecord, republishUnchanged = false): void {
     const items = this.readChecklistFromWorktree(run);
-    const implementationItems = items.filter((item) => item.category === "implementation");
-    const snapshot: ExecutionChecklistSnapshot = {
-      run_id: run.run_id,
-      revision: 0,
-      updated_at: null,
-      items,
-      completed: implementationItems.filter((item) => item.checked).length,
-      total: implementationItems.length,
-    };
-    const key = JSON.stringify(snapshot.items);
-    if (this.lastChecklistSnapshots.get(run.run_id) === key) {
-      return; // No change
-    }
-    this.lastChecklistSnapshots.set(run.run_id, key);
-    this.runStore.emitEvent("execution_checklist", run.run_id, snapshot);
+    this.runStore.persistChecklistProjection(run.run_id, items, { republishUnchanged });
   }
 
   // ─── Scratchpad rendering + canonical sync ────────────────────────
