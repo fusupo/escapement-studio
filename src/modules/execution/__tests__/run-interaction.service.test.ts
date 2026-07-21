@@ -87,6 +87,48 @@ describe("RunInteractionService.buildPrompt", () => {
   });
 });
 
+describe("RunInteractionService checklist synchronization", () => {
+  it("defines task completion after relevant checks and before commit/next task", () => {
+    const service = Object.create(RunInteractionService.prototype) as RunInteractionService;
+    const workItem = makeWorkItem();
+    const prompt = service.buildDoWorkPrompt(makeRecentRun({
+      work_item_id: workItem.id,
+      work_item_name: workItem.name,
+    }), undefined, workItem, null);
+
+    const implement = prompt.indexOf("**Implement**");
+    const checks = prompt.indexOf("automated checks relevant");
+    const record = prompt.indexOf("**Record completion**");
+    const commit = prompt.indexOf("**Commit**");
+    const next = prompt.indexOf("next unchecked implementation task");
+    expect(implement).toBeLessThan(checks);
+    expect(checks).toBeLessThan(record);
+    expect(record).toBeLessThan(commit);
+    expect(commit).toBeLessThan(next);
+    expect(prompt).toContain("Acceptance Criteria and Quality Checks / Manual Verification are independent evidence");
+  });
+
+  it.each(["tool_execution_end", "turn_end", "agent_end"] as const)(
+    "observes the freshest run after %s",
+    (type) => {
+      const initial = makeRecentRun({ status: "running" });
+      const fresh = { ...initial, progress_message: "fresh" };
+      const service = Object.create(RunInteractionService.prototype) as any;
+      service.runStore = {
+        getRun: vi.fn(() => fresh),
+        appendEvent: vi.fn(),
+        updateRun: vi.fn(() => fresh),
+      };
+      service.pushActivity = vi.fn();
+      service.scratchpadService = { emitChecklistIfChanged: vi.fn() };
+
+      service.handleSessionEvent(initial.run_id, { type, toolName: "edit" });
+
+      expect(service.scratchpadService.emitChecklistIfChanged).toHaveBeenCalledWith(fresh);
+    },
+  );
+});
+
 describe("RunInteractionService.executeFollowUpTurn", () => {
   let root: string;
 
@@ -126,6 +168,7 @@ describe("RunInteractionService.executeFollowUpTurn", () => {
     service.activeSessions = new Map();
     service.handleSessionEvent = vi.fn();
     service.runStore = {
+      getRun: vi.fn((runId: string) => finalRuns.get(runId) ?? null),
       updateRun: vi.fn((runId: string, patch: Partial<ExecutionRunRecord>) => {
         const next = { ...finalRuns.get(runId)!, ...patch, updated_at: "2026-06-10T13:00:00.000Z" } as ExecutionRunRecord;
         finalRuns.set(runId, next);

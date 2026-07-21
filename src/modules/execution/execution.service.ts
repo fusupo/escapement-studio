@@ -457,6 +457,7 @@ export class ExecutionService implements OnModuleInit {
       actual_files_sync: actualFilesSync,
       terminal_outcome: outcome.terminalOutcome,
     });
+    this.runInteractionService.refreshChecklistAtBoundary(runId);
 
     if (outcome.dispatchRunError) {
       const workItem = this.workItemsService.get(run.work_item_id);
@@ -580,6 +581,7 @@ export class ExecutionService implements OnModuleInit {
     if (!failedRun) return;
     this.runStore.writeSummary(failedRun);
     this.runStore.appendEvent(failedRun, { type: "run_failed", error: message });
+    this.runInteractionService.refreshChecklistAtBoundary(runId);
     this.runStore.emitRun("execution_result", failedRun);
     const workItem = this.workItemsService.get(failedRun.work_item_id);
     const leaf = workItem.state.startsWith("pre_pr.")
