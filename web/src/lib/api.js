@@ -327,6 +327,18 @@ export function listWorkItems(params = {}) {
   return request(`/api/work-items${search ? `?${search}` : ""}`);
 }
 
+export function getWorkItem(id) {
+  return request(`/api/work-items/${encodeURIComponent(id)}`);
+}
+
+export function transitionWorkItem(id, event) {
+  return request(`/api/work-items/${encodeURIComponent(id)}/transition`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ event }),
+  });
+}
+
 export function createWorkItem(payload) {
   return request("/api/work-items", {
     method: "POST",
