@@ -25,6 +25,7 @@
     refinementResponseKey,
     unresolvedRefinementItems,
   } from "../lib/execution-refinement.js";
+  import { createExecutionSyncCoordinator } from "../lib/execution-sync.js";
 
   const REFINEMENT_DRAFTS_KEY = "escapement.execution.refinement-drafts";
 
@@ -62,6 +63,10 @@
   let loading = true;
   let refreshing = false;
   let connected = false;
+  let syncStatus = "idle";
+  let lastSuccessfulSyncAt = null;
+  let syncError = null;
+  let syncCoordinator;
   let error = "";
   let copiedMessage = "";
   let copyTimer;
@@ -115,6 +120,22 @@
   $: suspectRuns = runs.filter((run) => run.terminal_outcome?.severity === "warn");
   $: blockedRuns = runs.filter((run) => run.status === "blocked");
   $: failedRuns = runs.filter((run) => run.status === "error" && run.terminal_outcome?.severity !== "warn");
+  $: syncTone = syncStatus === "fresh"
+    ? "healthy"
+    : syncStatus === "syncing"
+      ? "info"
+      : syncStatus === "stale"
+        ? "danger"
+        : "warn";
+  $: syncLabel = syncStatus === "syncing"
+    ? "synchronizing"
+    : syncStatus === "stale"
+      ? lastSuccessfulSyncAt
+        ? `sync failed · last synced at ${formatSyncTime(lastSuccessfulSyncAt)}`
+        : "sync failed"
+      : lastSuccessfulSyncAt
+        ? `synced at ${formatSyncTime(lastSuccessfulSyncAt)}`
+        : "not yet synced";
 
   $: dispatchNodes = preview?.groups?.flatMap((group) =>
     group.nodes.map((node) => ({
@@ -231,11 +252,16 @@
       }
     } catch (e) {
       error = e.message;
+      throw e;
     } finally {
       loading = false;
       refreshing = false;
       archivedLoading = false;
     }
+  }
+
+  function requestDataSync() {
+    return syncCoordinator?.requestSync() ?? loadData({ quiet: true });
   }
 
   async function handleOpenPR(run) {
@@ -245,7 +271,7 @@
       const result = await openPullRequest({ run_id: run.run_id, auto_commit: true });
       mergeRun(result.run);
       prResults = { ...prResults, [run.run_id]: result.pull_request };
-      await loadData({ quiet: true });
+      await requestDataSync();
     } catch (e) {
       error = e.message;
     } finally {
@@ -257,7 +283,7 @@
    * studio-84: disposition helpers. Both dispatch to the existing backend
    * endpoints (REST /api/execution/close-merged and /archive-and-close-merged),
    * then optimistically remove the run from the client-side Recent list and
-   * kick a quiet loadData() so the reconciled + preview state refreshes.
+   * request a quiet synchronization so reconciled + preview state refreshes.
    * On failure the error is surfaced via the existing `error` banner.
    */
   function dispositionHintFor(message) {
@@ -280,7 +306,7 @@
       runs = runs.filter((r) => r.run_id !== run.run_id);
       if (selectedRunId === run.run_id) selectedRunId = null;
       dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
-      await loadData({ quiet: true });
+      await requestDataSync();
     } catch (e) {
       error = e.message;
       dispositionErrors = { ...dispositionErrors, [run.run_id]: dispositionHintFor(e.message) };
@@ -299,7 +325,7 @@
       runs = runs.filter((r) => r.run_id !== run.run_id);
       if (selectedRunId === run.run_id) selectedRunId = null;
       dispositionErrors = { ...dispositionErrors, [run.run_id]: "" };
-      await loadData({ quiet: true });
+      await requestDataSync();
     } catch (e) {
       error = e.message;
       dispositionErrors = { ...dispositionErrors, [run.run_id]: dispositionHintFor(e.message) };
@@ -427,7 +453,7 @@
         selectedRunId = result.run.run_id;
         activeSelection = "run";
       }
-      await loadData({ quiet: true });
+      await requestDataSync();
     } catch (e) {
       error = e.message;
     } finally {
@@ -482,6 +508,10 @@
     if (run?.status === "blocked") return "warn";
     if (run?.status === "error") return "danger";
     return "";
+  }
+
+  function formatSyncTime(value) {
+    try { return value.toLocaleTimeString(); } catch { return ""; }
   }
 
   function formatActivityTime(value) {
@@ -557,10 +587,36 @@
   }
 
   onMount(() => {
-    loadData();
+    let firstReload = true;
+    syncCoordinator = createExecutionSyncCoordinator({
+      reload: () => {
+        const quiet = !firstReload;
+        firstReload = false;
+        return loadData({ quiet });
+      },
+      onStateChange: (state) => {
+        syncStatus = state.status;
+        lastSuccessfulSyncAt = state.lastSuccessfulSyncAt;
+        syncError = state.error;
+      },
+    });
+
+    const requestVisibleSync = () => {
+      if (document.visibilityState === "visible") requestDataSync();
+    };
+    const handleStreamOpen = () => {
+      connected = true;
+      requestDataSync();
+    };
+    const handleStreamError = () => { connected = false; };
+
+    requestDataSync();
+    document.addEventListener("visibilitychange", requestVisibleSync);
+    window.addEventListener("focus", requestVisibleSync);
+
     stream = new EventSource("/api/execution/stream");
-    stream.addEventListener("open", () => { connected = true; });
-    stream.addEventListener("error", () => { connected = false; });
+    stream.addEventListener("open", handleStreamOpen);
+    stream.addEventListener("error", handleStreamError);
 
     const handleEnvelope = (event) => {
       try {
@@ -590,6 +646,10 @@
     stream.addEventListener("execution_checklist", handleChecklistEvent);
 
     return () => {
+      document.removeEventListener("visibilitychange", requestVisibleSync);
+      window.removeEventListener("focus", requestVisibleSync);
+      syncCoordinator?.dispose();
+      syncCoordinator = null;
       window.clearTimeout(copyTimer);
       refinementDrawerResizeCleanup?.();
       stream?.close();
@@ -602,6 +662,12 @@
   <div class="exec-topbar">
     <div class="exec-topbar-left">
       <span class:healthy={connected} class="status-pill">{connected ? "stream connected" : "reconnecting"}</span>
+      <span
+        class="status-pill {syncTone}"
+        role="status"
+        aria-live="polite"
+        title={syncError?.message || syncLabel}
+      >{syncLabel}</span>
       {#if preview}
         <span class="exec-stat">{preview.summary.dispatchable_now} dispatchable</span>
         <span class="exec-stat">{activeRuns.length} active</span>
@@ -614,7 +680,7 @@
         {/if}
       {/if}
     </div>
-    <button class="secondary small" on:click={async () => { refreshing = true; try { await refreshGitHubCache(); } catch (e) { /* best-effort */ } await loadData({ quiet: true }); }} disabled={refreshing || loading}>{refreshing ? "Refreshing..." : "Refresh"}</button>
+    <button class="secondary small" on:click={async () => { refreshing = true; try { await refreshGitHubCache(); } catch (e) { /* best-effort */ } await requestDataSync(); }} disabled={refreshing || loading}>{refreshing ? "Refreshing..." : "Refresh"}</button>
   </div>
 
   {#if copiedMessage}
