@@ -3,9 +3,11 @@
   import {
     archiveAndCloseMergedPullRequest,
     closeMergedPullRequest,
+    getExecutionEligibility,
     getExecutionPreview,
     getRunChecklist,
     getRunScratchpad,
+    getWorkItem,
     launchExecutionRun,
     listArchivedExecutionRuns,
     listExecutionRuns,
@@ -14,6 +16,7 @@
     refreshGitHubCache,
     resolveDisambiguation,
     sendFollowUpMessage,
+    transitionWorkItem,
   } from "../lib/api.js";
   import ExecutionDispatchList from "./ExecutionDispatchList.svelte";
   import ExecutionDetailPane from "./ExecutionDetailPane.svelte";
@@ -26,6 +29,7 @@
     unresolvedRefinementItems,
   } from "../lib/execution-refinement.js";
   import { createExecutionSyncCoordinator } from "../lib/execution-sync.js";
+  import { projectExecutionRecovery } from "../lib/execution-recovery.js";
 
   const REFINEMENT_DRAFTS_KEY = "escapement.execution.refinement-drafts";
 
@@ -81,6 +85,11 @@
   // targets the `cannot_dispose_work_item_active_run` guard so operators
   // see why the action was blocked without reading the toast.
   let dispositionErrors = {};
+  // Recovery data is keyed by work item so selection changes cannot mix
+  // state or eligibility from different errored runs.
+  let recoveryByWorkItem = {};
+  let recoveryRequestTokens = {};
+  let recoveryLookupKey = null;
   let prResults = {};
   let followUpTexts = {};
   let sendingFollowUp = {};
@@ -168,6 +177,27 @@
   $: selectedRun = selectedRunId ? runs.find((r) => r.run_id === selectedRunId) ?? null : null;
   $: selectedDispatch = selectedDispatchId ? dispatchNodes.find((n) => n.id === selectedDispatchId) ?? null : null;
   $: selectedPullRequest = selectedRun ? selectedRun.pull_request || prResults[selectedRun.run_id] || null : null;
+  $: selectedRecoveryData = selectedRun ? recoveryByWorkItem[selectedRun.work_item_id] || {} : {};
+  $: selectedRecovery = projectExecutionRecovery({
+    run: activeSelection === "run" ? selectedRun : null,
+    workItem: selectedRecoveryData.workItem,
+    eligibility: selectedRecoveryData.eligibility,
+    reconciled: selectedRun ? reconciledByWorkItem[selectedRun.work_item_id] : null,
+    loading: !!selectedRecoveryData.loading,
+    lookupError: selectedRecoveryData.lookupError,
+    actionInFlight: !!selectedRecoveryData.actionInFlight,
+    actionError: selectedRecoveryData.actionError,
+  });
+
+  $: {
+    const nextRecoveryLookupKey = activeSelection === "run" && selectedRun?.status === "error"
+      ? `${selectedRun.run_id}:${selectedRun.work_item_id}`
+      : null;
+    if (nextRecoveryLookupKey !== recoveryLookupKey) {
+      recoveryLookupKey = nextRecoveryLookupKey;
+      if (nextRecoveryLookupKey) refreshRecovery(selectedRun).catch(() => {});
+    }
+  }
 
   // Auto-select first run or dispatch if nothing selected
   $: {
@@ -262,6 +292,83 @@
 
   function requestDataSync() {
     return syncCoordinator?.requestSync() ?? loadData({ quiet: true });
+  }
+
+  function updateRecovery(workItemId, patch) {
+    recoveryByWorkItem = {
+      ...recoveryByWorkItem,
+      [workItemId]: { ...(recoveryByWorkItem[workItemId] || {}), ...patch },
+    };
+  }
+
+  async function refreshRecovery(run) {
+    const workItemId = run.work_item_id;
+    const token = (recoveryRequestTokens[workItemId] || 0) + 1;
+    recoveryRequestTokens = { ...recoveryRequestTokens, [workItemId]: token };
+    updateRecovery(workItemId, { loading: true, lookupError: "" });
+
+    try {
+      const [workItem, eligibility] = await Promise.all([
+        getWorkItem(workItemId),
+        getExecutionEligibility({ work_item_id: workItemId }),
+      ]);
+      if (recoveryRequestTokens[workItemId] === token) {
+        updateRecovery(workItemId, { workItem, eligibility, loading: false, lookupError: "" });
+      }
+      return { workItem, eligibility };
+    } catch (recoveryError) {
+      if (recoveryRequestTokens[workItemId] === token) {
+        updateRecovery(workItemId, { loading: false, lookupError: recoveryError.message });
+      }
+      throw recoveryError;
+    }
+  }
+
+  async function handleRedispatch(run) {
+    const workItemId = run?.work_item_id;
+    const currentData = workItemId ? recoveryByWorkItem[workItemId] || {} : {};
+    const currentRecovery = projectExecutionRecovery({
+      run,
+      workItem: currentData.workItem,
+      eligibility: currentData.eligibility,
+      reconciled: reconciledByWorkItem[workItemId],
+      loading: !!currentData.loading,
+      lookupError: currentData.lookupError,
+      actionInFlight: !!currentData.actionInFlight,
+      actionError: currentData.actionError,
+    });
+    if (!workItemId || !currentRecovery.canRedispatch || currentData.actionInFlight) return;
+
+    updateRecovery(workItemId, { actionInFlight: true, actionError: "" });
+    error = "";
+    try {
+      if (currentRecovery.canInvestigate) {
+        await transitionWorkItem(workItemId, "user.investigate");
+      }
+
+      const fresh = await refreshRecovery(run);
+      const directRecovery = projectExecutionRecovery({
+        run,
+        workItem: fresh.workItem,
+        eligibility: fresh.eligibility,
+      });
+      if (!directRecovery.canRedispatch) {
+        throw new Error(directRecovery.reason);
+      }
+
+      const result = await launchExecutionRun({ work_item_id: workItemId, disambiguate: true });
+      mergeRun(result.run);
+      if (result.run) {
+        selectedRunId = result.run.run_id;
+        activeSelection = "run";
+      }
+      await requestDataSync();
+    } catch (recoveryError) {
+      error = recoveryError.message;
+      updateRecovery(workItemId, { actionError: recoveryError.message });
+    } finally {
+      updateRecovery(workItemId, { actionInFlight: false });
+    }
   }
 
   async function handleOpenPR(run) {
