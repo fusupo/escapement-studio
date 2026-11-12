@@ -1,6 +1,7 @@
+import DOMPurify from "dompurify";
 import { marked } from "marked";
 
-// Configure marked for safe, compact rendering in chat bubbles
+// Parse Markdown, then sanitize the resulting HTML at the rendering boundary.
 marked.setOptions({
   breaks: true, // GFM line breaks
   gfm: true,
@@ -12,5 +13,5 @@ marked.setOptions({
  */
 export function renderMarkdown(text) {
   if (!text) return "";
-  return marked.parse(text);
+  return DOMPurify.sanitize(marked.parse(text, { async: false }), { USE_PROFILES: { html: true } });
 }
