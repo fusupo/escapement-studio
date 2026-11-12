@@ -83,6 +83,14 @@ export function closeGitHubIssue({ repo, issue_number }) {
   });
 }
 
+export function fastForwardExecutionBase(workItemId) {
+  return request("/api/execution/base-ref/fast-forward", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ work_item_id: workItemId }),
+  });
+}
+
 export function getExecutionPreview(params = {}) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {

@@ -11,6 +11,8 @@
   /** @type {{ url: string, number: number } | null} */
   export let pullRequest = null;
   export let openingPr = false;
+  export let fastForwardPending = false;
+  export let fastForwardError = "";
   export let assumptions = [];
   /** @type {{ requires_approval?: boolean, max_concurrent_node_heavy_tasks?: number } | null} */
   export let validationPolicy = null;
@@ -266,8 +268,16 @@
       {#each dispatchNode.safety_checks as check}
         <div class="check-row {check.status}">
           <strong>{check.code}</strong>: {check.message}
+          {#if check.code === "base_ref_current" && check.status === "fail"}
+            <div class="detail-actions base-ref-action">
+              <button class="secondary small" on:click={() => dispatch("fastforwardbase")} disabled={fastForwardPending}>
+                {fastForwardPending ? "Fast-forwarding…" : `Fast-forward ${dispatchNode.default_base_ref}`}
+              </button>
+            </div>
+          {/if}
         </div>
       {/each}
+      <p class="base-ref-status" role="status" aria-live="polite">{fastForwardPending ? "Fetching remote truth and checking checkout safety…" : fastForwardError}</p>
     </div>
 
     <!-- Assumptions -->
@@ -360,7 +370,12 @@
 
   .scope-lists code { overflow-wrap: anywhere; font-size: 10.5px; }
 
+  .base-ref-action { margin-top: 6px; }
+  .base-ref-status { margin: 0; overflow-wrap: anywhere; }
+  .base-ref-status:empty { display: none; }
+
   .check-row {
+    overflow-wrap: anywhere;
     font-size: 11px;
     padding: 2px 0;
   }
