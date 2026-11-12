@@ -72,19 +72,20 @@ export class SQLiteService {
   }
 
   private migrateWorkItemStates() {
-    // Treat the migration as complete only once the schema allows both the
-    // dotted HSM states introduced by ADR 015 and the newer terminal
-    // disposition state `archived`.
-    const tableInfo = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='work_items'").get() as { sql: string } | undefined;
-    if (!tableInfo?.sql || (tableInfo.sql.includes("pre_pr.in_progress") && tableInfo.sql.includes("'archived'"))) {
-      return; // already migrated or no table
-    }
-
-    // SQLite doesn't support ALTER CHECK — recreate with new constraint
-    // Disable FK checks during table swap to avoid edges FK violation
-    this.db.exec(`
-      PRAGMA foreign_keys = OFF;
-      CREATE TABLE IF NOT EXISTS work_items_new (
+    const migrationKey = "schema:work_item_states:v1";
+    if (this.db.prepare("SELECT 1 FROM studio_metadata WHERE key = ?").get(migrationKey)) return;
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_items'").get()) return;
+    const schemaObjects = this.db.prepare(
+      "SELECT sql FROM sqlite_master WHERE tbl_name = 'work_items' AND type IN ('index', 'trigger') AND sql IS NOT NULL"
+    ).all() as Array<{ sql: string }>;
+    const foreignKeys = this.db.pragma("foreign_keys", { simple: true });
+    // FK mode must change outside the transaction. Every DDL/data write and
+    // the version marker commit together, or the original table is restored.
+    this.db.pragma("foreign_keys = OFF");
+    try {
+      this.db.transaction(() => {
+        this.db.exec(`
+      CREATE TABLE work_items_new (
         id          TEXT PRIMARY KEY,
         name        TEXT NOT NULL,
         kind        TEXT NOT NULL DEFAULT 'issue'
@@ -136,10 +137,16 @@ export class SQLiteService {
         updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
       );
 
-      INSERT OR IGNORE INTO work_items_new SELECT * FROM work_items;
+      INSERT INTO work_items_new SELECT * FROM work_items;
       DROP TABLE work_items;
       ALTER TABLE work_items_new RENAME TO work_items;
-      PRAGMA foreign_keys = ON;
-    `);
+        `);
+        for (const { sql } of schemaObjects) this.db.exec(sql);
+        if ((this.db.pragma("foreign_key_check") as unknown[]).length) throw new Error("Work item migration violates foreign keys");
+        this.db.prepare("INSERT INTO studio_metadata (key, value) VALUES (?, '1')").run(migrationKey);
+      })();
+    } finally {
+      this.db.pragma(`foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
+    }
   }
 }
