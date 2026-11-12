@@ -2,8 +2,8 @@
 
 import GraphNodeContextMenu from "./GraphNodeContextMenu.svelte";
 
-/** @type {ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace>} */
-export let workspace;
+/** @type {{ workspace: ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace> }} */
+let { workspace } = $props();
 </script>
 {#if workspace.activeTab === "planning" && workspace.graphContextMenu.open && workspace.graphContextMenu.item && workspace.graphContextMenuModel}
       <GraphNodeContextMenu

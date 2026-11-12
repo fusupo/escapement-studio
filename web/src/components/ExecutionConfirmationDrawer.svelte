@@ -4,8 +4,8 @@ import ExecutionRefinementItem from "./ExecutionRefinementItem.svelte";
 
 import { hasCancellationSelection, refinementDraftFor, unresolvedRefinementItems } from "../lib/execution-refinement.js";
 
-/** @type {ReturnType<typeof import("../lib/execution/workspace.svelte.js").createWorkspace>} */
-export let workspace;
+/** @type {{ workspace: ReturnType<typeof import("../lib/execution/workspace.svelte.js").createWorkspace> }} */
+let { workspace } = $props();
 </script>
 {#if workspace.activeSelection === "run" && workspace.selectedRun?.status === "disambiguating" && !workspace.refinementDrawerClosed[workspace.selectedRun.run_id]}
       {@const drawerRun = workspace.selectedRun}
@@ -25,8 +25,8 @@ export let workspace;
           type="button"
           class="refinement-drawer-resize"
           aria-label="Resize execution confirmation drawer"
-          on:mousedown={(event) => workspace.startRefinementDrawerResize(event, drawerRun.run_id)}
-          on:keydown={(event) => workspace.handleRefinementDrawerResizeKeydown(event, drawerRun.run_id)}
+          onmousedown={(event) => workspace.startRefinementDrawerResize(event, drawerRun.run_id)}
+          onkeydown={(event) => workspace.handleRefinementDrawerResizeKeydown(event, drawerRun.run_id)}
         ><span></span></button>
 
         <header class="refinement-drawer-header">
@@ -42,7 +42,7 @@ export let workspace;
               class="secondary small refinement-drawer-close"
               aria-label="Close execution confirmation"
               title="Close confirmation drawer"
-              on:click={() => workspace.setRefinementDrawerClosed(drawerRun.run_id, true)}
+              onclick={() => workspace.setRefinementDrawerClosed(drawerRun.run_id, true)}
             >&times;</button>
           </div>
         </header>
@@ -75,7 +75,7 @@ export let workspace;
             <textarea
               placeholder="Anything else the coding agent should know..."
               value={drawerContext}
-              on:input={(e) => workspace.disambiguationContext = { ...workspace.disambiguationContext, [drawerRun.run_id]: e.currentTarget.value }}
+              oninput={(e) => workspace.assign({ disambiguationContext: { ...workspace.disambiguationContext, [drawerRun.run_id]: e.currentTarget.value } })}
               rows="3"
               disabled={drawerResolving}
             ></textarea>
@@ -90,7 +90,7 @@ export let workspace;
               <input
                 type="checkbox"
                 checked={drawerAllowsUnresolved}
-                on:change={(e) => workspace.confirmUnresolved = { ...workspace.confirmUnresolved, [drawerRun.run_id]: e.currentTarget.checked }}
+                onchange={(e) => workspace.assign({ confirmUnresolved: { ...workspace.confirmUnresolved, [drawerRun.run_id]: e.currentTarget.checked } })}
                 disabled={drawerResolving}
               />
               Proceed with {drawerUnresolved.length} unresolved {drawerUnresolved.length === 1 ? "item" : "items"}
@@ -101,7 +101,7 @@ export let workspace;
 
           <button
             class="confirm-execution-button"
-            on:click={() => workspace.handleResolveDisambiguation(drawerRun)}
+            onclick={() => workspace.handleResolveDisambiguation(drawerRun)}
             disabled={drawerResolving || (!drawerCancelsExecution && drawerUnresolved.length > 0 && !drawerAllowsUnresolved)}
           >
             {drawerResolving

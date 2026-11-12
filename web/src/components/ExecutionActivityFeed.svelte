@@ -1,10 +1,10 @@
 <script>
 
-/** @type {ReturnType<typeof import("../lib/execution/workspace.svelte.js").createWorkspace>} */
-export let workspace;
-$: run = workspace.selectedRun;
+/** @type {{ workspace: ReturnType<typeof import("../lib/execution/workspace.svelte.js").createWorkspace> }} */
+let { workspace } = $props();
+const run = $derived(workspace.selectedRun);
 </script>
-<div class="workspace-feed-scroll" bind:this={workspace.feedScrollEl}>
+<div class="workspace-feed-scroll" {@attach workspace.attachFeedScroll}>
             {#if workspace.selectedRunTurnGroups.length > 0}
               <div class="unified-feed">
                 {#each workspace.selectedRunTurnGroups as group, gi}
@@ -17,7 +17,7 @@ $: run = workspace.selectedRun;
                             <span class="feed-chat-role">Agent</span>
                             <span class="feed-chat-ts">{workspace.formatActivityTime(entry.timestamp)}</span>
                             {#if workspace.shouldCollapse(entry.message)}
-                              <button class="feed-expand-btn" on:click={() => workspace.toggleMessageExpand(globalIdx)}>
+                              <button class="feed-expand-btn" onclick={() => workspace.toggleMessageExpand(globalIdx)}>
                                 {workspace.expandedMessages[globalIdx] ? "collapse" : "expand"}
                               </button>
                             {/if}
@@ -26,7 +26,7 @@ $: run = workspace.selectedRun;
                             {workspace.expandedMessages[globalIdx] || !workspace.shouldCollapse(entry.message) ? entry.message : workspace.truncateText(entry.message)}
                           </div>
                           {#if workspace.shouldCollapse(entry.message) && !workspace.expandedMessages[globalIdx]}
-                            <button class="feed-expand-inline" on:click={() => workspace.toggleMessageExpand(globalIdx)}>Show full message ({entry.message.split("\n").length} lines)</button>
+                            <button class="feed-expand-inline" onclick={() => workspace.toggleMessageExpand(globalIdx)}>Show full message ({entry.message.split("\n").length} lines)</button>
                           {/if}
                         </div>
                       {:else if entry.kind === "user_message"}

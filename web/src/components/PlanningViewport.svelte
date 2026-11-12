@@ -6,8 +6,8 @@ import GraphView from "./GraphView.svelte";
 import FiltersToolbar from "./FiltersToolbar.svelte";
 import Sidebar from "./Sidebar.svelte";
 
-/** @type {ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace>} */
-export let workspace;
+/** @type {{ workspace: ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace> }} */
+let { workspace } = $props();
 </script>
 <div class="planning-viewport">
         <!-- Filter bar -->
@@ -23,7 +23,7 @@ export let workspace;
               <div class="pane-header">
                 <span class="pane-title">CHAT</span>
                 <div class="pane-actions">
-                  <button class="pane-action" on:click={() => (workspace.chatCollapsed = true)} title="Collapse panel" aria-label="Collapse chat panel">
+                  <button class="pane-action" onclick={() => workspace.assign({ chatCollapsed: true })} title="Collapse panel" aria-label="Collapse chat panel">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="11,17 6,12 11,7"/><polyline points="18,17 13,12 18,7"/></svg>
                   </button>
                 </div>
@@ -33,9 +33,9 @@ export let workspace;
               </div>
             </div>
             <!-- Left resize handle -->
-            <button class="resize-handle" on:mousedown={(e) => workspace.onDragStart("left", e)} on:keydown={(e) => workspace.onResizeKeydown("left", e)} aria-label="Resize chat panel"></button>
+            <button class="resize-handle" onmousedown={(e) => workspace.onDragStart("left", e)} onkeydown={(e) => workspace.onResizeKeydown("left", e)} aria-label="Resize chat panel"></button>
           {:else}
-            <button class="collapsed-pane-tab" on:click={() => (workspace.chatCollapsed = false)} title="Expand Chat">
+            <button class="collapsed-pane-tab" onclick={() => workspace.assign({ chatCollapsed: false })} title="Expand Chat">
               <span>CHAT</span>
             </button>
           {/if}
@@ -69,7 +69,7 @@ export let workspace;
 
           <!-- Right resize handle -->
           {#if !workspace.sidebarCollapsed}
-            <button class="resize-handle" on:mousedown={(e) => workspace.onDragStart("right", e)} on:keydown={(e) => workspace.onResizeKeydown("right", e)} aria-label="Resize details panel"></button>
+            <button class="resize-handle" onmousedown={(e) => workspace.onDragStart("right", e)} onkeydown={(e) => workspace.onResizeKeydown("right", e)} aria-label="Resize details panel"></button>
           {/if}
 
           <!-- Right: Detail sidebar -->
@@ -78,7 +78,7 @@ export let workspace;
               <div class="pane-header">
                 <span class="pane-title">DETAILS</span>
                 <div class="pane-actions">
-                  <button class="pane-action" on:click={() => (workspace.sidebarCollapsed = true)} title="Collapse panel" aria-label="Collapse details panel">
+                  <button class="pane-action" onclick={() => workspace.assign({ sidebarCollapsed: true })} title="Collapse panel" aria-label="Collapse details panel">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13,17 18,12 13,7"/><polyline points="6,17 11,12 6,7"/></svg>
                   </button>
                 </div>
@@ -114,7 +114,7 @@ export let workspace;
               </div>
             </div>
           {:else}
-            <button class="collapsed-pane-tab collapsed-pane-tab-right" on:click={() => (workspace.sidebarCollapsed = false)} title="Expand Details">
+            <button class="collapsed-pane-tab collapsed-pane-tab-right" onclick={() => workspace.assign({ sidebarCollapsed: false })} title="Expand Details">
               <span>DETAILS</span>
             </button>
           {/if}

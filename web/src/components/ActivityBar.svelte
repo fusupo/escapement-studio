@@ -1,7 +1,7 @@
 <script>
 
-/** @type {ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace>} */
-export let workspace;
+/** @type {{ workspace: ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace> }} */
+let { workspace } = $props();
 </script>
 <aside class="activity-bar">
     <div class="activity-icons">
@@ -9,7 +9,7 @@ export let workspace;
         <button
           class="activity-icon"
           class:active={workspace.activeTab === item.id}
-          on:click={() => (workspace.activeTab = item.id)}
+          onclick={() => workspace.assign({ activeTab: item.id })}
           title={item.label}
           aria-label={item.label}
         >
@@ -45,7 +45,7 @@ export let workspace;
     <div class="activity-bottom">
       <button
         class="activity-icon"
-        on:click={workspace.refresh}
+        onclick={workspace.refresh}
         disabled={workspace.loading}
         title="Refresh"
         aria-label="Refresh"

@@ -1,7 +1,7 @@
 <script>
 
-/** @type {ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace>} */
-export let workspace;
+/** @type {{ workspace: ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace> }} */
+let { workspace } = $props();
 </script>
 <footer class="status-bar">
       <div class="status-bar-left">
