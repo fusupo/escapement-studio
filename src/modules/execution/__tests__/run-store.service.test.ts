@@ -19,6 +19,10 @@ import type { ActivityLogEntry, ChecklistItem, ExecutionRunRecord } from "../typ
 
 interface HarnessStore {
   recentRuns: ExecutionRunRecord[];
+  reserveLaunch: RunStore["reserveLaunch"];
+  releaseLaunch: RunStore["releaseLaunch"];
+  listPendingLaunches: RunStore["listPendingLaunches"];
+  listActiveRuns: RunStore["listActiveRuns"];
   recentRunLimit: number;
   artifactRoot: string;
   logger: { log: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
@@ -97,6 +101,45 @@ describe("RunStore", () => {
 
   afterEach(() => {
     rmSync(artifactRoot, { recursive: true, force: true });
+  });
+
+  describe("sync safety query", () => {
+    it("uses unique pending tokens", () => {
+      const store = makeStore(artifactRoot);
+      const a = store.reserveLaunch("same"), b = store.reserveLaunch("same");
+      store.releaseLaunch(a); store.releaseLaunch(a);
+      expect(store.listPendingLaunches()).toEqual(["same"]);
+      store.releaseLaunch(b); expect(store.listPendingLaunches()).toEqual([]);
+    });
+    it.each(["queued", "preparing", "disambiguating", "running", "completed", "error", "blocked"] as const)("finds %s across repos and work items", status => {
+      const run = makeRun("other", { status, repo: "other/repo", work_item_id: "other" });
+      writeRunToDisk(artifactRoot, run);
+      expect(makeStore(artifactRoot).listActiveRuns().length).toBe(["completed", "error", "blocked"].includes(status) ? 0 : 1);
+    });
+    it("finds evicted active runs and applies memory status/disposal before filtering", () => {
+      const store = makeStore(artifactRoot);
+      writeRunToDisk(artifactRoot, makeRun("evicted", { status: "running" }));
+      for (let i = 0; i < 20; i++) store.upsertRecentRun(makeRun(`run_${i}`));
+      expect(store.listActiveRuns().map(run => run.run_id)).toEqual(["evicted"]);
+      store.upsertRecentRun(makeRun("evicted", { status: "completed" }));
+      expect(store.listActiveRuns()).toEqual([]);
+      writeRunToDisk(artifactRoot, makeRun("evicted", { status: "completed" }));
+      store.upsertRecentRun(makeRun("evicted", { status: "queued" }));
+      expect(store.listActiveRuns()).toHaveLength(1);
+      store.upsertRecentRun(makeRun("evicted", { status: "queued", disposed_at: "now" }));
+      expect(store.listActiveRuns()).toEqual([]);
+      writeRunToDisk(artifactRoot, makeRun("disposed", { status: "running", disposed_at: "now" }));
+      expect(store.listActiveRuns()).toEqual([]);
+    });
+    it("refuses corrupt records and an unreadable scan; absent directory is empty", () => {
+      const dir = writeRunToDisk(artifactRoot, makeRun("bad"));
+      writeFileSync(join(dir, "status.json"), "{bad");
+      expect(() => makeStore(artifactRoot).listActiveRuns()).toThrow("base_ref_sync_scan_unavailable");
+      rmSync(join(artifactRoot, "runs"), { recursive: true });
+      expect(makeStore(artifactRoot).listActiveRuns()).toEqual([]);
+      writeFileSync(join(artifactRoot, "runs"), "not a directory");
+      expect(() => makeStore(artifactRoot).listActiveRuns()).toThrow("base_ref_sync_scan_unavailable");
+    });
   });
 
   describe("buffer operations", () => {

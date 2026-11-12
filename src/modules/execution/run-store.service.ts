@@ -51,6 +51,30 @@ export class RunStore {
   private readonly recentRuns: ExecutionRunRecord[] = [];
   private readonly recentRunLimit = 16;
   private eventCounter = 0;
+  private readonly pendingLaunches = new Map<symbol, string>();
+
+  reserveLaunch(workItemId: string): symbol {
+    const token = Symbol(workItemId);
+    this.pendingLaunches.set(token, workItemId);
+    return token;
+  }
+
+  releaseLaunch(token: symbol): void { this.pendingLaunches.delete(token); }
+
+  listPendingLaunches(): string[] { return [...this.pendingLaunches.values()]; }
+
+  /** Exhaustive safety query: unlike UI hydration, a partial scan is not safe. */
+  listActiveRuns(): ExecutionRunRecord[] {
+    const warnings: string[] = [];
+    const disk = loadRunRecordsForArtifactRoot(this.artifactRoot, {
+      includeDisposed: true, onWarn: message => warnings.push(message),
+    });
+    if (warnings.length) throw new Error(`base_ref_sync_scan_unavailable: ${warnings.join("; ")}`);
+    const merged = new Map(disk.map(run => [run.run_id, run]));
+    for (const run of this.recentRuns) merged.set(run.run_id, run);
+    return [...merged.values()].filter(run => !run.disposed_at
+      && ["queued", "preparing", "disambiguating", "running"].includes(run.status));
+  }
 
   /**
    * Issue #176: populate `recentRuns` from `runs/<id>/status.json` on
