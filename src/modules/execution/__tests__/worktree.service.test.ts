@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runAsyncCommand } from "../../../lib/async-command.js";
+vi.mock("../../../lib/async-command.js", () => ({ runAsyncCommand: vi.fn() }));
 import { WorktreeService } from "../worktree.service.js";
 import type { ExecutionRunRecord } from "../types.js";
 
@@ -68,6 +70,7 @@ describe("WorktreeService", () => {
   let tmpRoot: string;
 
   beforeEach(() => {
+    vi.mocked(runAsyncCommand).mockReset().mockResolvedValue(undefined);
     tmpRoot = mkdtempSync(join(tmpdir(), "worktree-test-"));
   });
 
@@ -237,42 +240,39 @@ describe("WorktreeService", () => {
   });
 
   describe("installDependencies", () => {
-    it("is a no-op when the worktree has no package.json", () => {
-      const service = makeService(tmpRoot);
-      const worktreePath = join(tmpRoot, "wt-no-pkg");
-      mkdirSync(worktreePath, { recursive: true });
-      const onStatus = vi.fn();
-
-      service.installDependencies(worktreePath, onStatus);
-
-      expect(onStatus).not.toHaveBeenCalled();
+    it("skips worktrees without package.json", async () => {
+      await makeService(tmpRoot).installDependencies(tmpRoot);
+      expect(runAsyncCommand).not.toHaveBeenCalled();
     });
-
-    it("reports 'Installing dependencies' then 'Dependencies installed' on npm ci success", () => {
-      const service = makeService(tmpRoot);
-      const worktreePath = join(tmpRoot, "wt-pkg");
-      mkdirSync(worktreePath, { recursive: true });
-      writeFileSync(join(worktreePath, "package.json"), "{}");
-
-      // We can't easily stub execFileSync for this shape of test without
-      // vi.mock — the harness is hitting real `execFileSync("npm", ...)`.
-      // Use vi.spyOn + vi.doMock for the child_process import.
-      // Alternative: skip success-path and just verify the failure-path
-      // behaviour (which swallows without pushing status_change).
-      const onStatus = vi.fn();
-
-      // We cannot stub execFileSync after the fact, so this case is
-      // covered implicitly by the failure-path test below. Assert that
-      // at minimum the "Installing dependencies..." status fires.
-      try {
-        service.installDependencies(worktreePath, onStatus);
-      } catch {
-        // Swallow — npm may actually run and fail; we just care about
-        // the initial status_change.
-      }
-      const firstStatus = onStatus.mock.calls[0];
-      expect(firstStatus?.[0]).toBe("status_change");
-      expect(firstStatus?.[1]).toMatch(/Installing dependencies/);
+    it("waits for npm ci and streams progress", async () => {
+      writeFileSync(join(tmpRoot, "package.json"), "{}");
+      const status = vi.fn();
+      let finish!: () => void;
+      vi.mocked(runAsyncCommand).mockImplementationOnce((_command, _args, options) => {
+        options.onOutput?.("install progress");
+        return new Promise<void>((resolve) => { finish = resolve; });
+      });
+      const pending = makeService(tmpRoot).installDependencies(tmpRoot, status);
+      expect(status).toHaveBeenCalledWith("info", "install progress");
+      expect(status).not.toHaveBeenCalledWith("status_change", "Dependencies installed.");
+      finish(); await pending;
+      expect(status).toHaveBeenCalledWith("status_change", "Dependencies installed.");
+      expect(runAsyncCommand).toHaveBeenCalledTimes(1);
+    });
+    it("falls back to npm install after ci fails", async () => {
+      writeFileSync(join(tmpRoot, "package.json"), "{}");
+      vi.mocked(runAsyncCommand).mockRejectedValueOnce(new Error("lock mismatch"));
+      const status = vi.fn();
+      await makeService(tmpRoot).installDependencies(tmpRoot, status);
+      expect(vi.mocked(runAsyncCommand).mock.calls.map((call) => call[1])).toEqual([["ci"], ["install"]]);
+      expect(status).toHaveBeenCalledWith("status_change", "Dependencies installed (via npm install).");
+    });
+    it("reports both failures and preserves the existing non-blocking failure policy", async () => {
+      writeFileSync(join(tmpRoot, "package.json"), "{}");
+      vi.mocked(runAsyncCommand).mockRejectedValue(new Error("offline"));
+      const status = vi.fn();
+      await expect(makeService(tmpRoot).installDependencies(tmpRoot, status)).resolves.toBeUndefined();
+      expect(status).toHaveBeenLastCalledWith("info", expect.stringContaining("Dependency installation failed"));
     });
   });
 

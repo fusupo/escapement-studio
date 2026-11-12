@@ -403,7 +403,7 @@ export class ExecutionService implements OnModuleInit {
     // Emit a status event before the potentially slow install so the UI shows progress.
     this.runStore.emitRun("execution_status", run);
     const runIdForActivity = run.run_id;
-    this.worktreeService.installDependencies(run.worktree_path, (kind, message) => {
+    await this.worktreeService.installDependencies(run.worktree_path, (kind, message) => {
       this.runInteractionService.pushActivity(runIdForActivity, kind, message);
     });
 

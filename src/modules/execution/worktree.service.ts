@@ -1,3 +1,4 @@
+import { runAsyncCommand } from "../../lib/async-command.js";
 import { Injectable, Logger } from "@nestjs/common";
 import { execFileSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
@@ -33,7 +34,7 @@ import type {
  *   - `createWorktree(branch, baseRef, worktreePath)` — wraps the
  *     inline `git worktree add` call from ExecutionService.executeRun
  *   - `installDependencies(worktreePath, onStatus?)` — wraps the
- *     inline `npm ci` → `npm install --ignore-scripts` fallback block
+ *     asynchronous `npm ci` → `npm install` fallback
  *     from ExecutionService.executeRun. Takes an optional callback so
  *     the orchestrator can still push activity-log entries.
  */
@@ -108,10 +109,10 @@ export class WorktreeService {
    * helper. If omitted, failures are logged via the service logger
    * only.
    */
-  installDependencies(
+  async installDependencies(
     worktreePath: string,
     onStatus?: (kind: "info" | "status_change", message: string) => void,
-  ): void {
+  ): Promise<void> {
     if (!existsSync(join(worktreePath, "package.json"))) {
       return;
     }
@@ -121,11 +122,10 @@ export class WorktreeService {
       // coding agent can modify it. Allow dependency lifecycle scripts here:
       // native dependencies such as better-sqlite3 otherwise install without
       // their bindings and make the run's quality checks fail spuriously.
-      execFileSync("npm", ["ci"], {
+      await runAsyncCommand("npm", ["ci"], {
         cwd: worktreePath,
-        encoding: "utf8",
         timeout: 120000,
-        stdio: "pipe",
+        onOutput: (text) => onStatus?.("info", text),
       });
       onStatus?.("status_change", "Dependencies installed.");
       return;
@@ -133,11 +133,10 @@ export class WorktreeService {
       const message = npmErr instanceof Error ? npmErr.message : String(npmErr);
       onStatus?.("info", `npm ci failed, trying npm install: ${message.slice(0, 200)}`);
       try {
-        execFileSync("npm", ["install"], {
+        await runAsyncCommand("npm", ["install"], {
           cwd: worktreePath,
-          encoding: "utf8",
           timeout: 120000,
-          stdio: "pipe",
+          onOutput: (text) => onStatus?.("info", text),
         });
         onStatus?.("status_change", "Dependencies installed (via npm install).");
         return;
