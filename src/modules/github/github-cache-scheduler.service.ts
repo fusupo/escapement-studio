@@ -4,6 +4,7 @@ import { Cron, CronExpression } from "@nestjs/schedule";
 import { WorkItemHsmService } from "../graph/work-item-hsm.service.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
+import { GitHubRepoTruthRefreshedEvent, normalizeGitHubRepo } from "./events/github-repo-truth-refreshed.event.js";
 import { WorkItemMergedEvent } from "../execution/events/work-item-merged.event.js";
 import { GitHubBatchCache, type CachedPullRequest, type CachedIssue } from "./github-batch-cache.service.js";
 
@@ -79,6 +80,8 @@ export class GitHubCacheScheduler {
     this.cache.invalidate(repo);
     const prs = await this.cache.listPullRequests(repo);
     const issues = await this.cache.listIssues(repo);
+    const identity = normalizeGitHubRepo(repo);
+    if (identity) this.eventBus.publish(new GitHubRepoTruthRefreshedEvent(identity, Date.now()));
 
     // Dispatch HSM events for any state advances
     const workItems = this.workItemsService.list({}).filter(

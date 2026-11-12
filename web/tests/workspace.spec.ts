@@ -1,6 +1,66 @@
 import { test, expect } from "@playwright/test";
 import { mockWorkspace } from "./workspace.fixture";
 
+test.describe('guarded base fast-forward', () => {
+  for (const width of [1440, 1000]) {
+    test(`resynchronizes after keyboard action and prevents duplicate requests at ${width}px`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 1000 });
+      const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+      const fixture = await mockWorkspace(page, { dispatch: true, fastForward: 'deferred' });
+      await page.goto('/');
+      await page.getByRole('button', { name: 'Execute', exact: true }).click();
+      await page.locator('.dispatch-item').click();
+      const button = page.getByRole('button', { name: 'Fast-forward develop', exact: true });
+      await expect(button).toBeVisible();
+      await button.focus(); await page.keyboard.press('Enter');
+      const pending = page.getByRole('button', { name: 'Fast-forwarding…', exact: true });
+      await expect(pending).toBeDisabled();
+      await pending.dispatchEvent('click');
+      const posts = () => fixture.calls.filter(call => call.path.endsWith('/base-ref/fast-forward'));
+      await expect.poll(() => posts().length).toBe(1);
+      expect(posts()[0].body).toEqual({ work_item_id: 'studio-900' });
+      await expect(page.getByRole('status').filter({ hasText: 'Fetching remote truth' })).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath(`fast-forward-${width}.png`), fullPage: true });
+      fixture.finishFastForward();
+      await expect(page.locator('.exec-col-details').getByRole('button', { name: 'Launch', exact: true })).toBeEnabled();
+      await expect(page.getByRole('button', { name: /Fast-forward/ })).toHaveCount(0);
+      expect(posts()).toHaveLength(1); expect(errors).toEqual([]);
+    });
+  }
+
+  test('uses the configured default base and presents backend refusal inline', async ({ page }) => {
+    const fixture = await mockWorkspace(page, { dispatch: true, baseRef: 'main', fastForward: 'refusal' });
+    await page.goto('/'); await page.getByRole('button', { name: 'Execute', exact: true }).click();
+    await page.locator('.dispatch-item').click();
+    await page.getByRole('button', { name: 'Fast-forward main', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'base_ref_sync_active_run: Active run exec_other' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Fast-forward main', exact: true })).toBeEnabled();
+    expect(fixture.calls.filter(call => call.path.endsWith('/base-ref/fast-forward'))).toHaveLength(1);
+  });
+
+  test('does not offer mutation for unrelated failed checks', async ({ page }) => {
+    await mockWorkspace(page, { dispatch: true, failedCheck: 'branch_available' });
+    await page.goto('/'); await page.getByRole('button', { name: 'Execute', exact: true }).click();
+    await page.locator('.dispatch-item').click();
+    await expect(page.locator('.exec-col-details')).toContainText('branch_available');
+    await expect(page.getByRole('button', { name: /Fast-forward/ })).toHaveCount(0);
+  });
+
+  test('reports unknown outcome on dropped response and reconnects without retrying mutation', async ({ page }) => {
+    const fixture = await mockWorkspace(page, { dispatch: true, fastForward: 'drop' });
+    await page.goto('/'); await page.getByRole('button', { name: 'Execute', exact: true }).click();
+    await page.locator('.dispatch-item').click();
+    await page.getByRole('button', { name: 'Fast-forward develop', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Fast-forward outcome unknown. Wait for synchronization' })).toBeVisible();
+    await page.evaluate(() => {
+      const stream = (window as any).__streams.findLast((s: any) => s.url === '/api/execution/stream');
+      stream.dispatchEvent(new Event('error')); stream.dispatchEvent(new Event('open'));
+    });
+    await expect(page.locator('.exec-col-details').getByRole('button', { name: 'Launch', exact: true })).toBeEnabled();
+    expect(fixture.calls.filter(call => call.path.endsWith('/base-ref/fast-forward'))).toHaveLength(1);
+  });
+});
+
 test('select a graph item, review and approve its plan, and render safe chat', async ({ page }, testInfo) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   const fixture = await mockWorkspace(page);

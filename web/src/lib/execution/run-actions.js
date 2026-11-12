@@ -1,7 +1,26 @@
-import { archiveAndCloseMergedPullRequest, cleanupExecutionWorktree, closeMergedPullRequest, getExecutionEligibility, getWorkItem, launchExecutionRun, openPullRequest, transitionWorkItem } from "../api.js";
+import { fastForwardExecutionBase, archiveAndCloseMergedPullRequest, cleanupExecutionWorktree, closeMergedPullRequest, getExecutionEligibility, getWorkItem, launchExecutionRun, openPullRequest, transitionWorkItem } from "../api.js";
 import { projectExecutionRecovery } from "../execution-recovery.js";
 /** run actions for the execution workspace. */
 export function createRunActions(s, actions) {
+    async function handleFastForward(node) {
+        const id = node?.id;
+        if (!id || s.fastForwardPending[id]) return;
+        s.fastForwardPending = { ...s.fastForwardPending, [id]: true };
+        s.fastForwardErrors = { ...s.fastForwardErrors, [id]: "" };
+        try {
+            await fastForwardExecutionBase(id);
+            await actions.requestDataSync();
+        }
+        catch (error) {
+            const message = error.message || "Connection lost.";
+            s.fastForwardErrors = { ...s.fastForwardErrors, [id]: message.startsWith("base_ref_sync_")
+                ? message
+                : `Fast-forward outcome unknown. Wait for synchronization before trying again. ${message}` };
+        }
+        finally {
+            s.fastForwardPending = { ...s.fastForwardPending, [id]: false };
+        }
+    }
     function updateRecovery(workItemId, patch) {
         s.recoveryByWorkItem = {
             ...s.recoveryByWorkItem,
@@ -173,5 +192,5 @@ export function createRunActions(s, actions) {
         if (node)
             actions.launchNode(node);
     }
-    return { updateRecovery, refreshRecovery, handleRedispatch, handleOpenPR, dispositionHintFor, handleCloseRun, handleArchiveAndCloseRun, launchNode, launchNodeById };
+    return { handleFastForward, updateRecovery, refreshRecovery, handleRedispatch, handleOpenPR, dispositionHintFor, handleCloseRun, handleArchiveAndCloseRun, launchNode, launchNodeById };
 }

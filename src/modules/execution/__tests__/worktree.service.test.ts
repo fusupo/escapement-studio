@@ -19,7 +19,11 @@ interface HarnessService {
   logger: { log: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
   artifactRoot: string;
   worktreeRoot: string;
-  runCommand: ReturnType<typeof vi.fn>;
+  runCommand: ReturnType<typeof vi.fn<(cmd: string, args: string[], options?: object) => string>>;
+  baseTruth: Map<string, number>;
+  fetchBaseRef: WorktreeService["fetchBaseRef"];
+  checkBaseRefCurrent: WorktreeService["checkBaseRefCurrent"];
+  fastForwardBaseRef: WorktreeService["fastForwardBaseRef"];
   // Methods under test via prototype
   runGit: WorktreeService["runGit"];
   runGitIn: WorktreeService["runGitIn"];
@@ -36,6 +40,7 @@ interface HarnessService {
 
 function makeService(artifactRoot: string): HarnessService {
   const service = Object.create(WorktreeService.prototype) as HarnessService;
+  service.baseTruth = new Map();
   service.logger = { log: vi.fn(), warn: vi.fn() };
   (service as any).artifactRoot = artifactRoot;
   (service as any).worktreeRoot = join(artifactRoot, "worktrees");
@@ -142,9 +147,11 @@ describe("WorktreeService", () => {
   });
 
   describe("evaluateSafety", () => {
-    it("returns 5 checks, all pass for a clean repo + available branch + bounded path", () => {
+    it("returns 6 checks, all pass for a clean repo + available branch + bounded path", () => {
       const service = makeService(tmpRoot);
       service.runCommand = vi.fn((_cmd, args) => {
+        if (args[0] === "remote") return "git@github.com:fusupo/escapement-studio.git";
+        if (args[0] === "rev-list") return "0 0";
         if (args[0] === "status") return ""; // tracked clean
         if (args[0] === "rev-parse") return "abc123\n"; // base ref exists
         if (args[0] === "branch") return ""; // branch is available
@@ -152,17 +159,20 @@ describe("WorktreeService", () => {
         return "";
       }) as any;
 
+      service.fetchBaseRef("fusupo/escapement-studio", "develop");
       const checks = service.evaluateSafety(
         "new-branch",
         join(tmpRoot, "worktrees", "new-branch"),
         "develop",
+        "fusupo/escapement-studio",
       );
 
-      expect(checks.length).toBe(5);
+      expect(checks.length).toBe(6);
       expect(checks.every((c) => c.status === "pass")).toBe(true);
       expect(checks.map((c) => c.code)).toEqual([
         "tracked_repo_clean",
         "base_ref_exists",
+        "base_ref_current",
         "branch_available",
         "worktree_path_available",
         "worktree_path_bounded",
@@ -236,6 +246,95 @@ describe("WorktreeService", () => {
       );
       const bounded = checks.find((c) => c.code === "worktree_path_bounded");
       expect(bounded?.status).toBe("fail");
+    });
+  });
+
+  describe("base-ref freshness and guarded mutation", () => {
+    function ready() {
+      const service = makeService(tmpRoot);
+      service.runCommand.mockImplementation((_cmd, args) => {
+        if (args[0] === "remote") return "https://github.com/Fusupo/escapement-studio.git/";
+        if (args[0] === "rev-parse") return "abc123";
+        if (args[0] === "rev-list") return "0 0";
+        if (args[0] === "symbolic-ref") return "develop";
+        return "";
+      });
+      return service;
+    }
+    const repo = "fusupo/escapement-studio";
+    it("requires a successful process-local fetch and expires at exactly 60 seconds", () => {
+      const service = ready();
+      const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+      expect(service.checkBaseRefCurrent(repo, "develop").status).toBe("fail");
+      service.fetchBaseRef(repo, "develop");
+      now.mockReturnValue(60999);
+      expect(service.checkBaseRefCurrent(repo, "develop").status).toBe("pass");
+      now.mockReturnValue(61000);
+      expect(service.checkBaseRefCurrent(repo, "develop").status).toBe("fail");
+      now.mockRestore();
+      expect(service.runCommand).toHaveBeenCalledWith("git", ["fetch", "--no-tags", "origin", "+refs/heads/develop:refs/remotes/origin/develop"], expect.objectContaining({ timeout: 30000 }));
+    });
+    it.each([["0 0", "pass", "0 commits ahead"], ["3 0", "pass", "3 commits ahead"], ["0 2", "fail", "Local develop is behind origin/develop by 2 commits."], ["3 2", "fail", "3 ahead, 2 behind"], ["", "fail", "Invalid"], ["oops", "fail", "Invalid"], ["-1 2", "fail", "Invalid"]])("compares %s", (counts, status, message) => {
+      const service = ready();
+      service.fetchBaseRef(repo, "develop");
+      const original = service.runCommand.getMockImplementation()!;
+      service.runCommand.mockImplementation((cmd, args, opts) => args[0] === "rev-list" ? counts : original(cmd, args, opts));
+      expect(service.checkBaseRefCurrent(repo, "develop")).toMatchObject({ code: "base_ref_current", status, message: expect.stringContaining(message) });
+    });
+    it.each([null, "other/repo", "bad"])("rejects missing/mismatched repo %s", expected => {
+      const service = ready(); service.fetchBaseRef(repo, "develop");
+      expect(service.checkBaseRefCurrent(expected, "develop").status).toBe("fail");
+    });
+    it("bounds proofs and removes failed fetch proof", () => {
+      const service = ready();
+      for (let i = 0; i < 40; i++) service.fetchBaseRef(repo, `base-${i}`);
+      expect(service.baseTruth.size).toBe(32);
+      expect(service.checkBaseRefCurrent(repo, "base-0").status).toBe("fail");
+      service.runCommand.mockImplementation(() => { throw new Error("offline"); });
+      expect(() => service.fetchBaseRef(repo, "base-39")).toThrow("offline");
+    });
+    it.each(["status", "symbolic-ref", "remote", "rev-parse", "fetch"])("refuses %s failure without pull", command => {
+      const service = ready(); const original = service.runCommand.getMockImplementation()!;
+      service.runCommand.mockImplementation((cmd, args, opts) => { if (args[0] === command) throw new Error("git failed"); return original(cmd, args, opts); });
+      expect(() => service.fastForwardBaseRef(repo, "develop")).toThrow("git failed");
+      expect(service.runCommand.mock.calls.some(([, args]) => args.includes("pull"))).toBe(false);
+    });
+    it.each([["status", "?? untracked"], ["status", " M tracked"], ["symbolic-ref", "feature"], ["remote", "https://example.com/fusupo/escapement-studio"]])("refuses unsafe %s", (command, output) => {
+      const service = ready(); const original = service.runCommand.getMockImplementation()!;
+      service.runCommand.mockImplementation((cmd, args, opts) => args[0] === command ? output : original(cmd, args, opts));
+      expect(() => service.fastForwardBaseRef(repo, "develop")).toThrow();
+      expect(service.runCommand.mock.calls.some(([, args]) => args.includes("pull"))).toBe(false);
+    });
+    it("no-ops equal and ahead-only; invalidates on pull failure", () => {
+      const service = ready();
+      expect(service.fastForwardBaseRef(repo, "develop").updated).toBe(false);
+      const original = service.runCommand.getMockImplementation()!;
+      service.runCommand.mockImplementation((cmd, args, opts) => {
+        if (args.includes("pull")) throw new Error("pull failed");
+        return args[0] === "rev-list" ? "0 2" : original(cmd, args, opts);
+      });
+      expect(() => service.fastForwardBaseRef(repo, "develop")).toThrow("pull failed");
+      expect(service.baseTruth.size).toBe(0);
+      expect(service.runCommand).toHaveBeenCalledWith("git", ["-c", "merge.autostash=false", "-c", "rebase.autostash=false", "pull", "--ff-only", "--no-rebase", "origin", "develop"], expect.objectContaining({ timeout: 30000 }));
+    });
+    it("fast-forwards a disposable bare remote and refuses divergence", () => {
+      const remote = join(tmpRoot, "origin.git"), checkout = join(tmpRoot, "checkout"), writer = join(tmpRoot, "writer");
+      const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+      git(tmpRoot, ["init", "--bare", remote]);
+      git(tmpRoot, ["clone", remote, writer]);
+      for (const cwd of [writer]) { git(cwd, ["config", "user.email", "test@example.com"]); git(cwd, ["config", "user.name", "Test"]); }
+      git(writer, ["switch", "-c", "develop"]);
+      git(writer, ["commit", "--allow-empty", "-m", "base"]); git(writer, ["push", "origin", "develop"]);
+      git(tmpRoot, ["clone", "-b", "develop", remote, checkout]);
+      git(writer, ["commit", "--allow-empty", "-m", "next"]); git(writer, ["push", "origin", "develop"]);
+      const service = ready();
+      service.runCommand.mockImplementation((_cmd, args) => args[0] === "remote" ? "git@github.com:fusupo/escapement-studio.git" : git(checkout, args));
+      expect(service.fastForwardBaseRef(repo, "develop")).toMatchObject({ updated: true, previous_behind: 1 });
+      git(checkout, ["config", "user.email", "test@example.com"]); git(checkout, ["config", "user.name", "Test"]);
+      git(checkout, ["commit", "--allow-empty", "-m", "local"]);
+      expect(service.fastForwardBaseRef(repo, "develop")).toMatchObject({ updated: false, previous_ahead: 1 });
+      git(writer, ["commit", "--allow-empty", "-m", "remote"]); git(writer, ["push", "origin", "develop"]);
+      expect(() => service.fastForwardBaseRef(repo, "develop")).toThrow(/diverged.*1 ahead, 1 behind/);
     });
   });
 

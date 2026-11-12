@@ -131,7 +131,7 @@ export class LaunchEligibilityService {
       });
     } else {
       safetyChecks.push(this.checkLaunchableState(workItem));
-      safetyChecks.push(...this.worktreeService.evaluateSafety(branch, worktreePath, baseRef));
+      safetyChecks.push(...this.worktreeService.evaluateSafety(branch, worktreePath, baseRef, workItem.repo));
     }
 
     const firstFailure = safetyChecks.find((check) => check.status === "fail") ?? null;

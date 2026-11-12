@@ -1,3 +1,5 @@
+import { BaseRefSyncService } from "./base-ref-sync.service.js";
+import { GitHubRepoTruthRefreshedHandler } from "./events/github-repo-truth-refreshed.handler.js";
 import { Module } from "@nestjs/common";
 import { GitHubModule } from "../github/github.module.js";
 import { GraphModule } from "../graph/graph.module.js";
@@ -27,6 +29,8 @@ import { WorktreeService } from "./worktree.service.js";
   imports: [GraphModule, GitHubModule, SettingsModule],
   controllers: [ExecutionController, WorkItemReconcilerController],
   providers: [
+    BaseRefSyncService,
+    GitHubRepoTruthRefreshedHandler,
     ExecutionService,
     HsmActionHandlers,
     LaunchEligibilityService,

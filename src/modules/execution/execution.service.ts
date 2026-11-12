@@ -159,20 +159,27 @@ export class ExecutionService implements OnModuleInit {
       return { accepted: false, run };
     }
 
-    const launchState = await this.markWorkItemInProgressOnLaunch(workItem);
-    const run = this.createRunRecord({
-      workItem: launchState.workItem,
-      branch: node.branch,
-      baseRef,
-      worktreePath: node.worktree_path,
-      safetyChecks: eligibility.safety_checks,
-      prompt: this.runInteractionService.buildLaunchPrompt(launchState.workItem, node, input.prompt),
-      status: "queued",
-      resultSummary: undefined,
-      errors: [],
-    });
-
-    this.runStore.persistRun(run);
+    // Reserve before the first await: sync must see launches suspended in HSM.
+    const reservation = this.runStore.reserveLaunch(workItem.id);
+    let launchState: Awaited<ReturnType<ExecutionService["markWorkItemInProgressOnLaunch"]>>;
+    let run: ExecutionRunRecord;
+    try {
+      launchState = await this.markWorkItemInProgressOnLaunch(workItem);
+      run = this.createRunRecord({
+        workItem: launchState.workItem,
+        branch: node.branch,
+        baseRef,
+        worktreePath: node.worktree_path,
+        safetyChecks: eligibility.safety_checks,
+        prompt: this.runInteractionService.buildLaunchPrompt(launchState.workItem, node, input.prompt),
+        status: "queued",
+        resultSummary: undefined,
+        errors: [],
+      });
+      this.runStore.persistRun(run);
+    } finally {
+      this.runStore.releaseLaunch(reservation);
+    }
     // ADR 014 step 5: record the run ID on the plan so the plan metadata
     // knows about every attempt (including blocked/failed ones). Non-fatal.
     this.appendRunIdToPlanMetadata(run.work_item_id, run.run_id);
@@ -879,18 +886,5 @@ export class ExecutionService implements OnModuleInit {
   }
 }
 
-/** Parse a single line from `git status --short` into a file path, or null for empty lines. */
-export function parseChangedFilePath(line: string): string | null {
-  if (!line.trim()) {
-    return null;
-  }
-
-  const path = line.length > 3 ? line.slice(3) : line;
-  const renameSeparator = " -> ";
-  const renamedIndex = path.indexOf(renameSeparator);
-  if (renamedIndex >= 0) {
-    return path.slice(renamedIndex + renameSeparator.length).trim();
-  }
-
-  return path.trim();
-}
+// Preserve the existing public helper without a WorktreeService -> ExecutionService cycle.
+export { parseChangedFilePath } from "./worktree.service.js";

@@ -65,6 +65,9 @@ import ExecutionConfirmationDrawer from './ExecutionConfirmationDrawer.svelte';
       <div class="exec-col-details">
         <ExecutionDetailPane
           kind={workspace.activeSelection}
+          fastForwardPending={!!workspace.fastForwardPending[workspace.selectedDispatchId]}
+          fastForwardError={workspace.fastForwardErrors[workspace.selectedDispatchId] || ""}
+          on:fastforwardbase={() => workspace.selectedDispatch && workspace.handleFastForward(workspace.selectedDispatch)}
           run={workspace.activeSelection === "run" ? workspace.selectedRun : null}
           dispatchNode={workspace.activeSelection === "dispatch" ? workspace.selectedDispatch : null}
           pullRequest={workspace.selectedPullRequest}
@@ -154,16 +157,20 @@ import ExecutionConfirmationDrawer from './ExecutionConfirmationDrawer.svelte';
   @media (max-width: 1100px) {
     .exec-columns {
       grid-template-columns: 200px minmax(0, 1fr);
+      grid-template-rows: minmax(360px, 1fr) minmax(240px, 1fr);
+      overflow-y: auto;
     }
 
-    .exec-col-details {
-      display: none;
+    .exec-columns :global(.exec-col-workspace) {
+      grid-column: 1 / -1;
     }
   }
 
   @media (max-width: 860px) {
     .exec-columns {
       grid-template-columns: 1fr;
+      grid-template-rows: auto;
+      grid-auto-rows: minmax(240px, auto);
       overflow-y: auto;
     }
 

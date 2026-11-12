@@ -52,6 +52,8 @@ export function createWorkspace() {
         copyTimer: null,
         stream: null,
         launchingIds: [],
+        fastForwardPending: {},
+        fastForwardErrors: {},
         openingPrRunIds: [],
         disposingRunIds: [],
         dispositionErrors: {},
