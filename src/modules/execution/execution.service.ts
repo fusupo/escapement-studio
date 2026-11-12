@@ -886,18 +886,5 @@ export class ExecutionService implements OnModuleInit {
   }
 }
 
-/** Parse a single line from `git status --short` into a file path, or null for empty lines. */
-export function parseChangedFilePath(line: string): string | null {
-  if (!line.trim()) {
-    return null;
-  }
-
-  const path = line.length > 3 ? line.slice(3) : line;
-  const renameSeparator = " -> ";
-  const renamedIndex = path.indexOf(renameSeparator);
-  if (renamedIndex >= 0) {
-    return path.slice(renamedIndex + renameSeparator.length).trim();
-  }
-
-  return path.trim();
-}
+// Preserve the existing public helper without a WorktreeService -> ExecutionService cycle.
+export { parseChangedFilePath } from "./worktree.service.js";

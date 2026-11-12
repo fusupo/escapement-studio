@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionController } from "../execution.controller.js";
 import { BaseRefSyncService } from "../base-ref-sync.service.js";
@@ -15,6 +16,9 @@ function harness(repo: string | null = "Fusupo/escapement-studio") {
 }
 
 describe("BaseRefSyncService", () => {
+  it("loads the sync dependency graph in native ESM without an initialization cycle", () => {
+    expect(() => execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", 'await import("./src/modules/execution/base-ref-sync.service.ts")'], { cwd: process.cwd(), stdio: "pipe" })).not.toThrow();
+  });
   it("exposes the thin POST route with identical result and refusal", () => {
     const h = harness();
     const controller = new ExecutionController({} as any, {} as any, {} as any, h.service);

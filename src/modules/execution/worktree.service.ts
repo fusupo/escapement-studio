@@ -7,12 +7,19 @@ import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
 import { worktreesRoot } from "../../lib/context-layout.js";
 import { getDefaultWorkingBranch } from "./default-working-branches.js";
-import { parseChangedFilePath } from "./execution.service.js";
 import type {
   CleanupWorktreeResult,
   ExecutionRunRecord,
   ExecutionSafetyCheck,
 } from "./types.js";
+
+/** Parse a single line from `git status --short` without depending on the orchestrator. */
+export function parseChangedFilePath(line: string): string | null {
+  if (!line.trim()) return null;
+  const path = line.length > 3 ? line.slice(3) : line;
+  const renamedIndex = path.indexOf(" -> ");
+  return renamedIndex >= 0 ? path.slice(renamedIndex + 4).trim() : path.trim();
+}
 
 /**
  * Phase 4b of the cqrs refactor (#231): owns every
