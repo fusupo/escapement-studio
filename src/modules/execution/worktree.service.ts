@@ -1,3 +1,4 @@
+import { normalizeGitHubRepo } from "../github/events/github-repo-truth-refreshed.event.js";
 import { runAsyncCommand } from "../../lib/async-command.js";
 import { Injectable, Logger } from "@nestjs/common";
 import { execFileSync } from "node:child_process";
@@ -43,11 +44,12 @@ export class WorktreeService {
   private readonly logger = new Logger(WorktreeService.name);
   private readonly artifactRoot = resolve(getConfig().artifactRoot);
   private readonly worktreeRoot = worktreesRoot(this.artifactRoot);
+  private readonly baseTruth = new Map<string, number>();
 
   // ─── Shell wrappers (public) ──────────────────────────────────────
 
-  runGit(args: string[], options: { allowFailure?: boolean } = {}): string {
-    return this.runCommand("git", args, { cwd: process.cwd(), allowFailure: options.allowFailure });
+  runGit(args: string[], options: { allowFailure?: boolean; timeout?: number } = {}): string {
+    return this.runCommand("git", args, { cwd: process.cwd(), ...options });
   }
 
   runGitIn(cwd: string, args: string[], options: { allowFailure?: boolean } = {}): string {
@@ -61,12 +63,13 @@ export class WorktreeService {
   runCommand(
     command: string,
     args: string[],
-    options: { cwd: string; stdin?: string; allowFailure?: boolean },
+    options: { cwd: string; stdin?: string; allowFailure?: boolean; timeout?: number },
   ): string {
     try {
       return execFileSync(command, args, {
         cwd: options.cwd,
         input: options.stdin,
+        timeout: options.timeout,
         encoding: "utf8",
         maxBuffer: 1024 * 1024 * 4,
       });
@@ -221,14 +224,102 @@ export class WorktreeService {
     branch: string,
     worktreePath: string,
     baseRef = getDefaultWorkingBranch(null),
+    repo?: string | null,
   ): ExecutionSafetyCheck[] {
     const checks: ExecutionSafetyCheck[] = [];
     checks.push(this.checkTrackedRepoClean());
     checks.push(this.checkBaseRef(baseRef));
+    checks.push(this.checkBaseRefCurrent(repo, baseRef));
     checks.push(this.checkBranchAvailable(branch));
     checks.push(this.checkWorktreePathAvailable(worktreePath));
     checks.push(this.checkPathBounded(worktreePath));
     return checks;
+  }
+
+  private validateBase(base: string): void {
+    if (!base || base.startsWith("-") || base === "HEAD") throw new Error("Invalid base branch.");
+    this.runGit(["check-ref-format", "--branch", base]);
+  }
+
+  /** Read origin on every check: an old proof must never bless changed configuration. */
+  private baseIdentity(repo: string | null | undefined, base: string): string {
+    this.validateBase(base);
+    const expected = normalizeGitHubRepo(repo);
+    if (!expected) throw new Error("Missing or invalid work-item repository; repair repository identity manually.");
+    const origin = this.runGit(["remote", "get-url", "origin"]).trim();
+    if (!/^(https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(origin)
+      || normalizeGitHubRepo(origin) !== expected) throw new Error("Origin does not match the work-item repository; repair origin manually.");
+    return `${expected}:${base}:${normalizeGitHubRepo(origin)}`;
+  }
+
+  private comparison(base: string): { ahead: number; behind: number } {
+    for (const ref of [`refs/heads/${base}`, `refs/remotes/origin/${base}`]) {
+      if (!this.runGit(["rev-parse", "--verify", `${ref}^{commit}`]).trim()) throw new Error(`Missing branch ${ref}.`);
+    }
+    const raw = this.runGit(["rev-list", "--left-right", "--count", `refs/heads/${base}...refs/remotes/origin/${base}`]).trim();
+    if (!/^\d+\s+\d+$/.test(raw)) throw new Error("Invalid base-ref comparison output.");
+    const [ahead, behind] = raw.split(/\s+/).map(Number);
+    if (!Number.isSafeInteger(ahead) || !Number.isSafeInteger(behind)) throw new Error("Invalid base-ref comparison counts.");
+    return { ahead, behind };
+  }
+
+  fetchBaseRef(repo: string, base: string): void {
+    const identity = normalizeGitHubRepo(repo);
+    const key = `${identity}:${base}:${identity}`;
+    this.baseTruth.delete(key);
+    try {
+      this.baseIdentity(repo, base);
+      this.runGit(["fetch", "--no-tags", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`], { timeout: 30000 });
+      this.comparison(base);
+      this.baseTruth.set(key, Date.now());
+      if (this.baseTruth.size > 32) this.baseTruth.delete(this.baseTruth.keys().next().value!);
+    } catch (error) { this.baseTruth.delete(key); throw error; }
+  }
+
+  checkBaseRefCurrent(repo: string | null | undefined, base: string): ExecutionSafetyCheck {
+    let compared = false;
+    try {
+      const key = this.baseIdentity(repo, base);
+      const fetched = this.baseTruth.get(key);
+      if (fetched === undefined || Date.now() - fetched < 0 || Date.now() - fetched >= 60000) {
+        throw new Error("Remote truth is unknown or expired; refresh remote truth before launch.");
+      }
+      const { ahead, behind } = this.comparison(base);
+      compared = true;
+      if (ahead && behind) throw new Error(`Local ${base} diverged from origin/${base}: ${ahead} ahead, ${behind} behind. Repair manually.`);
+      if (behind) throw new Error(`Local ${base} is behind origin/${base} by ${behind} commits.`);
+      return { code: "base_ref_current", status: "pass", message: `Local ${base} contains origin/${base} (${ahead} commits ahead).` };
+    } catch (error) {
+      const identity = normalizeGitHubRepo(repo);
+      if (!compared) this.baseTruth.delete(`${identity}:${base}:${identity}`);
+      return { code: "base_ref_current", status: "fail", message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /** Synchronous by design: callers hold the single-process launch/sync exclusion. */
+  fastForwardBaseRef(repo: string, base: string) {
+    const identity = normalizeGitHubRepo(repo);
+    const key = `${identity}:${base}:${identity}`;
+    const assertCheckout = () => {
+      if (this.runGit(["symbolic-ref", "--short", "HEAD"]).trim() !== base) throw new Error(`Checkout must be on ${base}; detached or other branches cannot be updated.`);
+      if (this.runGit(["status", "--porcelain", "--untracked-files=all"]).trim()) throw new Error("Checkout must be fully clean, including untracked files.");
+    };
+    try {
+      this.baseIdentity(repo, base);
+      assertCheckout();
+      this.fetchBaseRef(repo, base);
+      const { ahead, behind } = this.comparison(base);
+      if (ahead && behind) throw new Error(`Local ${base} diverged: ${ahead} ahead, ${behind} behind. Repair manually.`);
+      assertCheckout();
+      if (this.baseIdentity(repo, base) !== key) throw new Error("Origin changed during fast-forward.");
+      if (behind) {
+        this.runGit(["-c", "merge.autostash=false", "-c", "rebase.autostash=false", "pull", "--ff-only", "--no-rebase", "origin", base], { timeout: 30000 });
+      }
+      assertCheckout();
+      const check = this.checkBaseRefCurrent(repo, base);
+      if (check.status !== "pass") throw new Error(check.message);
+      return { repo: normalizeGitHubRepo(repo)!, base_ref: base, previous_ahead: ahead, previous_behind: behind, updated: behind > 0, safety_check: check };
+    } catch (error) { this.baseTruth.delete(key); throw error; }
   }
 
   private checkTrackedRepoClean(): ExecutionSafetyCheck {
@@ -239,7 +330,8 @@ export class WorktreeService {
   }
 
   private checkBaseRef(baseRef: string): ExecutionSafetyCheck {
-    const ok = this.runGit(["rev-parse", "--verify", baseRef], { allowFailure: true }).trim().length > 0;
+    let ok = false;
+    try { this.validateBase(baseRef); ok = Boolean(this.runGit(["rev-parse", "--verify", `refs/heads/${baseRef}`]).trim()); } catch { /* unavailable */ }
     return ok
       ? { code: "base_ref_exists", status: "pass", message: `Base ref ${baseRef} is available.` }
       : { code: "base_ref_exists", status: "fail", message: `Base ref ${baseRef} was not found.` };
