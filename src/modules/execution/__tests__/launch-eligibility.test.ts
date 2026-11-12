@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionService } from "../execution.service.js";
 import { LaunchEligibilityService } from "../launch-eligibility.service.js";
+import { BaseRefSyncService } from "../base-ref-sync.service.js";
 import { RunStore } from "../run-store.service.js";
 import { WorktreeService } from "../worktree.service.js";
 import { RunInteractionService } from "../run-interaction.service.js";
@@ -456,10 +457,17 @@ describe("launch eligibility", () => {
     const launch = harness.service.launch({ work_item_id: item.id, prompt: "launch" });
     expect(store.listPendingLaunches()).toEqual([item.id]);
     expect(persisted).toEqual([]);
+    vi.spyOn(store, "listActiveRuns").mockImplementation(() => persisted);
+    const mutate = vi.fn();
+    const sync = new BaseRefSyncService({ get: () => item } as any, store, { fastForwardBaseRef: mutate } as any);
+    expect(() => sync.fastForward({ work_item_id: item.id })).toThrow("base_ref_sync_pending_launch");
+    expect(mutate).not.toHaveBeenCalled();
     finish({ mutation_applied: true });
     await launch;
     expect(persisted[0].status).toBe("queued");
     expect(store.listPendingLaunches()).toEqual([]);
+    expect(() => sync.fastForward({ work_item_id: item.id })).toThrow("base_ref_sync_active_run");
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it.each(["hsm", "prompt", "persistence"])("releases reservation on %s error", async stage => {
