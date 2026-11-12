@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionService } from "../execution.service.js";
 import { LaunchEligibilityService } from "../launch-eligibility.service.js";
+import { WorktreeService } from "../worktree.service.js";
 import { RunInteractionService } from "../run-interaction.service.js";
 import type { ExecutionDispatchNodePreview, ExecutionDispatchPreview, ExecutionRunRecord, ExecutionSafetyCheck } from "../types.js";
 import type { WorkItemRecord, WorkItemState } from "../../graph/types.js";
@@ -124,7 +125,10 @@ function makeService(params: {
   // to WorktreeService. The harness provides the eligibility service's
   // minimal worktree dependency.
   (service as any).worktreeService = {
-    evaluateSafety: () => params.safetyChecks ?? [{ code: "base_ref_exists", status: "pass", message: "Base ref exists." }],
+    evaluateSafety: vi.fn(() => params.safetyChecks ?? [
+      { code: "base_ref_exists", status: "pass", message: "Base ref exists." },
+      { code: "base_ref_current", status: "pass", message: "Base ref current." },
+    ]),
     getWorktreePath: (branch: string) => `/tmp/studio-worktrees/${branch}`,
   };
 
@@ -282,6 +286,38 @@ function makeFacadeHarness(workItem: WorkItemRecord, preview: ExecutionDispatchP
 }
 
 describe("launch eligibility", () => {
+  it.each(["develop", "custom-base"])("blocks stale preview and direct %s launch independently", async baseRef => {
+    const item = makeWorkItem();
+    const eligibility = makeService({ workItems: [item], plan: makePlan([makePlanNode(item.id, item.name, item.branch!)]) });
+    const git = Object.create(WorktreeService.prototype) as WorktreeService;
+    Object.assign(git, { baseTruth: new Map(), worktreeRoot: "/tmp/studio-worktrees", runGit: vi.fn((args: string[]) => {
+      if (args[0] === "remote") return "git@github.com:fusupo/escapement-studio.git";
+      if (args[0] === "rev-parse") return "abc123";
+      if (args[0] === "rev-list") return "0 2";
+      return "";
+    }) });
+    (eligibility as any).worktreeService = git;
+    git.fetchBaseRef(item.repo!, "develop");
+    expect(eligibility.getPreview().groups[0].nodes[0]).toMatchObject({ can_launch: false, launch_unavailable_code: "base_ref_current" });
+    const harness = makeLaunchHarness(item);
+    (harness.service as any).launchEligibilityService = eligibility;
+    const hsm = vi.spyOn((harness.service as any).hsmService, "dispatch");
+    const result = await harness.service.launch({ work_item_id: item.id, base_ref: baseRef, prompt: "test" });
+    expect(result).toMatchObject({ accepted: false, run: { status: "blocked", safety_checks: expect.arrayContaining([expect.objectContaining({ code: "base_ref_current", status: "fail" })]) } });
+    expect((harness.service as any).runStore.persistRun).toHaveBeenCalled();
+    expect((harness.service as any).executeRun).not.toHaveBeenCalled();
+    expect(hsm).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "other/repo", "fusupo/escapement-studio"])("delegates repository %s and custom base without fallback", repo => {
+    const item = makeWorkItem({ repo });
+    const service = makeService({ workItems: [item], plan: makePlan([makePlanNode(item.id, item.name, item.branch!)]) });
+    const evaluate = (service as any).worktreeService.evaluateSafety;
+    evaluate.mockReturnValue([{ code: "base_ref_current", status: "fail", message: "Unknown remote truth" }]);
+    expect(service.resolveLaunchEligibility(item, { baseRef: "custom" }).can_launch).toBe(false);
+    expect(evaluate).toHaveBeenCalledWith(item.branch, `/tmp/studio-worktrees/${item.branch}`, "custom", repo);
+  });
+
   it("allows launch for issue-backed frontier work items", () => {
     const workItem = makeWorkItem();
     const service = makeService({
