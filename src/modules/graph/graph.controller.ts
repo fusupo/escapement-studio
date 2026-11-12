@@ -5,6 +5,8 @@ import { GraphService } from "./graph.service.js";
 import { GraphWriterService } from "./graph-writer.service.js";
 import type { ApplyGraphMutationsDto, WorkItemState } from "./types.js";
 
+import { validateMutationInput } from "./mutation-validation.js";
+
 @Controller("api")
 export class GraphController {
   constructor(
@@ -40,6 +42,8 @@ export class GraphController {
 
   @Post("graph/mutations")
   applyMutations(@Body() body: ApplyGraphMutationsDto) {
+    const errors = validateMutationInput(body);
+    if (errors.length) throw new BadRequestException(errors);
     const illegalStateMutation = body.mutations.find(
       (mutation) => mutation.kind === "update_work_item" && Object.hasOwn(mutation.patch, "state"),
     );

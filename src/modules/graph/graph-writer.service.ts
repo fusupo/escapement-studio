@@ -18,6 +18,8 @@ import {
   type WorkItemState,
 } from "./types.js";
 
+import { validateMutationInput } from "./mutation-validation.js";
+
 interface RawWorkItemRecord {
   id: string;
   name: string;
@@ -61,21 +63,11 @@ export class GraphWriterService {
 
   apply(input: ApplyGraphMutationsDto): ApplyGraphMutationsResult {
     const currentGraphVersion = this.sqlite.getGraphVersion();
-    const proposalId = input.proposal_id ?? null;
-
-    if (!Array.isArray(input.mutations) || input.mutations.length === 0) {
-      return {
-        status: "validation_failed",
-        proposal_id: proposalId,
-        current_graph_version: currentGraphVersion,
-        errors: [
-          {
-            mutation_id: null,
-            code: "malformed_payload",
-            message: "mutations must contain at least one mutation",
-          },
-        ],
-      };
+    const proposalId = typeof input?.proposal_id === "string" ? input.proposal_id : null;
+    const shapeErrors = validateMutationInput(input);
+    if (shapeErrors.length) {
+      return { status: "validation_failed", proposal_id: proposalId,
+        current_graph_version: currentGraphVersion, errors: shapeErrors };
     }
 
     if (input.based_on_graph_version && input.based_on_graph_version !== currentGraphVersion) {
@@ -316,6 +308,7 @@ export class GraphWriterService {
         const assignments: string[] = [];
         const params: unknown[] = [];
         for (const [key, value] of Object.entries(mutation.patch)) {
+          if (value === undefined) continue;
           assignments.push(`${key} = ?`);
           if (key === "predicted_files" || key === "actual_files" || key === "meta") {
             params.push(JSON.stringify(value ?? (key === "meta" ? {} : [])));
@@ -350,6 +343,7 @@ export class GraphWriterService {
         const assignments: string[] = [];
         const params: unknown[] = [];
         for (const [key, value] of Object.entries(mutation.patch)) {
+          if (value === undefined) continue;
           assignments.push(`${key} = ?`);
           params.push(key === "meta" ? JSON.stringify(value ?? {}) : value ?? null);
         }
@@ -447,6 +441,7 @@ export class GraphWriterService {
   private toRawWorkItemPatch(input: UpdateWorkItemDto) {
     const patch: Partial<RawWorkItemRecord> = {};
     for (const [key, value] of Object.entries(input)) {
+      if (value === undefined) continue;
       if (key === "predicted_files" || key === "actual_files" || key === "meta") {
         patch[key] = JSON.stringify(value ?? (key === "meta" ? {} : [])) as never;
       } else if (key !== "id" && key !== "updated_at") {
@@ -471,6 +466,7 @@ export class GraphWriterService {
   private toRawEdgePatch(input: UpdateEdgeDto) {
     const patch: Partial<RawEdgeRecord> = {};
     for (const [key, value] of Object.entries(input)) {
+      if (value === undefined) continue;
       if (key === "meta") {
         patch.meta = JSON.stringify(value ?? {});
       } else if (key !== "id" && key !== "created_at") {

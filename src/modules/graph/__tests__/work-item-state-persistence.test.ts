@@ -84,7 +84,7 @@ describe("work item state persistence", () => {
         issue_number: 300,
         state: "blocked" as WorkItemState,
       }),
-    ).toThrow(/CHECK constraint failed|Graph write failed|work item/i);
+    ).toThrow(/CHECK constraint failed|Graph write failed|work item|invalid state/i);
 
     const created = workItems.create({
       id: "studio-301",
@@ -99,7 +99,7 @@ describe("work item state persistence", () => {
       workItems.update("studio-301", {
         state: "pre_pr.blocked" as WorkItemState,
       }),
-    ).toThrow(/CHECK constraint failed|Graph write failed|work item/i);
+    ).toThrow(/CHECK constraint failed|Graph write failed|work item|invalid state/i);
 
     db.close();
   });
