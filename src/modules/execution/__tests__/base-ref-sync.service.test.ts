@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ExecutionController } from "../execution.controller.js";
 import { BaseRefSyncService } from "../base-ref-sync.service.js";
 import { GitHubRepoTruthRefreshedHandler } from "../events/github-repo-truth-refreshed.handler.js";
 import { GitHubRepoTruthRefreshedEvent } from "../../github/events/github-repo-truth-refreshed.event.js";
@@ -14,6 +15,15 @@ function harness(repo: string | null = "Fusupo/escapement-studio") {
 }
 
 describe("BaseRefSyncService", () => {
+  it("exposes the thin POST route with identical result and refusal", () => {
+    const h = harness();
+    const controller = new ExecutionController({} as any, {} as any, {} as any, h.service);
+    expect(Reflect.getMetadata("path", controller.fastForwardBaseRef)).toBe("base-ref/fast-forward");
+    expect(Reflect.getMetadata("method", controller.fastForwardBaseRef)).toBe(1);
+    expect(controller.fastForwardBaseRef({ work_item_id: "x" })).toBe(h.result);
+    h.store.listPendingLaunches.mockReturnValue(["busy"]);
+    expect(() => controller.fastForwardBaseRef({ work_item_id: "x" })).toThrow("base_ref_sync_pending_launch");
+  });
   it("validates ID and derives default repo/base without accepting client overrides", () => {
     const h = harness();
     expect(() => h.service.fastForward({ work_item_id: " " })).toThrow("base_ref_sync_invalid_item");

@@ -100,6 +100,17 @@ export interface ExecutionDispatchPreview {
   }>;
 }
 
+export interface FastForwardBaseRefDto { work_item_id: string }
+
+export interface FastForwardBaseRefResult {
+  repo: string;
+  base_ref: string;
+  previous_ahead: number;
+  previous_behind: number;
+  updated: boolean;
+  safety_check: ExecutionSafetyCheck;
+}
+
 export interface LaunchExecutionRunDto {
   work_item_id: string;
   base_ref?: string;

@@ -8,6 +8,7 @@ import { CloseMergedPullRequestCommand } from "./application/commands/close-merg
 import { DeleteWorkItemCommand } from "./application/commands/delete-work-item.command.js";
 import { TransitionInProgressToDraftingCommand } from "./application/commands/transition-in-progress-to-drafting.command.js";
 import { TransitionInProgressToReadyCommand } from "./application/commands/transition-in-progress-to-ready.command.js";
+import { BaseRefSyncService } from "./base-ref-sync.service.js";
 import { ExecutionService } from "./execution.service.js";
 import { RunStore } from "./run-store.service.js";
 import type {
@@ -20,6 +21,7 @@ import type {
   DeleteWorkItemDto,
   DeleteWorkItemResult,
   FollowUpMessageDto,
+  FastForwardBaseRefDto,
   LaunchExecutionRunDto,
   ResolveDisambiguationDto,
   SyncMergedExecutionDto,
@@ -33,6 +35,7 @@ export class ExecutionController {
     @Inject(ExecutionService) private readonly executionService: ExecutionService,
     @Inject(RunStore) private readonly runStore: RunStore,
     @Inject(CommandBus) private readonly commandBus: CommandBus,
+    @Inject(BaseRefSyncService) private readonly baseRefSync: BaseRefSyncService,
   ) {}
 
   @Get("preview")
@@ -63,6 +66,11 @@ export class ExecutionController {
   @Get("runs/:runId/activity")
   getRunActivity(@Param("runId") runId: string) {
     return this.executionService.getRunActivityLog(runId);
+  }
+
+  @Post("base-ref/fast-forward")
+  fastForwardBaseRef(@Body() body: FastForwardBaseRefDto) {
+    return this.baseRefSync.fastForward(body);
   }
 
   @Post("launch")

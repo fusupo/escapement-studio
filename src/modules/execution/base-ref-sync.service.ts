@@ -1,3 +1,4 @@
+import type { FastForwardBaseRefDto, FastForwardBaseRefResult } from "./types.js";
 import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { normalizeGitHubRepo } from "../github/events/github-repo-truth-refreshed.event.js";
@@ -28,7 +29,7 @@ export class BaseRefSyncService {
     }
   }
 
-  fastForward(input: { work_item_id: string }) {
+  fastForward(input: FastForwardBaseRefDto): FastForwardBaseRefResult {
     const id = typeof input?.work_item_id === "string" ? input.work_item_id.trim() : "";
     if (!id) throw new BadRequestException("base_ref_sync_invalid_item: work_item_id is required");
     let item;
