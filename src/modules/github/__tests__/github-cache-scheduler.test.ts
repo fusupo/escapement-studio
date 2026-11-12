@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { GitHubCacheScheduler } from "../github-cache-scheduler.service.js";
+import { GitHubRepoTruthRefreshedEvent, normalizeGitHubRepo } from "../events/github-repo-truth-refreshed.event.js";
 import { WorkItemMergedEvent } from "../../execution/events/work-item-merged.event.js";
 import type { WorkItemRecord } from "../../graph/types.js";
 
@@ -77,6 +78,35 @@ describe("GitHubCacheScheduler", () => {
     vi.clearAllMocks();
   });
 
+  it.each(["fusupo/Repo", "https://github.com/fusupo/Repo.git/", "git@github.com:fusupo/Repo.git", "ssh://git@github.com/fusupo/Repo.git"])("normalizes %s", input => {
+    expect(normalizeGitHubRepo(input)).toBe("fusupo/repo");
+  });
+
+  it("rejects invalid identities", () => {
+    for (const value of ["https://example.com/a/b", "a/b/issues", "a", "../b"]) expect(normalizeGitHubRepo(value)).toBeNull();
+  });
+
+  it("publishes only after both fills, before reconciliation", async () => {
+    const { scheduler, cache, eventBus, workItemsService } = makeService();
+    let complete!: (value: Map<number, never>) => void;
+    cache.listIssues.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const sweep = scheduler.sweep("https://github.com/Fusupo/Repo.git");
+    await Promise.resolve();
+    expect(eventBus.publish).not.toHaveBeenCalled();
+    complete(new Map<number, never>());
+    await sweep;
+    expect(eventBus.publish).toHaveBeenCalledWith(new GitHubRepoTruthRefreshedEvent("fusupo/repo", expect.any(Number)));
+    expect(eventBus.publish.mock.invocationCallOrder[0]).toBeLessThan(workItemsService.list.mock.invocationCallOrder[0]);
+  });
+
+  it.each(["listPullRequests", "listIssues"] as const)("does not publish on %s failure; isolates repos", async method => {
+    const { scheduler, cache, eventBus } = makeService({ workItems: [makeWorkItem(), makeWorkItem({ repo: "a/b" })] });
+    cache[method].mockRejectedValueOnce(new Error("unavailable"));
+    await scheduler.sweep();
+    expect(eventBus.publish).toHaveBeenCalledTimes(1);
+    expect(eventBus.publish).toHaveBeenCalledWith(new GitHubRepoTruthRefreshedEvent("a/b", expect.any(Number)));
+  });
+
   it("returns empty array when no repos are tracked", async () => {
     const { scheduler } = makeService({ workItems: [] });
     const results = await scheduler.sweep();
@@ -116,8 +146,9 @@ describe("GitHubCacheScheduler", () => {
 
     // Phase 5 (#225): verify the WorkItemMergedEvent fired with the
     // expected payload after the HSM dispatch committed.
-    expect(eventBus.publish).toHaveBeenCalledTimes(1);
-    const published = eventBus.publish.mock.calls[0]?.[0] as WorkItemMergedEvent;
+    const merged = eventBus.publish.mock.calls.map(([event]) => event).filter(event => event instanceof WorkItemMergedEvent);
+    expect(merged).toHaveLength(1);
+    const published = merged[0] as WorkItemMergedEvent;
     expect(published).toBeInstanceOf(WorkItemMergedEvent);
     expect(published.workItemId).toBe("studio-100");
     expect(published.pullRequest.number).toBe(100);
@@ -193,12 +224,13 @@ describe("GitHubCacheScheduler", () => {
       title: "PR title",
       is_draft: false,
     }]]);
-    const { scheduler, hsmService } = makeService({
+    const { scheduler, hsmService, eventBus } = makeService({
       workItems: [makeWorkItem({ state: "open_pr" })],
       prMap,
     });
     (hsmService.dispatch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("HSM error"));
     const results = await scheduler.sweep();
     expect(results[0].dispatched).toBe(0);
+    expect(eventBus.publish).toHaveBeenCalledWith(expect.any(GitHubRepoTruthRefreshedEvent));
   });
 });
