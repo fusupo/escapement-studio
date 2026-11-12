@@ -1,5 +1,9 @@
 # Escapement Studio — Architecture Diagrams
 
+> **Historical.** The pre-CQRS diagram set, preserved from `docs/diagrams/`
+> in `d89ddc8`. Paths below refer to that original location and to source
+> files as they were then. Current diagrams live in `docs/diagrams/`.
+
 This directory contains PlantUML source for component and sequence diagrams
 that document how Escapement Studio fits together. They complement the
 narrative in `ARCHITECTURE.md` (one level up from here).

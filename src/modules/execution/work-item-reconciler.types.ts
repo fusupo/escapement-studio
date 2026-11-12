@@ -7,7 +7,8 @@ import type { WorkItemHsmEvent, WorkItemState } from "../graph/types.js";
  * verdict per work item. No new persistent schema — the reconciler loads
  * each source on demand and the output is recomputed on every call.
  *
- * See docs/dev/cc-archive/.../SCRATCHPAD_studio_176.md for the decision
+ * See SCRATCHPAD_studio_176.md in the studio_176 plan archive
+ * (`archives/studio_176/` under the artifact root) for the decision
  * table and orphan-detection rationale.
  */
 export type NextAction =

@@ -1,5 +1,10 @@
 # Escapement Studio — Migration Proposals
 
+> **Historical.** All phases (0–9) have landed. This directory was moved
+> from `docs/proposals/` in `d89ddc8`; file paths and `docs/proposals/`
+> or `docs/diagrams/` references inside these documents describe the
+> codebase as it was when each proposal was written.
+
 This directory contains proposal docs for incrementally refactoring the
 backend toward the target architecture described in the chat thread that
 spawned this folder. The goal of each proposal is **one mergeable PR**

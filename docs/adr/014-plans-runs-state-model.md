@@ -44,4 +44,4 @@ Detailed spec in `docs/contracts/plan-and-run-lifecycle.md`.
 - `runs/<run_id>/` stays per-attempt and ephemeral; scratchpads no longer live there as canonical
 - the existing `.gitignore` approach for scratchpad commit safety is replaced by hard validation in auto-commit and PR creation
 - disposition flows (#83, #84, #86, #88, #89) plug in at `open_pr → merged_pr → done` without further redesign
-- supersedes the draft proposal at `docs/proposals/plans-runs-state-model.md`
+- supersedes an earlier draft proposal (`plans-runs-state-model.md`), which was never committed to this repo

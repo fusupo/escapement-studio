@@ -313,7 +313,7 @@ export function renderArchiveReadme(
   lines.push("## Notes");
   lines.push("");
   lines.push("- Move semantics: run dirs are `fs.renameSync`\u2019d from `runs/<run_id>/` into this bundle; source dirs no longer exist after archival.");
-  lines.push("- See [ADR 014](../../docs/adr/014-plans-runs-state-model.md) and [docs/contracts/run-artifacts.md](../../docs/contracts/run-artifacts.md) for the archive layout contract.");
+  lines.push("- See ADR 014 (`docs/adr/014-plans-runs-state-model.md`) and `docs/contracts/run-artifacts.md` in the Studio repo for the archive layout contract.");
   lines.push("");
 
   return lines.join("\n");

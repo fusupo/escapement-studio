@@ -3,7 +3,7 @@
 **Status:** proposed
 **Owner:** unassigned
 **Predecessors:** [phase-0-platform-bus.md](phase-0-platform-bus.md)
-**Successors:** [phase-3-execution-subservices.md](phase-3-execution-subservices.md)
+**Successors:** [phase-3-run-disposition-service.md](phase-3-run-disposition-service.md)
 **Estimated effort:** 2 days
 **Net forwardRef change:** **−2** (10 → 8)
 
@@ -929,7 +929,7 @@ After Phase 2:
 
 ## Next steps
 
-[Phase 3](phase-3-execution-subservices.md) extracts sub-services from
+[Phase 3](phase-3-run-disposition-service.md) extracts sub-services from
 `ExecutionService` and finally breaks the `Graph ↔ Execution` cycle.
 The key move: `HsmActionHandlers.runArchiver` dispatches an
 `ArchiveRunArtifactsCommand` through the command bus instead of calling

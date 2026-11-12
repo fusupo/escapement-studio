@@ -10,7 +10,7 @@ import { hasSchema, initManifest, isHealthy } from "../lib/manifest-core.js";
  * startup schema migration — not a graph concern. Placing it in the
  * `@Global()` PlatformModule removes the last transitive dependency
  * that required `Settings → Graph`, `Execution → Settings`, and
- * `Plans → Settings` forwardRefs. See `docs/proposals/phase-6-platform-module.md`.
+ * `Plans → Settings` forwardRefs. See `docs/cqrs_migration_proposal/phase-6-platform-module.md`.
  */
 @Injectable()
 export class SQLiteService {

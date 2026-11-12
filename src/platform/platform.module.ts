@@ -22,8 +22,8 @@ import { SQLiteService } from "./sqlite.service.js";
  * `Settings → Graph`, `Execution → Settings`, `Plans → Settings`
  * forwardRef cycles that depended on Graph being the DB host.
  *
- * See docs/proposals/phase-0-platform-bus.md for the CQRS bus
- * conventions and docs/proposals/phase-6-platform-module.md for
+ * See docs/cqrs_migration_proposal/phase-0-platform-bus.md for the CQRS bus
+ * conventions and docs/cqrs_migration_proposal/phase-6-platform-module.md for
  * the SQLite relocation rationale.
  */
 @Global()
