@@ -4,6 +4,10 @@ This file is the home for project-level conventions that should be
 applied when working in this repo. It's auto-loaded by Claude Code
 when run from the repo root.
 
+## Escapement Settings
+
+- **context-path**: ../escapement-studio-ctx
+
 ## Supported platform
 
 Escapement Studio is strictly a desktop-only application. Design and validate
@@ -23,11 +27,3 @@ scope unless explicitly requested by the user.
 - When in doubt, pick "extract now" over "extract later" — the cost
   of a premature extraction is smaller than the cost of a deferred
   one.
-
-The motivating historical context for these thresholds is
-[`docs/proposals/assessment.md` §3](docs/proposals/assessment.md),
-where `ExecutionService` had grown to 3286 lines before the Phase 4
-extraction pass broke it apart into `RunStore`, `PullRequestService`,
-`RunDispositionService`, `RunInteractionService`, `ScratchpadService`,
-and `WorktreeService`. Write this convention in front of the next
-class so the decision to extract gets made early instead of after.
