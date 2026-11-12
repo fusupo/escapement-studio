@@ -36,25 +36,27 @@
     to_id: "",
   };
 
+  /** @type {import('../../../src/modules/graph/types.js').WorkItemRecord | null} */
   export let selectedItem = null;
+  /** @type {import('../../../src/modules/execution/types.js').ExecutionLaunchEligibility | null} */
   export let launchEligibility = null;
   export let launchEligibilityLoading = false;
   export let launchingExecution = false;
   export let graph = { items: [], edges: [] };
   export let saving = false;
   export let edgeSaving = false;
-  export let onSaveItem = () => {};
-  export let onCreateItem = () => {};
-  export let onCreateEdge = () => {};
-  export let onDeleteEdge = () => {};
-  export let onCloseIssue = () => {};
-  export let onArchiveWorkItem = () => {};
-  export let onCancelWorkItem = () => {};
-  export let onDeleteWorkItem = () => {};
-  export let onLaunchExecution = () => {};
-  export let onPreparePlan = () => {};
-  export let onApprovePlan = () => {};
-  export let onReviewPlan = () => {};
+  export let onSaveItem = (..._args) => {};
+  export let onCreateItem = (..._args) => {};
+  export let onCreateEdge = (..._args) => {};
+  export let onDeleteEdge = (..._args) => {};
+  export let onCloseIssue = (..._args) => {};
+  export let onArchiveWorkItem = (..._args) => {};
+  export let onCancelWorkItem = (..._args) => {};
+  export let onDeleteWorkItem = (..._args) => {};
+  export let onLaunchExecution = (..._args) => {};
+  export let onPreparePlan = (..._args) => {};
+  export let onApprovePlan = (..._args) => {};
+  export let onReviewPlan = (..._args) => {};
   export let closingIssue = false;
   export let archivingWorkItem = false;
   export let cancelingWorkItem = false;
@@ -78,8 +80,9 @@
       id: selectedItem.id,
       name: selectedItem.name ?? "",
       kind: selectedItem.kind ?? "issue",
+      state: selectedItem.state ?? "planned",
       repo: selectedItem.repo ?? "",
-      issue_number: selectedItem.issue_number ?? "",
+      issue_number: String(selectedItem.issue_number ?? ""),
       issue_url: selectedItem.issue_url ?? "",
       scope_hint: selectedItem.scope_hint ?? "",
     };
@@ -300,10 +303,6 @@
                 {:else}
                   <span class="status-pill">{linkedPrDetails.state?.toLowerCase()}</span>
                 {/if}
-              </a>
-            {:else if selectedItem.meta?.pull_request?.url}
-              <a href={selectedItem.meta.pull_request.url} target="_blank" rel="noreferrer">
-                PR #{selectedItem.meta.pull_request.number}{selectedItem.meta.pull_request.is_draft ? ' (draft)' : ''}
               </a>
             {/if}
             {#if canCloseIssue}

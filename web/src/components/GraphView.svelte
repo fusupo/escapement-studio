@@ -4,12 +4,14 @@
 
   export let graph = { items: [], edges: [] };
   export let selectedId = null;
-  export let onSelect = () => {};
-  export let onContextMenu = () => {};
+  export let onSelect = (..._args) => {};
+  export let onContextMenu = (..._args) => {};
+  /** @type {string[] | null} */
   export let externalFrontierIds = null; // optional: pass frontier IDs from parent to avoid duplicate fetch
 
   let svg;
-  let handle = { cleanup() {}, updateSelection() {}, resize() {} };
+  /** @type {ReturnType<typeof renderGraph>} */
+  let handle = { cleanup() {}, updateSelection(_id) {}, resize() {} };
   let resizeObserver;
   let prevGraph = null;
   let prevFrontierSignature = "";
@@ -199,5 +201,10 @@
   .legend-note {
     color: var(--text-secondary, #8b95a5);
     font-size: 10px;
+  }
+  @media (max-width: 860px) {
+    .graph-shell { flex: none; }
+    .graph-canvas { height: 300px; flex: none; }
+    .graph-legend { position: static; margin: 8px; grid-template-columns: 1fr 1fr; }
   }
 </style>

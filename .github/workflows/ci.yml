@@ -16,5 +16,8 @@ jobs:
 
       - run: npm ci
       - run: npm run check
+      - run: npm run check:web
       - run: npm test
       - run: npm run build:web
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:web

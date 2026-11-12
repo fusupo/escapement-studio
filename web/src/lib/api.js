@@ -95,6 +95,7 @@ export function getExecutionPreview(params = {}) {
   return request(`/api/execution/preview${search ? `?${search}` : ""}`);
 }
 
+/** @returns {Promise<import('../../../src/modules/execution/types.js').ExecutionRunRecord[]>} */
 export function listExecutionRuns() {
   return request("/api/execution/runs");
 }
@@ -124,7 +125,7 @@ export function getArchivedExecutionRunBundle(workItemId) {
  * disk runs, GitHub PR state, and worktree status. Pass `work_item_id`
  * to filter to a single item.
  */
-export function listReconciledWorkItems({ workItemId } = {}) {
+export function listReconciledWorkItems({ workItemId = undefined } = {}) {
   const query = new URLSearchParams();
   if (workItemId) query.set("work_item_id", workItemId);
   const search = query.toString();
@@ -143,6 +144,8 @@ export function getExecutionEligibility(params = {}) {
   return request(`/api/execution/eligibility${search ? `?${search}` : ""}`);
 }
 
+/** @param {import('../../../src/modules/execution/types.js').LaunchExecutionRunDto} payload
+ * @returns {Promise<import('../../../src/modules/execution/types.js').LaunchExecutionRunResult>} */
 export function launchExecutionRun(payload) {
   return request("/api/execution/launch", {
     method: "POST",
@@ -187,6 +190,8 @@ export function getRunChecklist(runId) {
   return request(`/api/execution/runs/${encodeURIComponent(runId)}/checklist`);
 }
 
+/** @param {import('../../../src/modules/execution/types.js').ResolveDisambiguationDto} payload
+ * @returns {Promise<import('../../../src/modules/execution/types.js').ResolveDisambiguationResult>} */
 export function resolveDisambiguation(payload) {
   return request("/api/execution/resolve-disambiguation", {
     method: "POST",
@@ -259,6 +264,8 @@ export function deleteWorkItem(payload) {
 // { work_item_id, metadata, scratchpad_content } and 404s when no plan
 // dir exists yet for the work item.
 
+/** @param {string} workItemId
+ * @returns {Promise<import('../../../src/modules/plans/types.js').PlanResponse>} */
 export function getPlan(workItemId) {
   return request(`/api/plans/${encodeURIComponent(workItemId)}`);
 }
@@ -311,6 +318,8 @@ export function getFrontier(params = {}) {
   return request(`/api/frontier${search ? `?${search}` : ""}`);
 }
 
+/** @param {import('../../../src/modules/graph/types.js').GraphFilters} [filters]
+ * @returns {Promise<{ items: import('../../../src/modules/graph/types.js').WorkItemRecord[], edges: import('../../../src/modules/graph/types.js').EdgeRecord[], filters: import('../../../src/modules/graph/types.js').GraphFilters, graph_version: string }>}  */
 export function getGraph(filters = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {

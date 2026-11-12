@@ -1,8 +1,8 @@
 <script>
   export let filters = { repo: "", state: "", track: "", phase: "" };
   export let options = { repos: [], states: [], tracks: [], phases: [] };
-  export let onChange = () => {};
-  export let onReset = () => {};
+  export let onChange = (..._args) => {};
+  export let onReset = (..._args) => {};
 
   function update(key, value) {
     onChange({ ...filters, [key]: value });

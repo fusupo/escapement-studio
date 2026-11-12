@@ -11,11 +11,13 @@
     "dev:server": "nodemon --signal SIGTERM --delay 500ms --ext ts,json --watch src --exec 'node --env-file-if-exists=.env --import tsx src/main.ts'",
     "dev:web": "vite --config web/vite.config.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/main.ts",
-    "build": "npm run check && npm run build:web",
+    "build": "npm run check && npm run check:web && npm run build:web",
     "build:web": "vite build --config web/vite.config.ts",
     "check": "tsc --noEmit",
     "test": "vitest run",
-    "generate:work-item-state-chart": "python3 scripts/generate-work-item-state-chart.py"
+    "generate:work-item-state-chart": "python3 scripts/generate-work-item-state-chart.py",
+    "check:web": "svelte-check --config svelte.config.js --tsconfig web/tsconfig.json",
+    "test:web": "playwright test"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.10",
@@ -38,6 +40,7 @@
   },
   "devDependencies": {
     "@nestjs/testing": "^11.1.18",
+    "@playwright/test": "^1.63.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.14.1",
@@ -45,6 +48,7 @@
     "jsdom": "^29.1.1",
     "nodemon": "^3.1.14",
     "svelte": "^5.28.2",
+    "svelte-check": "^4.7.6",
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",
     "vite": "^6.3.2",

@@ -9,3 +9,6 @@ SCRATCHPAD_*.md
 .claude/
 .codex
 SESSION_LOG_*.jsonl
+
+playwright-report/
+test-results/

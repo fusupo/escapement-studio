@@ -1,4 +1,5 @@
 <script>
+  import { modalFocus } from "../lib/modal-focus.js";
   import { createEventDispatcher, onMount, afterUpdate } from "svelte";
   import {
     approveGitHubSync,
@@ -717,7 +718,7 @@
 
 {#if activeProposal || activeMemoryChange || activeGitHubSync}
 <!-- svelte-ignore a11y-no-static-element-interactions -->
-<div class="approval-overlay" role="dialog" aria-modal="true" aria-label="Proposal review" on:click|self={forceCloseOverlay} on:keydown={(e) => { if (e.key === 'Escape') forceCloseOverlay(); }}>
+<div class="approval-overlay" role="dialog" tabindex="-1" use:modalFocus aria-modal="true" aria-label="Proposal review" on:click|self={forceCloseOverlay} on:keydown={(e) => { if (e.key === 'Escape') forceCloseOverlay(); }}>
   <div class="approval-modal">
     <div class="approval-modal-toolbar">
       <button class="dismiss-btn" on:click={dismissOverlay} disabled={dismissing} title="Dismiss all active proposals (server-side clear)">{dismissing ? 'Dismissing…' : 'Dismiss all'}</button>

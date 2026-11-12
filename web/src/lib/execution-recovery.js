@@ -12,7 +12,7 @@ function isReadyState(state) {
  * The caller remains responsible for refreshing these inputs before acting.
  */
 export function projectExecutionRecovery({
-  run,
+  run = null,
   workItem = null,
   eligibility = null,
   reconciled = null,

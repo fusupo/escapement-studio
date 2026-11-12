@@ -1,4 +1,4 @@
-export function connectPlannerStream({ onEvent, onOpen, onError } = {}) {
+export function connectPlannerStream({ onEvent = (_event) => {}, onOpen = () => {}, onError = (_error) => {} } = {}) {
   const stream = new EventSource("/api/agent/stream");
 
   const forward = (eventType) => {

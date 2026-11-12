@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { getSettings, updateSettings, getAvailableModels } from "../lib/api.js";
 
+  /** @type {{ ok: boolean, db?: { healthy?: boolean, path?: string, schema?: boolean, hasSchema?: boolean } } | null} */
   export let health = null;
 
   let settings = null;

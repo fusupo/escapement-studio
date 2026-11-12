@@ -1,4 +1,4 @@
-export function createExecutionSyncCoordinator({ reload, now = () => new Date(), onStateChange = () => {} }) {
+export function createExecutionSyncCoordinator({ reload, now = () => new Date(), onStateChange = (_state) => {} }) {
   let state = {
     status: "idle",
     lastSuccessfulSyncAt: null,

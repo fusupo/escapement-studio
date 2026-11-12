@@ -13,8 +13,8 @@ const DELETE_ELIGIBLE_STATES = new Set(["planned", "drafting", "ready"]);
 const HIDE_LAUNCH_STATES = new Set(["cancelled", "done", "archived", "closed"]);
 
 export function buildGraphNodeContextMenu({
-  item,
-  launchEligibility,
+  item = null,
+  launchEligibility = null,
   launchEligibilityLoading = false,
   launchingExecution = false,
   planState = null,

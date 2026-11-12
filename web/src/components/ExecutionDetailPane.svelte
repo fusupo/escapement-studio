@@ -2,12 +2,17 @@
   import { createEventDispatcher } from "svelte";
   import { renderMarkdown } from "../lib/markdown.js";
 
+  /** @type {string | null} */
   export let kind = null;
+  /** @type {import('../../../src/modules/execution/types.js').ExecutionRunRecord | null} */
   export let run = null;
+  /** @type {(import('../../../src/modules/execution/types.js').ExecutionDispatchNodePreview & { group_id?: string }) | null} */
   export let dispatchNode = null;
+  /** @type {{ url: string, number: number } | null} */
   export let pullRequest = null;
   export let openingPr = false;
   export let assumptions = [];
+  /** @type {{ requires_approval?: boolean, max_concurrent_node_heavy_tasks?: number } | null} */
   export let validationPolicy = null;
   export let scratchpadContent = undefined;
   export let scratchpadLoading = false;

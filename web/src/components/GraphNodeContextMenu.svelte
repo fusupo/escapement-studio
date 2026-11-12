@@ -2,6 +2,7 @@
   import { createEventDispatcher, tick } from "svelte";
   import { clampContextMenuPosition } from "../lib/graph-node-actions.js";
 
+  /** @type {ReturnType<typeof import('../lib/graph-node-actions.js').buildGraphNodeContextMenu>} */
   export let menu = null;
   export let x = 0;
   export let y = 0;
