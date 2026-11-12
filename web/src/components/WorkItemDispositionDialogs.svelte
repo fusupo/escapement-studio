@@ -1,22 +1,22 @@
 <script>
   import { modalFocus } from "../lib/modal-focus.js";
 
-/** @type {ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace>} */
-export let workspace;
+/** @type {{ workspace: ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace> }} */
+let { workspace } = $props();
 </script>
 {#if workspace.cancelDialog}
-      <div class="plan-review-overlay" role="presentation" on:click={workspace.closeCancelDialog}>
+      <div class="plan-review-overlay" role="presentation" onclick={workspace.closeCancelDialog}>
         <div
           class="plan-review-card delete-dialog"
           role="dialog" tabindex="-1" use:modalFocus
           aria-modal="true"
           aria-labelledby="cancel-work-item-title"
-          on:click|stopPropagation
-          on:keydown={workspace.handleGlobalKeydown}
+          onclick={(event) => event.stopPropagation()}
+          onkeydown={workspace.handleGlobalKeydown}
         >
           <header class="plan-review-header">
             <h3 id="cancel-work-item-title">Cancel {workspace.cancelDialog.item.id}</h3>
-            <button class="small" on:click={workspace.closeCancelDialog} disabled={workspace.cancelDialog.submitting} aria-label="Close cancel dialog">×</button>
+            <button class="small" onclick={workspace.closeCancelDialog} disabled={workspace.cancelDialog.submitting} aria-label="Close cancel dialog">×</button>
           </header>
 
           <div class="delete-dialog-body">
@@ -25,7 +25,8 @@ export let workspace;
               <span class="muted">Optional cancellation note</span>
               <textarea
                 rows="4"
-                bind:value={workspace.cancelDialog.cancelNote}
+                value={workspace.cancelDialog.cancelNote}
+                oninput={(event) => workspace.assign({ cancelDialog: { ...workspace.cancelDialog, cancelNote: event.currentTarget.value } })}
                 placeholder="Optional note posted to the GitHub issue before it is closed."
                 disabled={workspace.cancelDialog.submitting}
               ></textarea>
@@ -34,17 +35,17 @@ export let workspace;
               <input
                 type="checkbox"
                 checked={workspace.cancelDialog.confirmCancel}
-                on:change={(event) => workspace.cancelDialog = { ...workspace.cancelDialog, confirmCancel: event.currentTarget.checked }}
+                onchange={(event) => workspace.assign({ cancelDialog: { ...workspace.cancelDialog, confirmCancel: event.currentTarget.checked } })}
               />
               <span>I approve cancelling this work item and closing its GitHub issue.</span>
             </label>
           </div>
 
           <footer class="delete-dialog-actions">
-            <button class="small" on:click={workspace.closeCancelDialog} disabled={workspace.cancelDialog.submitting}>Keep work item active</button>
+            <button class="small" onclick={workspace.closeCancelDialog} disabled={workspace.cancelDialog.submitting}>Keep work item active</button>
             <button
               class="small"
-              on:click={workspace.confirmCancelWorkItem}
+              onclick={workspace.confirmCancelWorkItem}
               disabled={!workspace.cancelDialog.confirmCancel || workspace.cancelDialog.submitting}
             >
               {workspace.cancelDialog.submitting ? "Cancelling…" : "Cancel work item"}
@@ -55,18 +56,18 @@ export let workspace;
     {/if}
 
     {#if workspace.deleteDialog}
-      <div class="plan-review-overlay" role="presentation" on:click={workspace.closeDeleteDialog}>
+      <div class="plan-review-overlay" role="presentation" onclick={workspace.closeDeleteDialog}>
         <div
           class="plan-review-card delete-dialog"
           role="dialog" tabindex="-1" use:modalFocus
           aria-modal="true"
           aria-labelledby="delete-work-item-title"
-          on:click|stopPropagation
-          on:keydown={workspace.handleGlobalKeydown}
+          onclick={(event) => event.stopPropagation()}
+          onkeydown={workspace.handleGlobalKeydown}
         >
           <header class="plan-review-header">
             <h3 id="delete-work-item-title">Delete {workspace.deleteDialog.item.id}</h3>
-            <button class="small" on:click={workspace.closeDeleteDialog} disabled={workspace.deleteDialog.submitting} aria-label="Close delete dialog">×</button>
+            <button class="small" onclick={workspace.closeDeleteDialog} disabled={workspace.deleteDialog.submitting} aria-label="Close delete dialog">×</button>
           </header>
 
           <div class="delete-dialog-body">
@@ -88,7 +89,7 @@ export let workspace;
               <input
                 type="checkbox"
                 checked={workspace.deleteDialog.acknowledgeDelete}
-                on:change={(event) => workspace.deleteDialog = { ...workspace.deleteDialog, acknowledgeDelete: event.currentTarget.checked }}
+                onchange={(event) => workspace.assign({ deleteDialog: { ...workspace.deleteDialog, acknowledgeDelete: event.currentTarget.checked } })}
               />
               <span>I understand this is destructive and is not the normal replacement for cancel.</span>
             </label>
@@ -98,7 +99,7 @@ export let workspace;
                 <input
                   type="checkbox"
                   checked={workspace.deleteDialog.acknowledgeConnectedEdges}
-                  on:change={(event) => workspace.deleteDialog = { ...workspace.deleteDialog, acknowledgeConnectedEdges: event.currentTarget.checked }}
+                  onchange={(event) => workspace.assign({ deleteDialog: { ...workspace.deleteDialog, acknowledgeConnectedEdges: event.currentTarget.checked } })}
                 />
                 <span>I approve removing all connected edges shown above.</span>
               </label>
@@ -108,17 +109,17 @@ export let workspace;
               <input
                 type="checkbox"
                 checked={workspace.deleteDialog.acknowledgeFallback}
-                on:change={(event) => workspace.deleteDialog = { ...workspace.deleteDialog, acknowledgeFallback: event.currentTarget.checked }}
+                onchange={(event) => workspace.assign({ deleteDialog: { ...workspace.deleteDialog, acknowledgeFallback: event.currentTarget.checked } })}
               />
               <span>If GitHub issue deletion is unavailable, still delete the Studio node and show me the fallback warning.</span>
             </label>
           </div>
 
           <footer class="delete-dialog-actions">
-            <button class="small" on:click={workspace.closeDeleteDialog} disabled={workspace.deleteDialog.submitting}>Keep work item</button>
+            <button class="small" onclick={workspace.closeDeleteDialog} disabled={workspace.deleteDialog.submitting}>Keep work item</button>
             <button
               class="danger"
-              on:click={workspace.confirmDeleteWorkItem}
+              onclick={workspace.confirmDeleteWorkItem}
               disabled={!workspace.deleteDialog.acknowledgeDelete || !workspace.deleteDialog.acknowledgeConnectedEdges || !workspace.deleteDialog.acknowledgeFallback || workspace.deleteDialog.submitting}
             >
               {workspace.deleteDialog.submitting ? "Deleting…" : "Delete permanently"}

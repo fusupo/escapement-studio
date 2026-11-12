@@ -18,13 +18,28 @@ export function createWorkspace() {
     const COLLAPSE_LINE_THRESHOLD = 6;
     /** @type {ReturnType<typeof createRunData> & ReturnType<typeof createRunActions> & ReturnType<typeof createRefinementActions> & ReturnType<typeof createActivity>} */
     const actions = /** @type {any} */ ({});
+    // Server snapshots are replaced wholesale, never mutated in place. Keep them
+    // raw (unproxied): runs carry activity logs of hundreds of KB, and deep
+    // proxies over them made every stream event re-walk the whole tree.
+    /** @type {any} */
+    let preview = $state.raw(null);
+    /** @type {any[]} */
+    let runs = $state.raw([]);
+    /** @type {any[]} */
+    let archivedBundles = $state.raw([]);
+    /** @type {Record<string, any>} */
+    let reconciledByWorkItem = $state.raw({});
     const s = $state({
-        preview: null,
-        runs: [],
-        archivedBundles: [],
+        get preview() { return preview; },
+        set preview(value) { preview = value; },
+        get runs() { return runs; },
+        set runs(value) { runs = value; },
+        get archivedBundles() { return archivedBundles; },
+        set archivedBundles(value) { archivedBundles = value; },
+        get reconciledByWorkItem() { return reconciledByWorkItem; },
+        set reconciledByWorkItem(value) { reconciledByWorkItem = value; },
         archivedLoading: false,
         archivedError: "",
-        reconciledByWorkItem: {},
         loading: true,
         refreshing: false,
         connected: false,
@@ -65,58 +80,67 @@ export function createWorkspace() {
         activeSelection: "run",
         expandedMessages: {},
         REFINEMENT_DRAFTS_KEY, turnColors, COLLAPSE_LINE_THRESHOLD,
-        get activeRuns() { return s.runs.filter((run) => ["queued", "preparing", "running", "disambiguating"].includes(run.status)); },
-        get disambiguatingRuns() { return s.runs.filter((run) => run.status === "disambiguating"); },
-        get completedRuns() { return s.runs.filter((run) => run.status === "completed" && run.terminal_outcome?.severity !== "warn"); },
-        get suspectRuns() { return s.runs.filter((run) => run.terminal_outcome?.severity === "warn"); },
-        get blockedRuns() { return s.runs.filter((run) => run.status === "blocked"); },
-        get failedRuns() { return s.runs.filter((run) => run.status === "error" && run.terminal_outcome?.severity !== "warn"); },
-        get syncTone() {
-            return s.syncStatus === "fresh"
-                ? "healthy"
-                : s.syncStatus === "syncing"
-                    ? "info"
-                    : s.syncStatus === "stale"
-                        ? "danger"
-                        : "warn";
-        },
-        get syncLabel() {
-            return s.syncStatus === "syncing"
-                ? "synchronizing"
-                : s.syncStatus === "stale"
-                    ? s.lastSuccessfulSyncAt
-                        ? `sync failed · last synced at ${actions.formatSyncTime(s.lastSuccessfulSyncAt)}`
-                        : "sync failed"
-                    : s.lastSuccessfulSyncAt
-                        ? `synced at ${actions.formatSyncTime(s.lastSuccessfulSyncAt)}`
-                        : "not yet synced";
-        },
-        get dispatchNodes() {
-            return s.preview?.groups?.flatMap((group) => group.nodes.map((node) => ({
-                ...node,
-                group_id: group.group_id,
-                repo: group.repo,
-                merge_order: group.merge_order || [],
-            }))) || [];
-        },
-        get selectedRun() { return s.selectedRunId ? s.runs.find((r) => r.run_id === s.selectedRunId) ?? null : null; },
-        get selectedDispatch() { return s.selectedDispatchId ? s.dispatchNodes.find((n) => n.id === s.selectedDispatchId) ?? null : null; },
-        get selectedPullRequest() { return s.selectedRun ? s.selectedRun.pull_request || s.prResults[s.selectedRun.run_id] || null : null; },
-        get selectedRecoveryData() { return s.selectedRun ? s.recoveryByWorkItem[s.selectedRun.work_item_id] || {} : {}; },
-        get selectedRecovery() {
-            return projectExecutionRecovery({
-                run: s.activeSelection === "run" ? s.selectedRun : null,
-                workItem: s.selectedRecoveryData.workItem,
-                eligibility: s.selectedRecoveryData.eligibility,
-                reconciled: s.selectedRun ? s.reconciledByWorkItem[s.selectedRun.work_item_id] : null,
-                loading: !!s.selectedRecoveryData.loading,
-                lookupError: s.selectedRecoveryData.lookupError,
-                actionInFlight: !!s.selectedRecoveryData.actionInFlight,
-                actionError: s.selectedRecoveryData.actionError,
-            });
-        },
-        get selectedRunTurnGroups() { return s.selectedRun ? actions.groupByTurn(s.selectedRun.activity_log) : []; }
+        // Derived views are cached ($derived below); plain getters recomputed
+        // on every template read.
+        get activeRuns() { return activeRuns; },
+        get disambiguatingRuns() { return disambiguatingRuns; },
+        get completedRuns() { return completedRuns; },
+        get suspectRuns() { return suspectRuns; },
+        get blockedRuns() { return blockedRuns; },
+        get failedRuns() { return failedRuns; },
+        get syncTone() { return syncTone; },
+        get syncLabel() { return syncLabel; },
+        get dispatchNodes() { return dispatchNodes; },
+        get selectedRun() { return selectedRun; },
+        get selectedDispatch() { return selectedDispatch; },
+        get selectedPullRequest() { return selectedPullRequest; },
+        get selectedRecoveryData() { return selectedRecoveryData; },
+        get selectedRecovery() { return selectedRecovery; },
+        get selectedRunTurnGroups() { return selectedRunTurnGroups; },
     });
+    const activeRuns = $derived(runs.filter((run) => ["queued", "preparing", "running", "disambiguating"].includes(run.status)));
+    const disambiguatingRuns = $derived(runs.filter((run) => run.status === "disambiguating"));
+    const completedRuns = $derived(runs.filter((run) => run.status === "completed" && run.terminal_outcome?.severity !== "warn"));
+    const suspectRuns = $derived(runs.filter((run) => run.terminal_outcome?.severity === "warn"));
+    const blockedRuns = $derived(runs.filter((run) => run.status === "blocked"));
+    const failedRuns = $derived(runs.filter((run) => run.status === "error" && run.terminal_outcome?.severity !== "warn"));
+    const syncTone = $derived(s.syncStatus === "fresh"
+        ? "healthy"
+        : s.syncStatus === "syncing"
+            ? "info"
+            : s.syncStatus === "stale"
+                ? "danger"
+                : "warn");
+    const syncLabel = $derived(s.syncStatus === "syncing"
+        ? "synchronizing"
+        : s.syncStatus === "stale"
+            ? s.lastSuccessfulSyncAt
+                ? `sync failed · last synced at ${actions.formatSyncTime(s.lastSuccessfulSyncAt)}`
+                : "sync failed"
+            : s.lastSuccessfulSyncAt
+                ? `synced at ${actions.formatSyncTime(s.lastSuccessfulSyncAt)}`
+                : "not yet synced");
+    const dispatchNodes = $derived(preview?.groups?.flatMap((group) => group.nodes.map((node) => ({
+        ...node,
+        group_id: group.group_id,
+        repo: group.repo,
+        merge_order: group.merge_order || [],
+    }))) || []);
+    const selectedRun = $derived(s.selectedRunId ? runs.find((r) => r.run_id === s.selectedRunId) ?? null : null);
+    const selectedDispatch = $derived(s.selectedDispatchId ? dispatchNodes.find((n) => n.id === s.selectedDispatchId) ?? null : null);
+    const selectedPullRequest = $derived(selectedRun ? selectedRun.pull_request || s.prResults[selectedRun.run_id] || null : null);
+    const selectedRecoveryData = $derived(selectedRun ? s.recoveryByWorkItem[selectedRun.work_item_id] || {} : {});
+    const selectedRecovery = $derived(projectExecutionRecovery({
+        run: s.activeSelection === "run" ? selectedRun : null,
+        workItem: selectedRecoveryData.workItem,
+        eligibility: selectedRecoveryData.eligibility,
+        reconciled: selectedRun ? reconciledByWorkItem[selectedRun.work_item_id] : null,
+        loading: !!selectedRecoveryData.loading,
+        lookupError: selectedRecoveryData.lookupError,
+        actionInFlight: !!selectedRecoveryData.actionInFlight,
+        actionError: selectedRecoveryData.actionError,
+    }));
+    const selectedRunTurnGroups = $derived(selectedRun ? actions.groupByTurn(selectedRun.activity_log) : []);
     Object.assign(actions, createRunData(s, actions));
     Object.assign(actions, createRunActions(s, actions));
     Object.assign(actions, createRefinementActions(s, actions));
@@ -202,5 +226,17 @@ export function createWorkspace() {
             s.stream?.close();
         };
     });
-    return Object.assign(s, actions);
+    /**
+     * Apply UI state changes from view components. Writing through the owning
+     * module (rather than mutating the `workspace` prop) keeps Svelte's prop
+     * ownership rules intact.
+     * @param {Partial<typeof s>} patch
+     */
+    function assign(patch) { Object.assign(s, patch); }
+    /** Attachment that registers the activity feed's scroll container. @param {HTMLElement} node */
+    function attachFeedScroll(node) {
+        s.feedScrollEl = node;
+        return () => { if (s.feedScrollEl === node) s.feedScrollEl = null; };
+    }
+    return Object.assign(s, actions, { assign, attachFeedScroll });
 }

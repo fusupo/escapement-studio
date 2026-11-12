@@ -1,12 +1,14 @@
 import type { Page } from "@playwright/test";
 export async function mockWorkspace(page: Page, options: {
+  run?: any;
   dispatch?: boolean;
   baseRef?: string;
   failedCheck?: string;
   fastForward?: "success" | "refusal" | "deferred" | "drop";
 } = {}) {
+export async function mockWorkspace(page: Page, options: { run?: any } = {}) {
   const item = { id: "studio-900", name: "Improve the workspace", kind: "issue", state: "drafting", repo: "example/studio", issue_number: 900, issue_url: "https://example.com/issues/900", predicted_files: [], actual_files: [], meta: {} };
-  let run = { run_id: "exec_test", work_item_id: item.id, work_item_name: item.name, status: "disambiguating", phase: "awaiting_confirmation", repo: item.repo, branch: "studio-900-branch", base_ref: "develop", worktree_path: "/tmp/example", created_at: "2026-09-06T10:00:00Z", activity_log: [{ kind: "agent_message", message: "Refinement is ready for review.", timestamp: "2026-09-06T10:00:00Z" }], safety_checks: [], refinement: { items: [{ id: "q1", kind: "question", prompt: "Which implementation should we use?", options: [{ id: "safe", label: "Small change" }, { id: "broad", label: "Broader change" }], allow_other: true, response: null }], summary: "Ready for review" } };
+  let run: any = options.run ?? { run_id: "exec_test", work_item_id: item.id, work_item_name: item.name, status: "disambiguating", phase: "awaiting_confirmation", repo: item.repo, branch: "studio-900-branch", base_ref: "develop", worktree_path: "/tmp/example", created_at: "2026-09-06T10:00:00Z", activity_log: [{ kind: "agent_message", message: "Refinement is ready for review.", timestamp: "2026-09-06T10:00:00Z" }], safety_checks: [], refinement: { items: [{ id: "q1", kind: "question", prompt: "Which implementation should we use?", options: [{ id: "safe", label: "Small change" }, { id: "broad", label: "Broader change" }], allow_other: true, response: null }], summary: "Ready for review" } };
   const calls: Array<{ path: string; body: any }> = [];
   let failRuns = false;
   let baseCurrent = false;

@@ -17,9 +17,25 @@ export function createWorkspace() {
     ];
     /** @type {ReturnType<typeof createGraphData> & ReturnType<typeof createWorkItemActions> & ReturnType<typeof createPlanActions> & ReturnType<typeof createPaneInteractions>} */
     const actions = /** @type {any} */ ({});
+    // Server snapshots are replaced wholesale, never mutated in place. Keep them
+    // raw (unproxied) so components don't deep-walk them on every update.
+    /** @type {{ filters: any, items: any[], edges: any[], graph_version?: string }} */
+    let graph = $state.raw(emptyGraph);
+    /** @type {any[]} */
+    let catalog = $state.raw([]);
+    /** @type {any[]} */
+    let executionRuns = $state.raw([]);
+    /** @type {any} */
+    let reconciliationReports = $state.raw([]);
     const s = $state({
-        graph: emptyGraph,
-        catalog: [],
+        get graph() { return graph; },
+        set graph(value) { graph = value; },
+        get catalog() { return catalog; },
+        set catalog(value) { catalog = value; },
+        get executionRuns() { return executionRuns; },
+        set executionRuns(value) { executionRuns = value; },
+        get reconciliationReports() { return reconciliationReports; },
+        set reconciliationReports(value) { reconciliationReports = value; },
         filters: { repo: "", state: "", track: "", phase: "" },
         selectedId: null,
         loading: true,
@@ -42,8 +58,6 @@ export function createWorkspace() {
         graphRefreshTimer: null,
         graphRefreshInFlight: false,
         frontierIds: [],
-        executionRuns: [],
-        reconciliationReports: [],
         lastExecutionFetchTab: null,
         lastReconciliationFetchTab: null,
         preparingPlan: false,
@@ -62,93 +76,87 @@ export function createWorkspace() {
         dragStartX: 0,
         dragStartWidth: 0,
         emptyGraph, MIN_PANE, MAX_PANE, activityItems,
-        get selectedItem() { return s.graph.items.find((item) => item.id === s.selectedId) ?? null; },
-        get selectedLaunchEligibility() { return s.selectedItem ? s.launchEligibilityById[s.selectedItem.id] ?? null : null; },
-        get selectedLaunchEligibilityLoading() { return s.selectedItem ? !!s.launchEligibilityLoadingIds[s.selectedItem.id] : false; },
-        get contextMenuLaunchEligibility() { return s.graphContextMenu.item ? s.launchEligibilityById[s.graphContextMenu.item.id] ?? null : null; },
-        get contextMenuLaunchEligibilityLoading() { return s.graphContextMenu.item ? !!s.launchEligibilityLoadingIds[s.graphContextMenu.item.id] : false; },
-        get contextMenuPlanState() {
-            return s.graphContextMenu.item
-                ? s.planStateById[s.graphContextMenu.item.id]?.metadata ?? null
-                : null;
-        },
-        get contextMenuPlanStateLoading() {
-            return s.graphContextMenu.item
-                ? !!s.planStateLoadingIds[s.graphContextMenu.item.id]
-                : false;
-        },
-        get graphContextMenuModel() {
-            return buildGraphNodeContextMenu({
-                item: s.graphContextMenu.item,
-                launchEligibility: s.contextMenuLaunchEligibility,
-                launchEligibilityLoading: s.contextMenuLaunchEligibilityLoading,
-                launchingExecution: s.launchingExecution,
-                planState: s.contextMenuPlanState,
-                planStateLoading: s.contextMenuPlanStateLoading,
-                preparingPlan: s.preparingPlan,
-                approvingPlan: s.approvingPlan,
-                cancelingWorkItem: s.cancelingWorkItem,
-                deletingWorkItem: s.deletingWorkItem,
-                connectedEdges: s.graphContextMenu.item
-                    ? s.graph.edges.filter((edge) => edge.from_id === s.graphContextMenu.item.id || edge.to_id === s.graphContextMenu.item.id)
-                    : [],
-            });
-        },
-        get filterOptions() {
-            return {
-                repos: [...new Set(s.catalog.map((item) => item.repo).filter(Boolean))].sort(),
-                states: [...new Set(s.catalog.map((item) => item.state).filter(Boolean))].sort(),
-                tracks: s.catalog.filter((item) => item.kind === "track"),
-                phases: s.catalog.filter((item) => item.kind === "phase"),
-            };
-        },
-        get activeFilterCount() { return Object.values(s.filters).filter(Boolean).length; },
+        // Derived views are cached ($derived below); plain getters recomputed
+        // on every template read.
+        get selectedItem() { return selectedItem; },
+        get selectedLaunchEligibility() { return selectedLaunchEligibility; },
+        get selectedLaunchEligibilityLoading() { return selectedLaunchEligibilityLoading; },
+        get contextMenuLaunchEligibility() { return contextMenuLaunchEligibility; },
+        get contextMenuLaunchEligibilityLoading() { return contextMenuLaunchEligibilityLoading; },
+        get contextMenuPlanState() { return contextMenuPlanState; },
+        get contextMenuPlanStateLoading() { return contextMenuPlanStateLoading; },
+        get graphContextMenuModel() { return graphContextMenuModel; },
+        get filterOptions() { return filterOptions; },
+        get activeFilterCount() { return activeFilterCount; },
         get frontierCount() { return s.frontierIds.length; },
-        get blockedCount() {
-            return (() => {
-                const frontierSet = new Set(s.frontierIds);
-                return s.graph.items.filter((item) => {
-                    const leaf = item.state?.startsWith("pre_pr.") ? item.state.slice("pre_pr.".length) : item.state;
-                    return leaf === "planned" && !frontierSet.has(item.id);
-                }).length;
-            })();
-        },
-        get activeRunCount() {
-            return s.executionRuns.filter((r) => ["queued", "preparing", "running", "disambiguating"].includes(r.status)).length;
-        },
-        get completedTodayCount() {
-            return (() => {
-                const todayPrefix = new Date().toISOString().slice(0, 10);
-                return s.executionRuns.filter((r) => r.status === "completed" && r.terminal_outcome?.severity !== "warn" && r.completed_at?.startsWith(todayPrefix)).length;
-            })();
-        },
-        get successRate() {
-            return (() => {
-                const completed = s.executionRuns.filter((r) => r.status === "completed" && r.terminal_outcome?.severity !== "warn").length;
-                const errored = s.executionRuns.filter((r) => r.status === "error").length;
-                const total = completed + errored;
-                return total > 0 ? Math.round((completed / total) * 100) : null;
-            })();
-        },
-        get readyToMergeCount() {
-            return Array.isArray(s.reconciliationReports)
-                ? s.reconciliationReports.filter((r) => {
-                    const stats = r.stats || {};
-                    return stats.missed_count === 0 && stats.unpredicted_count === 0;
-                }).length
-                : 0;
-        },
-        get conflictsCount() {
-            return Array.isArray(s.reconciliationReports)
-                ? s.reconciliationReports.filter((r) => (r.stats?.missed_count ?? 0) > 0 || (r.stats?.unpredicted_count ?? 0) > 0).length
-                : 0;
-        },
-        get staleCount() {
-            return Array.isArray(s.reconciliationReports)
-                ? s.reconciliationReports.filter((r) => (r.drift_patterns?.length ?? 0) > 0).length
-                : 0;
-        }
+        get blockedCount() { return blockedCount; },
+        get activeRunCount() { return activeRunCount; },
+        get completedTodayCount() { return completedTodayCount; },
+        get successRate() { return successRate; },
+        get readyToMergeCount() { return readyToMergeCount; },
+        get conflictsCount() { return conflictsCount; },
+        get staleCount() { return staleCount; },
     });
+    const selectedItem = $derived(graph.items.find((item) => item.id === s.selectedId) ?? null);
+    const selectedLaunchEligibility = $derived(selectedItem ? s.launchEligibilityById[selectedItem.id] ?? null : null);
+    const selectedLaunchEligibilityLoading = $derived(selectedItem ? !!s.launchEligibilityLoadingIds[selectedItem.id] : false);
+    const contextMenuItem = $derived(s.graphContextMenu.item);
+    const contextMenuLaunchEligibility = $derived(contextMenuItem ? s.launchEligibilityById[contextMenuItem.id] ?? null : null);
+    const contextMenuLaunchEligibilityLoading = $derived(contextMenuItem ? !!s.launchEligibilityLoadingIds[contextMenuItem.id] : false);
+    const contextMenuPlanState = $derived(contextMenuItem ? s.planStateById[contextMenuItem.id]?.metadata ?? null : null);
+    const contextMenuPlanStateLoading = $derived(contextMenuItem ? !!s.planStateLoadingIds[contextMenuItem.id] : false);
+    const graphContextMenuModel = $derived(buildGraphNodeContextMenu({
+        item: contextMenuItem,
+        launchEligibility: contextMenuLaunchEligibility,
+        launchEligibilityLoading: contextMenuLaunchEligibilityLoading,
+        launchingExecution: s.launchingExecution,
+        planState: contextMenuPlanState,
+        planStateLoading: contextMenuPlanStateLoading,
+        preparingPlan: s.preparingPlan,
+        approvingPlan: s.approvingPlan,
+        cancelingWorkItem: s.cancelingWorkItem,
+        deletingWorkItem: s.deletingWorkItem,
+        connectedEdges: contextMenuItem
+            ? graph.edges.filter((edge) => edge.from_id === contextMenuItem.id || edge.to_id === contextMenuItem.id)
+            : [],
+    }));
+    const filterOptions = $derived({
+        repos: [...new Set(catalog.map((item) => item.repo).filter(Boolean))].sort(),
+        states: [...new Set(catalog.map((item) => item.state).filter(Boolean))].sort(),
+        tracks: catalog.filter((item) => item.kind === "track"),
+        phases: catalog.filter((item) => item.kind === "phase"),
+    });
+    const activeFilterCount = $derived(Object.values(s.filters).filter(Boolean).length);
+    const blockedCount = $derived.by(() => {
+        const frontierSet = new Set(s.frontierIds);
+        return graph.items.filter((item) => {
+            const leaf = item.state?.startsWith("pre_pr.") ? item.state.slice("pre_pr.".length) : item.state;
+            return leaf === "planned" && !frontierSet.has(item.id);
+        }).length;
+    });
+    const activeRunCount = $derived(executionRuns.filter((r) => ["queued", "preparing", "running", "disambiguating"].includes(r.status)).length);
+    const completedTodayCount = $derived.by(() => {
+        const todayPrefix = new Date().toISOString().slice(0, 10);
+        return executionRuns.filter((r) => r.status === "completed" && r.terminal_outcome?.severity !== "warn" && r.completed_at?.startsWith(todayPrefix)).length;
+    });
+    const successRate = $derived.by(() => {
+        const completed = executionRuns.filter((r) => r.status === "completed" && r.terminal_outcome?.severity !== "warn").length;
+        const errored = executionRuns.filter((r) => r.status === "error").length;
+        const total = completed + errored;
+        return total > 0 ? Math.round((completed / total) * 100) : null;
+    });
+    const readyToMergeCount = $derived(Array.isArray(reconciliationReports)
+        ? reconciliationReports.filter((r) => {
+            const stats = r.stats || {};
+            return stats.missed_count === 0 && stats.unpredicted_count === 0;
+        }).length
+        : 0);
+    const conflictsCount = $derived(Array.isArray(reconciliationReports)
+        ? reconciliationReports.filter((r) => (r.stats?.missed_count ?? 0) > 0 || (r.stats?.unpredicted_count ?? 0) > 0).length
+        : 0);
+    const staleCount = $derived(Array.isArray(reconciliationReports)
+        ? reconciliationReports.filter((r) => (r.drift_patterns?.length ?? 0) > 0).length
+        : 0);
     Object.assign(actions, createGraphData(s, actions));
     Object.assign(actions, createWorkItemActions(s, actions));
     Object.assign(actions, createPlanActions(s, actions));
@@ -174,5 +182,12 @@ export function createWorkspace() {
             s.graphStream?.close();
         };
     });
-    return Object.assign(s, actions);
+    /**
+     * Apply UI state changes from view components. Writing through the owning
+     * module (rather than mutating the `workspace` prop) keeps Svelte's prop
+     * ownership rules intact.
+     * @param {Partial<typeof s>} patch
+     */
+    function assign(patch) { Object.assign(s, patch); }
+    return Object.assign(s, actions, { assign });
 }

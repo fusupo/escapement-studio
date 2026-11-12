@@ -5,8 +5,8 @@ import ExecutionArchivedList from "./ExecutionArchivedList.svelte";
 
 import { unresolvedRefinementItems } from "../lib/execution-refinement.js";
 
-/** @type {ReturnType<typeof import("../lib/execution/workspace.svelte.js").createWorkspace>} */
-export let workspace;
+/** @type {{ workspace: ReturnType<typeof import("../lib/execution/workspace.svelte.js").createWorkspace> }} */
+let { workspace } = $props();
 
 import ExecutionActivityFeed from './ExecutionActivityFeed.svelte';
 </script>
@@ -26,7 +26,7 @@ import ExecutionActivityFeed from './ExecutionActivityFeed.svelte';
               <button
                 class="run-pill"
                 class:active={workspace.selectedRunId === run.run_id && workspace.activeSelection === "run"}
-                on:click={() => workspace.selectRun(run.run_id)}
+                onclick={() => workspace.selectRun(run.run_id)}
                 title={reconciled?.rationale || `${run.work_item_id} — ${run.status}`}
               >
                 <span class="run-pill-dot {workspace.runStatusTone(run)}"></span>
@@ -79,7 +79,7 @@ import ExecutionActivityFeed from './ExecutionActivityFeed.svelte';
                 </div>
                 <button
                   class="secondary small"
-                  on:click={() => workspace.setRefinementDrawerClosed(run.run_id, false)}
+                  onclick={() => workspace.setRefinementDrawerClosed(run.run_id, false)}
                 >Review &amp; confirm ({unresolvedItems.length})</button>
               </div>
             {/if}
@@ -93,12 +93,12 @@ import ExecutionActivityFeed from './ExecutionActivityFeed.svelte';
                 <textarea
                   placeholder={["running", "preparing"].includes(run.status) ? "Steer or follow up..." : "Send a follow-up..."}
                   value={followUp}
-                  on:input={(e) => workspace.followUpTexts = { ...workspace.followUpTexts, [run.run_id]: e.currentTarget.value }}
-                  on:keydown={(e) => workspace.handleFollowUpKeydown(e, run)}
+                  oninput={(e) => workspace.assign({ followUpTexts: { ...workspace.followUpTexts, [run.run_id]: e.currentTarget.value } })}
+                  onkeydown={(e) => workspace.handleFollowUpKeydown(e, run)}
                   rows="2"
                   disabled={isSending}
                 ></textarea>
-                <button on:click={() => workspace.handleSendFollowUp(run)} disabled={isSending || !followUp.trim()}>
+                <button onclick={() => workspace.handleSendFollowUp(run)} disabled={isSending || !followUp.trim()}>
                   {isSending ? "..." : "Send"}
                 </button>
               </div>
