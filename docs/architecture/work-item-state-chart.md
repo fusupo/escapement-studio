@@ -2,7 +2,7 @@
 
 `src/modules/graph/work-item.scxml` is the canonical Studio work-item lifecycle definition for the SCION/HSM epic.
 
-The checked-in diagram at [`docs/architecture/work-item-state-chart.svg`](./work-item-state-chart.svg) is a reviewer aid rendered from that SCXML source. Future runtime integration should read the SCXML, not re-encode the lifecycle in ad hoc enums or transition tables.
+The checked-in diagram at [`docs/architecture/work-item-state-chart.svg`](./work-item-state-chart.svg) is a reviewer aid rendered from that SCXML source. WorkItemHsmService reads the SCXML at runtime; do not re-encode the lifecycle in ad hoc enums or transition tables.
 
 ## State vocabulary
 
@@ -56,15 +56,15 @@ Async plan-drafter completion signals.
 Execution-run outcomes projected into the work-item machine.
 
 - `run.completed`
-- `run.failed`
+- `run.error`
 
 ### `gh.*`
 
 External GitHub state changes.
 
 - `gh.pr_merged`
-- `gh.pr_closed`
-- `gh.pr_reopened`
+- `gh.pr_opened`
+- `gh.issue_closed`
 
 ## Entry, exit, and guard hooks
 
@@ -72,18 +72,25 @@ The chart now declares the side-effect seams that the runtime wires into the int
 
 ### Entry actions
 
-- `kickOffPlanDrafter()` — on entry to `drafting`; starts the async drafter invoke
-- `createRunRecord()` — on entry to `in_progress`; persists a new execution run record
-- `stampMeta('studio_post_merge_sync')` — on entry to `merged_pr`; captures the merge event payload into work-item meta
-- `runArchiver()` — on entry to `archived`; archives run artifacts into `archives/<slug>/`
+- `stampMeta:studio_open_pr_sync` — on entry to `open_pr`
+- `stampMeta:studio_post_merge_sync` — on entry to `merged_pr`
+- `stampMeta:studio_issue_close_sync` — on entry to `closed`
 
-### Exit actions
+### Transition actions
 
-- `closeGhIssue()` — on exit from `merged_pr`; closes the linked GitHub issue before finalization completes
+- `rememberHistory` — remembers the pre-PR state when deferring
+- `closeGhIssue` — on finalization from `merged_pr`
+- `runArchiver` — on archive-and-finalize from `merged_pr`, `closed` or `done`
+
+Plan drafting and run creation are owned by PlansService and ExecutionService,
+respectively; the chart does not declare shadow hooks for those operations.
 
 ### Guards
 
-- `prExistsForBranch` — splits `run.completed` from `in_progress` into either `open_pr` or back to `ready`
+- `pr_exists` — splits `run.completed` from `in_progress` into `open_pr`
+  when a PR exists or `merged_pr` when no PR exists.
+
+`done` accepts later archival. `archived` and `cancelled` are final states.
 
 ## Defer/resume via `pre_pr` shallow history
 
@@ -104,7 +111,7 @@ Instead:
 
 - runs remain separate entities with their own statuses (`queued`, `running`, `completed`, `error`, ...)
 - the work-item HSM consumes only the run outcomes that matter at the work-item level
-- those outcomes enter the chart as `run.*` events (`run.completed`, `run.failed`)
+- those outcomes enter the chart as `run.*` events (`run.completed`, `run.error`)
 
 This keeps concerns separated:
 

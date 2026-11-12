@@ -66,7 +66,28 @@ ARTIFACT_ROOT=/path/to/context-root npm run start
 npm run build
 ```
 
-This runs the server TypeScript check plus the production frontend build.
+This runs the server TypeScript check, frontend JavaScript/Svelte checks, and
+production frontend build.
+
+### Automated tests
+
+```bash
+npm run check:web
+npm test
+npx playwright install chromium
+npm run test:web
+```
+
+The browser suite runs desktop Chromium workflows against an isolated
+mock API on port 4175. It covers graph selection and plan approval, sanitized
+Markdown, refinement draft recovery and explicit confirmation, and SSE reconnect
+synchronization. It does not start the API, coding agents, or GitHub mutations.
+Playwright traces are retained on failure; workflow screenshots are written to
+`test-results/`. CI installs Chromium's system dependencies before running it.
+
+Frontend checking is configured in `web/tsconfig.json` with JavaScript checking
+enabled. Component props and selected API contracts reference the backend DTOs;
+the workspace controller layout is documented in `STUDIO_ARCHITECTURE.md`.
 
 ## Graph workspace + planner chat manual verification
 

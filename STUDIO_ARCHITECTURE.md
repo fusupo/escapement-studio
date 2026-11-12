@@ -1,166 +1,110 @@
 # Escapement Studio Architecture
 
-## Runtime and frontend
+## Runtime and transport
 
-- **Runtime:** Node for V1
-- **Frontend:** Svelte
-- **Chat UI strategy:** Studio-owned adapter around `@mariozechner/pi-web-ui`
-- **Graph rendering:** D3
-- **Server-browser transport:** REST + SSE
-- **Database:** SQLite
+Studio is a Node.js application (22.19+) with a NestJS API and a Svelte 5/Vite
+frontend. D3 renders the dependency graph. REST handles requests and snapshots;
+SSE carries planner, graph and execution updates. SQLite stores the work graph
+and settings. The pi coding-agent SDK runs planner, specialist and coding sessions.
 
-## Browser architecture
+`src/main.ts` boots `AppModule`. `src/config.ts` defines the API port, manifest
+path, planner-session directory and external artifact root. Vite proxies `/api`
+and `/health` to the configured API URL during development.
 
-```text
-Svelte app
-├── Chat panel host
-│   └── Studio adapter around pi-web-ui
-├── D3 graph panel
-├── Sidebar
-├── Toolbar / filters
-└── data layer
-    ├── REST client
-    └── SSE event client
-```
+## Backend responsibilities
 
-Responsibilities:
+| Module | Owns |
+| --- | --- |
+| `platform` | Global SQLite infrastructure and Nest CQRS command/event/query buses |
+| `graph` | Work items, edges, atomic versioned mutations, graph queries, SCXML lifecycle and graph SSE |
+| `planning` | Persistent root planner session, context, ten tool factories, staged proposals, memory and specialist delegation |
+| `plans` | Bounded specialist preparation, scratchpad drafting, review/approval metadata and reopening plans |
+| `execution` | Launch eligibility, isolated worktrees, durable runs, refinement/confirmation, coding, PRs, disposition and recovery |
+| `github` | GitHub CLI operations, issue templates, cached issue/PR truth and scheduled refresh |
+| `drift-report` | Predicted-versus-actual file comparisons (the API retains `/api/reconciliation`) |
+| `settings` | Repository configuration, model registry and model selection |
+| `health` | API/database health |
 
-- render the rolling planning conversation
-- render the dependency graph and local edits
-- render mutation proposals, approvals, and revise flows
-- render sub-agent status and graph commit results
-- keep graph state, chat state, and approval state in one workspace
+Cross-workflow commands and domain events use `@nestjs/cqrs`. The completed CQRS
+migration removed module-level `forwardRef` cycles; direct feature imports still
+exist. The proposal documents describe migration history and targets, rather
+than implying that every call is already a bus message.
 
-## Server architecture
+ExecutionService orchestrates RunStore, LaunchEligibilityService,
+RunRefinementService, RunInteractionService, ScratchpadService, WorktreeService,
+PullRequestService and WorkItemReconcilerService. RunDispositionService owns
+close/archive/cancel/delete flows. Follow the size and responsibility conventions
+in `CLAUDE.md` when extending these services.
 
-```text
-GraphModule
-├── SQLiteService
-├── WorkItemsService
-├── EdgesService
-├── GraphWriterService
-└── GraphController
+## Lifecycle and persistence boundaries
 
-PlanningModule
-├── PlanningService
-├── PlanningController
-├── ContextService
-├── ConversationService
-└── MemoryService
+`src/modules/graph/work-item.scxml` is the canonical work-item lifecycle.
+WorkItemHsmService dispatches events and executes registered side effects before
+writing a transition. Work-item lifecycle state is separate from each execution
+attempt's run status. Public update endpoints reject direct lifecycle changes;
+internal HSM writes share the graph writer's validated mutation path.
 
-AgentModule
-└── SubAgentService
+A plan is drafted and approved before dispatch. Launch creates an isolated Git
+worktree and a durable run. Dependency installation is asynchronous and bounded,
+so the API can continue serving requests and SSE while npm runs. Worktree
+refinement then persists an explicit confirmation checkpoint before coding.
+Confirmation responses and run artifacts survive restarts; orphaned live agent
+sessions are reconciled into actionable run records.
 
-GitHubModule
-└── GitHubService
+Graph mutation input is validated before sorting, snapshot simulation and SQL
+construction. Only explicitly allowed DTO fields can become SQL columns. Graph
+commits apply within a SQLite transaction and increment `graph_version`.
+The work-item schema migration uses a version marker in `studio_metadata`; its
+strict table copy, index/trigger restoration and marker commit atomically.
 
-GitModule
-└── GitService
+| Storage | Contents |
+| --- | --- |
+| `.manifest/manifest.db` | Canonical work items/edges, graph version, settings and schema migration metadata |
+| `.studio/planning/sessions/` | Persistent planner conversation |
+| `PLANNING_MEMORY.md` | Approved planning memory |
+| `<artifact-root>/plans/<slug>/` | Canonical scratchpad and plan metadata |
+| `<artifact-root>/runs/<run-id>/` | Run status, activity, outputs and other attempt artifacts |
+| `<artifact-root>/worktrees/` | Isolated execution checkouts |
+| `<artifact-root>/archives/<slug>/` | Archived work-item/run bundles |
 
-ExecuteModule
-└── DispatchService
-```
+`src/lib/context-layout.ts` owns artifact path construction. The default artifact
+root is `/home/marc/escapement-studio-ctx`; override it with `ARTIFACT_ROOT`.
+Closed runs can retain artifacts while a `disposed_at` marker excludes them from
+recent runs. Archive-and-close preserves bundles for the archived-history UI.
 
-## Root planning session model
+## Frontend responsibilities
 
-See ADR 004 for the session/history decision.
+`App.svelte` composes navigation, the active workspace, dialogs and status.
+`ExecutionDispatchPanel.svelte` composes dispatch, details, run content and
+confirmation. Both are intentionally small composition components.
 
-- root planner runs server-side via pi SDK
-- one persistent root planning session as the default rolling conversation
-- session boundaries are a system concern, not a primary V1 UX concept
+| Area | Components / controllers |
+| --- | --- |
+| Navigation/status | ActivityBar, WorkspaceStatusBar |
+| Planning layout/graph | PlanningViewport, GraphView, Sidebar, GraphActionsMenu |
+| Plan/disposition dialogs | PlanReviewDialog, WorkItemDispositionDialogs; shared modal focus action |
+| Planning state and lifecycle | `lib/planning/workspace.svelte.js` |
+| Planning data/actions | `graph-data.js`, `plan-actions.js`, `work-item-actions.js`, `pane-interactions.js` |
+| Execution content | ExecutionRunWorkspace, ExecutionActivityFeed, ExecutionConfirmationDrawer, existing dispatch/detail/checklist/archive components |
+| Execution state and lifecycle | `lib/execution/workspace.svelte.js` |
+| Execution data/actions | `run-data.js`, `run-actions.js`, `refinement-actions.js`, `activity.js` |
+| Planner chat | PlannerChatAdapter and `lib/planner-chat.js` |
 
-## Graph model
+The workspace factories create component-scoped Svelte reactive state and attach
+focused action factories. Effects and mount cleanup belong to the lifecycle
+controllers. Execution sync still uses `execution-sync.js` for coalescing reloads
+on reconnect/focus; checklist freshness and refinement draft projection remain
+separate helpers. Views consume typed controller contracts and preserve UI state
+through those controllers. DOMPurify sanitizes parsed Markdown before `@html`.
 
-Studio uses the existing manifest-style graph of work items and edges.
+## Verification and contracts
 
-Work item kinds include:
+`npm run check` checks the backend; `npm run check:web` checks frontend JavaScript,
+Svelte and typed API/component boundaries. `npm test` runs unit/regression tests;
+`npm run test:web` runs desktop browser workflows against an isolated mock
+API. Those browser tests do not start agents or modify GitHub/live artifact data.
 
-- issue
-- capability
-- phase
-- track
-
-Edge kinds include:
-
-- depends_on
-- is_part_of
-- implemented_by
-
-The graph is canonical for planning structure, decomposition, dependencies, and execution boundaries.
-
-## Graph context serialization
-
-The root planner sees graph state as triples.
-
-Default per-turn slice:
-
-- frontier items
-- blocked items
-- immediate dependencies
-- relevant local hierarchy
-
-Additional modes:
-
-- **focused** — repo/track-specific slice
-- **full** — whole graph for explicit structural analysis
-
-## Planning workflow
-
-See `STUDIO_OVERVIEW.md` for the core planning loop.
-
-The architecture supports this through:
-- graph context serialization (triples) fed to the root planner each turn
-- structured mutation proposals emitted by the planner
-- browser rendering of proposals as selectable staged changes
-- atomic server-side apply of approved mutations
-
-## Execution run disposition
-
-ADR 014 step 7 defines two terminal flows for a `merged_pr` work item:
-Close (non-archival) and Archive-and-close. Both live on `ExecutionService`
-and share the same source-state and active-run guards.
-
-The Close flow (`POST /api/execution/close-merged`, studio-87) is backend‑
-owned and atomically performs:
-
-1. `assertWorkItemInMergedPr` — guard the source state. An already‑`done`
-   work item short‑circuits the guards so retries after a partial failure
-   still run the finalizer.
-2. `assertNoActiveRunForWorkItem` — refuse while a run is live.
-3. `GitHubService.closeIssue` — skipped when the work item is not issue‑
-   backed. `gh issue close` is idempotent so retries are safe.
-4. `WorkItemsService.update({ state: 'done' })` — skipped on the already‑
-   done retry path.
-5. `removeRunsForWorkItem` finalizer — splices matching runs out of
-   `recentRuns`, stamps `disposed_at` on each `runs/<id>/status.json`, and
-   emits `execution_result` events.
-
-The `disposed_at` marker is how closed runs stay out of the recent‑runs
-list across a server restart without deleting the artifact dir: a run
-with a non‑null `disposed_at` is filtered by `loadRunRecordsFromDisk`
-(and therefore by both `hydrateRecentRunsFromDisk` and the reconciler)
-unless a caller explicitly passes `includeDisposed: true`. The artifacts
-are preserved on disk so issue #89 (archived execution run history) can
-surface them later.
-
-The response envelope (`CloseMergedPullRequestResult`) bundles the
-updated work item, the closed GitHub issue summary, the ids of removed
-runs, and a post‑close `dispatch_preview` so the UI can reflect the
-combined outcome in a single round trip — mirroring the shape returned
-by `syncMergedPullRequest`.
-
-## Contracts
-
-Detailed specs for the interfaces between these components live in `docs/contracts/`:
-
-- `mutation-proposals.md` — proposal envelope, mutation types, approval request shape
-- `graph-commit-semantics.md` — validation, atomic apply, stale detection, result shapes
-- `event-stream.md` — SSE envelope, SDK-native + Studio extension event types, reconnect
-- `planning-memory.md` — what belongs in memory, write/read policy
-- `subagent-responses.md` — shared response envelope, finding shapes, specialist types
-- `github-sync.md` — sync scope, managed block format, safety rules
-- `run-artifacts.md` — per-run artifact layout, required files, run types
-
-## Implementation
-
-See `IMPLEMENTATION_PLAN.md` for delivery waves and issue breakdown.
+`docs/contracts/` defines mutation proposals, graph commits, SSE, memory, GitHub
+sync, specialist responses, plan/run lifecycle and artifact formats. ADRs 014 and
+015 document the plan/run split and work-item HSM. For actual transition behavior,
+read the SCXML; older proposal diagrams are historical context.

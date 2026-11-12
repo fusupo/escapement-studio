@@ -4,6 +4,13 @@ This file is the home for project-level conventions that should be
 applied when working in this repo. It's auto-loaded by Claude Code
 when run from the repo root.
 
+## Supported platform
+
+Escapement Studio is strictly a desktop-only application. Design and validate
+UI changes for desktop browsers, keyboard/mouse interaction, and resized desktop
+windows. Mobile/touch layouts and mobile device testing are outside product
+scope unless explicitly requested by the user.
+
 ## Service size convention
 
 - Services stay under ~400 lines where practical.
