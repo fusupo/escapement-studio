@@ -160,3 +160,71 @@ test('recover a failed sync on stream reconnect and release streams on tab chang
   await page.getByRole('button', { name: 'Planning', exact: true }).click();
   expect(await page.evaluate(() => (window as any).__streams.filter((stream: any) => stream.url === '/api/execution/stream').every((stream: any) => stream.closed))).toBe(true);
 });
+
+test.describe('GitHub refresh on tab focus', () => {
+  const refreshPath = '/api/github-cache/refresh';
+  const refocus = (page: import('@playwright/test').Page) => page.evaluate(() => {
+    // A tab switch fires both events.
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  });
+
+  test('refreshes once per interval and reloads the planning graph', async ({ page }) => {
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+    await page.clock.install();
+    const fixture = await mockWorkspace(page);
+    const refreshes = () => fixture.calls.filter(call => call.path === refreshPath);
+    await page.goto('/');
+    await expect(page.locator('.graph-canvas g.node')).toHaveCount(1);
+    expect(refreshes()).toHaveLength(0);
+
+    fixture.advanceItemOnGitHubRefresh('merged_pr');
+    await refocus(page); await refocus(page); await refocus(page);
+    await expect(page.locator('.graph-canvas g.node.graph-node--merged-pr')).toHaveCount(1);
+    expect(refreshes()).toHaveLength(1);
+
+    await page.clock.fastForward(9_000);
+    await refocus(page);
+    await page.clock.fastForward(1_500);
+    await refocus(page);
+    await expect.poll(() => refreshes().length).toBe(2);
+    // The focus at 9 s fell inside the interval: no third request trails in.
+    await page.waitForTimeout(250);
+    expect(refreshes()).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+
+  test('asks GitHub before the Execute data sync and shows it as synchronizing', async ({ page }) => {
+    const fixture = await mockWorkspace(page, { githubRefresh: 'deferred' });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Execute', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'synced at' })).toBeVisible();
+    const before = fixture.calls.length;
+    const since = (path: string) => fixture.calls.slice(before).filter(call => call.path === path).length;
+
+    await refocus(page);
+    await expect.poll(() => since(refreshPath)).toBe(1);
+    await expect(page.getByRole('status').filter({ hasText: 'synchronizing' })).toBeVisible();
+    expect(since('/api/execution/runs')).toBe(0);
+
+    fixture.finishGitHubRefresh();
+    await expect.poll(() => since('/api/execution/runs')).toBe(1);
+    await expect(page.getByRole('status').filter({ hasText: 'synced at' })).toBeVisible();
+    expect(since(refreshPath)).toBe(1);
+  });
+
+  test('still synchronizes when the GitHub refresh fails', async ({ page }) => {
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+    const fixture = await mockWorkspace(page, { githubRefresh: 'fail' });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Execute', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'synced at' })).toBeVisible();
+    const before = fixture.calls.length;
+    await refocus(page);
+    await expect.poll(() => fixture.calls.slice(before).filter(call => call.path === '/api/execution/runs').length).toBe(1);
+    expect(fixture.calls.slice(before).filter(call => call.path === refreshPath)).toHaveLength(1);
+    await expect(page.getByRole('status').filter({ hasText: 'synced at' })).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: 'sync failed' })).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+});

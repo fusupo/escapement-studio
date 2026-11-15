@@ -5,6 +5,7 @@ export async function mockWorkspace(page: Page, options: {
   baseRef?: string;
   failedCheck?: string;
   fastForward?: "success" | "refusal" | "deferred" | "drop";
+  githubRefresh?: "success" | "fail" | "deferred";
 } = {}) {
   const item = { id: "studio-900", name: "Improve the workspace", kind: "issue", state: "drafting", repo: "example/studio", issue_number: 900, issue_url: "https://example.com/issues/900", predicted_files: [], actual_files: [], meta: {} };
   let run: any = options.run ?? { run_id: "exec_test", work_item_id: item.id, work_item_name: item.name, status: "disambiguating", phase: "awaiting_confirmation", repo: item.repo, branch: "studio-900-branch", base_ref: "develop", worktree_path: "/tmp/example", created_at: "2026-09-06T10:00:00Z", activity_log: [{ kind: "agent_message", message: "Refinement is ready for review.", timestamp: "2026-09-06T10:00:00Z" }], safety_checks: [], refinement: { items: [{ id: "q1", kind: "question", prompt: "Which implementation should we use?", options: [{ id: "safe", label: "Small change" }, { id: "broad", label: "Broader change" }], allow_other: true, response: null }], summary: "Ready for review" } };
@@ -12,6 +13,8 @@ export async function mockWorkspace(page: Page, options: {
   let failRuns = false;
   let baseCurrent = false;
   let finishFastForward: (() => void) | undefined;
+  let finishGitHubRefresh: (() => void) | undefined;
+  let onGitHubRefresh: (() => void) | undefined;
   if (options.dispatch) item.state = "ready";
   const dispatchNode = () => ({
     id: item.id, name: item.name, repo: item.repo, branch: "studio-900-branch", issue_url: item.issue_url,
@@ -52,6 +55,12 @@ export async function mockWorkspace(page: Page, options: {
       if (options.fastForward === 'drop') return route.abort('connectionreset');
       payload = { repo: item.repo, base_ref: options.baseRef || 'develop', previous_ahead: 0, previous_behind: 2, updated: true, safety_check: { code: 'base_ref_current', status: 'pass', message: 'Base is current.' } };
     }
+    else if (path === '/api/github-cache/refresh') {
+      if (options.githubRefresh === 'deferred') await new Promise<void>(resolve => { finishGitHubRefresh = resolve; });
+      if (options.githubRefresh === 'fail') return route.fulfill({ status: 500, json: { message: 'gh command timed out after 30000ms' } });
+      onGitHubRefresh?.();
+      payload = { refreshed: [{ repo: item.repo, prs: 1, issues: 1, dispatched: 0 }] };
+    }
     else if (path === '/api/execution/runs') {
       if (failRuns) return route.fulfill({ status: 503, json: { message: 'Temporary sync failure' } });
       payload = options.dispatch ? [] : [run];
@@ -62,5 +71,10 @@ export async function mockWorkspace(page: Page, options: {
     else if (path === '/api/github/issue') payload = { title: item.name, body: 'Work item', state: 'OPEN' };
     await route.fulfill({ json: payload });
   });
-  return { calls, failRuns: (value: boolean) => { failRuns = value; }, finishFastForward: () => { finishFastForward?.(); } };
+  return { calls, failRuns: (value: boolean) => { failRuns = value; }, finishFastForward: () => { finishFastForward?.(); },
+    /** Release a `githubRefresh: 'deferred'` response. */
+    finishGitHubRefresh: () => { finishGitHubRefresh?.(); },
+    /** Simulate GitHub truth arriving with a refresh: the item's state changes when the sweep runs. */
+    advanceItemOnGitHubRefresh: (state: string) => { onGitHubRefresh = () => { item.state = state; }; },
+  };
 }
