@@ -278,7 +278,7 @@ describe("GraphWriterService", () => {
       const failed = result as GraphMutationsValidationFailedResult;
       expect(failed.errors).toHaveLength(1);
       expect(failed.errors[0].code).toBe("malformed_payload");
-      expect(failed.errors[0].message).toContain('expected "studio-42"');
+      expect(failed.errors[0].message).toContain('expected an ID ending in "-42"');
       expect(failed.errors[0].message).toContain('ID "studio-99" does not match issue_number 42');
     });
 
@@ -294,6 +294,15 @@ describe("GraphWriterService", () => {
       });
 
       expect(result.status).toBe("applied");
+    });
+
+    it("accepts another repo's prefix, and refuses a number that only looks alike", () => {
+      const create = (id: string) => writer.apply({
+        mutations: [{ kind: "create_work_item", work_item: { id, name: "Other repo", kind: "issue", repo: "corpus-relica/spiral-time", issue_number: 5 } }],
+      });
+      expect(create("spiral-time-05").status).toBe("validation_failed");
+      expect(create("5").status).toBe("validation_failed");
+      expect(create("spiral-time-5").status).toBe("applied");
     });
 
     it("skips alignment check for non-issue kinds", () => {

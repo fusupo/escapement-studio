@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import {
   deriveIssueWorkItemId,
+  issueIdPrefix,
   type CreateEdgeDto,
   type CreateWorkItemDto,
 } from "../../graph/types.js";
@@ -51,7 +52,7 @@ export function createGitHubCreateIssueTool(deps: PlanningToolDeps) {
       const existingProposal = deps.proposalState.getActiveProposalForAccumulation(deps.getCurrentTurnId());
       const stagedWorkItemIds = deps.proposalState.getStagedWorkItemIds(existingProposal);
       const requestedWorkItemId = params.work_item_id?.trim();
-      const workItemId = deriveIssueWorkItemId(created.number);
+      const workItemId = deriveIssueWorkItemId(created.number, issueIdPrefix(params.repo, deps.graphService.getGraph().items));
       deps.proposalState.rememberIssueIdAlias(requestedWorkItemId, workItemId, stagedWorkItemIds);
 
       const groupId = `issue-${created.number}`;

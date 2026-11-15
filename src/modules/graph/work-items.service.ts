@@ -3,7 +3,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { parseJsonArray } from "../../lib/manifest-core.js";
 import { GraphWriterService } from "./graph-writer.service.js";
 import { SQLiteService } from "../../platform/sqlite.service.js";
-import { deriveIssueWorkItemId, type CreateWorkItemDto, type EdgeRecord, type MisalignedWorkItem, type UpdateWorkItemDto, type WorkItemRecord, type WorkItemState } from "./types.js";
+import { deriveIssueWorkItemId, issueIdPrefix, type CreateWorkItemDto, type EdgeRecord, type MisalignedWorkItem, type UpdateWorkItemDto, type WorkItemRecord, type WorkItemState } from "./types.js";
 
 interface RawWorkItemRecord {
   id: string;
@@ -122,25 +122,40 @@ export class WorkItemsService {
     return this.get(id);
   }
 
+  /** The ID a new issue-backed item of `repo` should get (#281). */
+  deriveIssueId(repo: string | null | undefined, issueNumber: number): string {
+    return deriveIssueWorkItemId(issueNumber, issueIdPrefix(repo, this.issueIdRows()));
+  }
+
   /**
-   * Find issue-backed work items whose ID does not match their issue_number.
+   * Find issue-backed work items whose ID is not "{prefix}-{issue_number}"
+   * with their repo's prefix.
    */
   findMisaligned(): MisalignedWorkItem[] {
-    const rows = this.db
-      .prepare(
-        `SELECT id, issue_number FROM work_items
-         WHERE kind = 'issue' AND issue_number IS NOT NULL`
-      )
-      .all() as Array<{ id: string; issue_number: number }>;
-
+    const rows = this.issueIdRows();
+    const prefixes = new Map<string | null, string>();
     const misaligned: MisalignedWorkItem[] = [];
     for (const row of rows) {
-      const expected = deriveIssueWorkItemId(row.issue_number);
+      let prefix = prefixes.get(row.repo);
+      if (prefix === undefined) {
+        prefix = issueIdPrefix(row.repo, rows);
+        prefixes.set(row.repo, prefix);
+      }
+      const expected = deriveIssueWorkItemId(row.issue_number, prefix);
       if (row.id !== expected) {
         misaligned.push({ id: row.id, issue_number: row.issue_number, expected_id: expected });
       }
     }
     return misaligned;
+  }
+
+  private issueIdRows(): Array<{ id: string; kind: "issue"; repo: string | null; issue_number: number }> {
+    return this.db
+      .prepare(
+        `SELECT id, kind, repo, issue_number FROM work_items
+         WHERE kind = 'issue' AND issue_number IS NOT NULL`
+      )
+      .all() as Array<{ id: string; kind: "issue"; repo: string | null; issue_number: number }>;
   }
 
   /**
