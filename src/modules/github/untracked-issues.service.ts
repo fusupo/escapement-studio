@@ -77,11 +77,15 @@ export class UntrackedIssuesService {
 
   /** The repo slug as stored in Settings, or 400 when it is not an included repo. */
   requireIncludedRepo(repo: string): string {
-    const wanted = `${repo ?? ""}`.trim().toLowerCase();
-    const slug = this.settings.listIncludedRepos().find((included) => included.toLowerCase() === wanted);
-    if (!wanted || !slug) {
-      throw new BadRequestException(`Repository is not included in Settings: ${repo || "(none)"}`);
-    }
+    const slug = this.findIncludedRepo(repo);
+    if (!slug) throw new BadRequestException(`Repository is not included in Settings: ${repo || "(none)"}`);
     return slug;
+  }
+
+  /** The slug Settings uses for `repo` (matched case-insensitively), or null. */
+  findIncludedRepo(repo: string): string | null {
+    const wanted = `${repo ?? ""}`.trim().toLowerCase();
+    if (!wanted) return null;
+    return this.settings.listIncludedRepos().find((included) => included.toLowerCase() === wanted) ?? null;
   }
 }

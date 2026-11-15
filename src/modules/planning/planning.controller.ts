@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Inject, MessageEvent, Post, Sse } from "@nestjs/common";
 import { Observable } from "rxjs";
+import { ImportProposalService, type ImportIssuesDto } from "./import-proposal.service.js";
 import { PlanningService } from "./planning.service.js";
 import type {
   ApproveGitHubSyncDto,
@@ -10,7 +11,10 @@ import type {
 
 @Controller("api/agent")
 export class PlanningController {
-  constructor(@Inject(PlanningService) private readonly planningService: PlanningService) {}
+  constructor(
+    @Inject(PlanningService) private readonly planningService: PlanningService,
+    @Inject(ImportProposalService) private readonly importProposals: ImportProposalService,
+  ) {}
 
   @Get("session")
   getSessionSnapshot() {
@@ -25,6 +29,16 @@ export class PlanningController {
   @Post("proposals/approve")
   approveProposal(@Body() body: ApproveMutationProposalDto) {
     return this.planningService.approveProposal(body);
+  }
+
+  /**
+   * #281: stage a proposal that imports untracked GitHub issues, with
+   * the edges their bodies state. Writes nothing; the proposal is then
+   * approved through `proposals/approve` like any other.
+   */
+  @Post("proposals/import")
+  importIssues(@Body() body: ImportIssuesDto) {
+    return this.importProposals.stage(body);
   }
 
   @Post("proposals/dismiss")
