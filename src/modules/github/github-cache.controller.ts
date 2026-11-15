@@ -5,9 +5,11 @@ import { GitHubCacheScheduler, type SweepResult } from "./github-cache-scheduler
  * studio-197: on-demand cache refresh endpoint.
  *
  * `POST /api/github-cache/refresh` triggers the same sweep logic as
- * the scheduler's @Cron tick: invalidate cache, refetch from GitHub,
- * dispatch HSM events for any state advances. Optionally scoped to a
- * single repo via `?repo=owner/repo`.
+ * the scheduler's @Cron tick: look up the GitHub state of the work
+ * items waiting on GitHub (#292), dispatch HSM events for any state
+ * advances. Optionally scoped to a single repo via `?repo=owner/repo`.
+ * It does not re-list the whole repo; `prs` / `issues` in the response
+ * count what was looked at.
  *
  * Callers: the Execute tab's Refresh button, and the web UI whenever
  * its browser tab regains focus (#291, at most once per 10 s per tab).
