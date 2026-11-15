@@ -4,15 +4,28 @@ import PlannerChatAdapter from "./PlannerChatAdapter.svelte";
 import GraphView from "./GraphView.svelte";
 
 import FiltersToolbar from "./FiltersToolbar.svelte";
+import ImportIssuesDialog from "./ImportIssuesDialog.svelte";
 import Sidebar from "./Sidebar.svelte";
 
 /** @type {{ workspace: ReturnType<typeof import("../lib/planning/workspace.svelte.js").createWorkspace> }} */
 let { workspace } = $props();
+
+/** @type {{ showProposal: (proposal: any) => void } | undefined} */
+let plannerChat = $state();
+
+// #281: the staged import is reviewed in the planner chat's proposal
+// overlay. With the chat collapsed, expanding it mounts the chat, which
+// loads the active proposal from the server.
+/** @param {any} proposal */
+function showImportProposal(proposal) {
+  if (plannerChat) plannerChat.showProposal(proposal);
+  else workspace.assign({ chatCollapsed: false });
+}
 </script>
 <div class="planning-viewport">
         <!-- Filter bar -->
         <div class="filter-bar">
-          <FiltersToolbar filters={workspace.filters} options={workspace.filterOptions} onChange={workspace.handleFilterChange} onReset={workspace.resetFilters} />
+          <FiltersToolbar filters={workspace.filters} options={workspace.filterOptions} onChange={workspace.handleFilterChange} onReset={workspace.resetFilters} onImport={workspace.openImportDialog} />
         </div>
 
         <!-- 3-column resizable layout -->
@@ -29,7 +42,7 @@ let { workspace } = $props();
                 </div>
               </div>
               <div class="pane-body">
-                <PlannerChatAdapter on:graphChanged={workspace.refresh} />
+                <PlannerChatAdapter bind:this={plannerChat} on:graphChanged={workspace.refresh} />
               </div>
             </div>
             <!-- Left resize handle -->
@@ -119,6 +132,7 @@ let { workspace } = $props();
             </button>
           {/if}
         </div>
+        <ImportIssuesDialog {workspace} onStaged={showImportProposal} />
       </div>
 
 <style>

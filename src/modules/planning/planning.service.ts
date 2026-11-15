@@ -7,17 +7,9 @@ import { getConfig } from "../../config.js";
 import { GitHubService } from "../github/github.service.js";
 import { GraphService } from "../graph/graph.service.js";
 import { GraphWriterService } from "../graph/graph-writer.service.js";
-import type {
-  CreateEdgeDto,
-  CreateWorkItemDto,
-  DeleteEdgeMutation,
-  DeleteWorkItemMutation,
-  EdgeRel,
-  GraphMutation,
-  UpdateWorkItemDto,
-} from "../graph/types.js";
 import { ContextService } from "./context.service.js";
 import { MemoryService } from "./memory.service.js";
+import { toGraphMutation } from "./proposal-graph-mutation.js";
 import { ProposalStateService } from "./proposal-state.service.js";
 import { SubAgentService } from "./sub-agent.service.js";
 import { DriftReportService } from "../drift-report/drift-report.service.js";
@@ -28,18 +20,16 @@ import type {
   ApproveGitHubSyncDto,
   ApproveMutationProposalDto,
   ApprovePlanningMemoryChangeDto,
-  CreateEdgePayload,
-  CreateWorkItemPayload,
   GitHubSyncResult,
   PlanningGraphCommitResult,
   PlanningMemoryWriteResult,
+  PlanningMutationProposal,
   PlanningMutationProposalMutation,
   PlanningSessionSnapshot,
   PlanningSessionTranscriptEntry,
   SendAgentMessageDto,
   SendAgentMessageResult,
   StudioSseEnvelope,
-  UpdateWorkItemPayload,
 } from "./types.js";
 
 @Injectable()
@@ -140,6 +130,15 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /**
+   * Make a proposal built outside a planner turn the active one and
+   * announce it to the browser (#281: issue import).
+   */
+  stageProposal(proposal: PlanningMutationProposal): void {
+    this.proposalState.setActiveProposal(proposal);
+    this.emitStudioEvent("mutation_proposal", { proposal });
+  }
+
   async approveProposal(input: ApproveMutationProposalDto): Promise<PlanningGraphCommitResult> {
     const proposalId = input.proposal_id?.trim();
     if (!proposalId) {
@@ -167,7 +166,7 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
     const result = this.graphWriter.apply({
       proposal_id: proposal.proposal_id,
       based_on_graph_version: proposal.context?.based_on_graph_version,
-      mutations: selectedMutations.map((mutation) => this.toGraphMutation(mutation)),
+      mutations: selectedMutations.map((mutation) => toGraphMutation(mutation)),
     });
 
     const activeProposal = result.status === "applied"
@@ -342,93 +341,6 @@ export class PlanningService implements OnModuleInit, OnModuleDestroy {
       buildProposalDefaults: () => this.buildProposalDefaults(),
       getCurrentTurnId: () => this.currentTurnId,
     };
-  }
-
-  private toGraphMutation(mutation: PlanningMutationProposalMutation): GraphMutation {
-    switch (mutation.type) {
-      case "create_work_item": {
-        const payload = mutation.payload as CreateWorkItemPayload | undefined;
-        const id = mutation.entity_id ?? payload?.id;
-        if (!id || !payload?.name || !payload.kind) {
-          throw new BadRequestException(`Mutation ${mutation.id} is missing create_work_item payload fields`);
-        }
-        const workItem: CreateWorkItemDto = {
-          ...payload,
-          id,
-          name: payload.name,
-          kind: payload.kind,
-        };
-        return {
-          mutation_id: mutation.id,
-          kind: "create_work_item",
-          work_item: workItem,
-        };
-      }
-
-      case "update_work_item": {
-        const id = mutation.entity_id;
-        if (!id || !mutation.payload) {
-          throw new BadRequestException(`Mutation ${mutation.id} is missing update_work_item payload fields`);
-        }
-        return {
-          mutation_id: mutation.id,
-          kind: "update_work_item",
-          id,
-          patch: mutation.payload as UpdateWorkItemDto,
-        };
-      }
-
-      case "delete_work_item": {
-        const id = mutation.entity_id;
-        if (!id) {
-          throw new BadRequestException(`Mutation ${mutation.id} is missing delete_work_item entity_id`);
-        }
-        const deleteMutation: DeleteWorkItemMutation = {
-          mutation_id: mutation.id,
-          kind: "delete_work_item",
-          id,
-        };
-        return deleteMutation;
-      }
-
-      case "create_edge": {
-        const payload = mutation.payload as CreateEdgePayload | undefined;
-        if (!payload?.from_id || !payload.rel || !payload.to_id) {
-          throw new BadRequestException(`Mutation ${mutation.id} is missing create_edge payload fields`);
-        }
-        const edge: CreateEdgeDto = {
-          from_id: payload.from_id,
-          rel: payload.rel as EdgeRel,
-          to_id: payload.to_id,
-          confidence: payload.confidence,
-          meta: payload.meta,
-        };
-        return {
-          mutation_id: mutation.id,
-          kind: "create_edge",
-          edge,
-        };
-      }
-
-      case "delete_edge": {
-        const payloadId = typeof mutation.payload?.id === "number"
-          ? mutation.payload.id
-          : typeof mutation.entity_id === "string"
-            ? Number(mutation.entity_id)
-            : Number.NaN;
-
-        if (!Number.isInteger(payloadId)) {
-          throw new BadRequestException(`Mutation ${mutation.id} is missing delete_edge id`);
-        }
-
-        const deleteMutation: DeleteEdgeMutation = {
-          mutation_id: mutation.id,
-          kind: "delete_edge",
-          id: payloadId,
-        };
-        return deleteMutation;
-      }
-    }
   }
 
   dismissAllProposals(): { dismissed_proposal_ids: string[]; dismissed_memory_change_ids: string[]; dismissed_github_sync_ids: string[] } {

@@ -271,3 +271,109 @@ test.describe('GitHub refresh on tab focus', () => {
     expect(errors).toEqual([]);
   });
 });
+
+test.describe('import untracked GitHub issues (#281)', () => {
+  const open = async (page: import('@playwright/test').Page) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Import issues…' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Import GitHub issues' });
+    await expect(dialog.getByText('Every open issue in example/other (0) already has a work item.')).toBeVisible();
+    await dialog.getByLabel('Repository').selectOption('example/studio');
+    await expect(dialog.getByText('3 of 4 open issues are not in the graph.')).toBeVisible();
+    return dialog;
+  };
+
+  test('selects candidates, reviews the staged proposal with evidence, and approves nodes with their edges', async ({ page }) => {
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+    const fixture = await mockWorkspace(page);
+    const dialog = await open(page);
+
+    // Included repos come from Settings; the excluded one is not offered.
+    await expect(dialog.getByLabel('Repository').locator('option')).toHaveText(['example/other', 'example/studio']);
+    await expect(dialog.locator('tbody tr')).toHaveCount(3);
+    await expect(dialog.locator('tbody tr').first()).toContainText('studio-902');
+    await expect(dialog.getByLabel('Select issue #77')).toBeDisabled();
+    await expect(dialog.getByText('ID studio-77 is already used by "Hand-made"')).toBeVisible();
+    const review = dialog.getByRole('button', { name: /Review import/ });
+    await expect(review).toBeDisabled();
+
+    await dialog.getByLabel('Select issue #901').check();
+    await expect(review).toHaveText('Review import (1)');
+    await dialog.getByLabel('Select all issues').check();
+    await expect(review).toHaveText('Review import (2)');
+    await expect(dialog.getByLabel('Select issue #77')).not.toBeChecked();
+    await review.click();
+
+    const staged = fixture.calls.filter(call => call.path === '/api/agent/proposals/import');
+    expect(staged).toHaveLength(1);
+    expect(staged[0].body).toEqual({ repo: 'example/studio', issue_numbers: [902, 901] });
+    await expect(dialog).toHaveCount(0);
+
+    const overlay = page.getByRole('dialog', { name: 'Proposal review' });
+    await expect(overlay.getByRole('heading', { name: 'Import GitHub issues' })).toBeVisible();
+    await expect(overlay.locator('.node-title')).toHaveText(['First untracked', 'Second untracked']);
+    await expect(overlay.locator('.scope-hint').last()).toHaveText('Scope of 902');
+    await expect(overlay.locator('.status-pill', { hasText: 'from issue text' })).toHaveCount(2);
+    await expect(overlay.locator('.status-pill', { hasText: 'model-inferred' })).toHaveCount(0);
+    await expect(overlay.locator('.evidence-quote')).toHaveText(['example/studio#901 Blocked by #902', 'example/studio#902 Depends on #901']);
+    await expect(overlay.locator('.mutation-error')).toHaveText('Cannot be applied: depends_on edge would create a cycle: studio-901 -> studio-902 -> studio-901');
+    await expect(overlay.getByRole('button', { name: 'Revise' })).toHaveCount(0);
+
+    // The edge that failed validation starts unticked; everything else is ticked.
+    const box = (id: string) => overlay.locator('.proposal-card', { has: page.locator('strong', { hasText: new RegExp(`^${id}$`) }) }).getByRole('checkbox');
+    const approve = overlay.getByRole('button', { name: /^Approve/ });
+    await expect(box('e2')).not.toBeChecked();
+    await expect(approve).toHaveText('Approve 3 selected');
+
+    // Unticking a node unticks its edge; ticking the edge brings the node back.
+    await box('n902').uncheck();
+    await expect(box('e1')).not.toBeChecked();
+    await expect(approve).toHaveText('Approve 1 selected');
+    await box('e1').check();
+    await expect(box('n902')).toBeChecked();
+    await expect(approve).toHaveText('Approve 3 selected');
+
+    const graphLoads = () => fixture.calls.filter(call => call.path === '/api/graph').length;
+    const before = graphLoads();
+    await approve.click();
+    await expect(overlay).toHaveCount(0);
+    const approvals = fixture.calls.filter(call => call.path === '/api/agent/proposals/approve');
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0].body).toEqual({ proposal_id: 'prop_import', approved_mutation_ids: ['n901', 'n902', 'e1'] });
+    await expect.poll(graphLoads).toBeGreaterThan(before);
+    expect(errors).toEqual([]);
+  });
+
+  test('discards a staged import on the server without asking the planner', async ({ page }) => {
+    const fixture = await mockWorkspace(page);
+    const dialog = await open(page);
+    await dialog.getByLabel('Select issue #901').check();
+    await dialog.getByRole('button', { name: /Review import/ }).click();
+
+    const overlay = page.getByRole('dialog', { name: 'Proposal review' });
+    await overlay.getByRole('button', { name: 'Discard import' }).click();
+    await expect(overlay).toHaveCount(0);
+    expect(fixture.calls.filter(call => call.path === '/api/agent/proposals/dismiss')).toHaveLength(1);
+    expect(fixture.calls.filter(call => call.path === '/api/agent/message')).toHaveLength(0);
+    expect(fixture.calls.filter(call => call.path === '/api/agent/proposals/approve')).toHaveLength(0);
+  });
+
+  test('shows a GitHub failure in the dialog and stages nothing', async ({ page }) => {
+    const fixture = await mockWorkspace(page, { untracked: 'fail' });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Import issues…' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Import GitHub issues' });
+    await expect(dialog.getByRole('alert')).toContainText('gh command timed out');
+    await expect(dialog.getByRole('button', { name: /Review import/ })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    expect(fixture.calls.filter(call => call.path === '/api/agent/proposals/import')).toHaveLength(0);
+  });
+
+  test('lists repos included in Settings in the Planning repo filter, even with no work items', async ({ page }) => {
+    await mockWorkspace(page);
+    await page.goto('/');
+    const repoFilter = page.locator('.toolbar select').first();
+    await expect(repoFilter.locator('option')).toHaveText(['All', 'example/other', 'example/studio']);
+  });
+});

@@ -1,15 +1,54 @@
 export type WorkItemKind = "issue" | "capability" | "phase" | "track";
 
+/** Prefix of issue-backed work-item IDs when no repo says otherwise. */
+export const DEFAULT_ISSUE_ID_PREFIX = "studio";
+
+const ISSUE_ID_PATTERN = /^([A-Za-z0-9][A-Za-z0-9._-]*)-(\d+)$/;
+
 /**
- * Derive the canonical work-item ID for an issue-backed item.
- * Convention: "studio-{issue_number}"
+ * Derive the canonical work-item ID for an issue-backed item:
+ * "{prefix}-{issue_number}". The prefix is per repo (see `issueIdPrefix`),
+ * so the same issue number in two repos gives two IDs (#281).
  */
-export function deriveIssueWorkItemId(issueNumber: number): string {
-  return `studio-${issueNumber}`;
+export function deriveIssueWorkItemId(issueNumber: number, prefix: string = DEFAULT_ISSUE_ID_PREFIX): string {
+  return `${prefix}-${issueNumber}`;
+}
+
+/** ID prefix taken from a repo slug: "owner/Spiral.Time" gives "spiral-time". */
+export function repoIdPrefix(repo: string): string {
+  const name = repo.slice(repo.lastIndexOf("/") + 1).toLowerCase();
+  return name.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || DEFAULT_ISSUE_ID_PREFIX;
 }
 
 /**
- * Check whether a work item's ID is aligned with its issue_number.
+ * The ID prefix for issue-backed items of `repo`. A repo that already has
+ * such items keeps the prefix most of them use, so existing IDs stay the
+ * convention for their repo; a repo with none gets its own name. Items
+ * without a repo use the default.
+ */
+export function issueIdPrefix(
+  repo: string | null | undefined,
+  items: Iterable<{ id: string; kind: string; repo?: string | null; issue_number?: number | null }>,
+): string {
+  if (!repo) return DEFAULT_ISSUE_ID_PREFIX;
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (item.kind !== "issue" || item.repo !== repo || item.issue_number == null) continue;
+    const match = ISSUE_ID_PATTERN.exec(item.id);
+    if (!match || Number(match[2]) !== item.issue_number) continue;
+    counts.set(match[1], (counts.get(match[1]) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  for (const [prefix, count] of counts) {
+    if (best === null || count > (counts.get(best) ?? 0) || (count === counts.get(best) && prefix < best)) best = prefix;
+  }
+  return best ?? repoIdPrefix(repo);
+}
+
+/**
+ * Check whether a work item's ID is aligned with its issue_number: it must
+ * be "{prefix}-{issue_number}" for some prefix. Which prefix belongs to
+ * which repo is not checked here; `findMisaligned` reports that.
  * Returns null if aligned or not applicable, otherwise a diagnostic string.
  */
 export function checkIdAlignment(
@@ -18,9 +57,9 @@ export function checkIdAlignment(
   issueNumber: number | null | undefined,
 ): string | null {
   if (kind !== "issue" || issueNumber == null) return null;
-  const expected = deriveIssueWorkItemId(issueNumber);
-  if (id === expected) return null;
-  return `ID "${id}" does not match issue_number ${issueNumber} (expected "${expected}")`;
+  const match = ISSUE_ID_PATTERN.exec(id);
+  if (match && Number(match[2]) === issueNumber && match[2] === String(issueNumber)) return null;
+  return `ID "${id}" does not match issue_number ${issueNumber} (expected an ID ending in "-${issueNumber}", e.g. "${deriveIssueWorkItemId(issueNumber)}")`;
 }
 
 export interface MisalignedWorkItem {
@@ -172,6 +211,7 @@ export interface GraphMutationError {
     | "duplicate_entity"
     | "duplicate_edge"
     | "invalid_relation"
+    | "cycle"
     | "unsafe_delete"
     | "malformed_payload";
   message: string;
@@ -264,6 +304,18 @@ export interface HsmActionHandler {
     context: HsmActionHandlerContext,
   ): Promise<void>;
 }
+
+export interface GraphMutationsValidResult {
+  status: "valid";
+  proposal_id: string | null;
+  current_graph_version: string;
+}
+
+/** Result of a validate-only run: what `apply` would have refused, or "valid". */
+export type ValidateGraphMutationsResult =
+  | GraphMutationsValidResult
+  | GraphMutationsValidationFailedResult
+  | GraphMutationsStaleResult;
 
 export type ApplyGraphMutationsResult =
   | GraphMutationsAppliedResult

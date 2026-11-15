@@ -48,7 +48,7 @@ describe("graph request boundary", () => {
   });
   it("rejects unsafe edge patches without changing the edge", () => {
     const { db, writer } = setup();
-    writer.apply({ mutations: [{ kind: "create_edge", edge: { from_id: "item", to_id: "item", rel: "depends_on" } }] });
+    writer.apply({ mutations: [{ kind: "create_edge", edge: { from_id: "item", to_id: "item", rel: "implemented_by" } }] });
     expect(writer.apply({ mutations: [{ kind: "update_edge", id: 1, patch: { "from_id = 'missing', confidence": "certain" } }] } as unknown as ApplyGraphMutationsDto).status).toBe("validation_failed");
     expect(db.prepare("SELECT from_id FROM edges").get()).toEqual({ from_id: "item" });
   });

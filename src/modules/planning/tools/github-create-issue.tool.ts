@@ -2,9 +2,10 @@ import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import {
   deriveIssueWorkItemId,
+  issueIdPrefix,
   type CreateEdgeDto,
-  type CreateWorkItemDto,
 } from "../../graph/types.js";
+import { buildIssueNodeMutation, issueGroupId } from "../issue-node-mutation.js";
 import type {
   GitHubCreateIssueToolInput,
   PlanningMutationProposal,
@@ -51,33 +52,26 @@ export function createGitHubCreateIssueTool(deps: PlanningToolDeps) {
       const existingProposal = deps.proposalState.getActiveProposalForAccumulation(deps.getCurrentTurnId());
       const stagedWorkItemIds = deps.proposalState.getStagedWorkItemIds(existingProposal);
       const requestedWorkItemId = params.work_item_id?.trim();
-      const workItemId = deriveIssueWorkItemId(created.number);
+      const workItemId = deriveIssueWorkItemId(created.number, issueIdPrefix(params.repo, deps.graphService.getGraph().items));
       deps.proposalState.rememberIssueIdAlias(requestedWorkItemId, workItemId, stagedWorkItemIds);
 
-      const groupId = `issue-${created.number}`;
+      const groupId = issueGroupId(created.number);
       const parentId = deps.proposalState.resolveIssueIdAlias(params.parent_id, stagedWorkItemIds);
       const dependsOnIds = params.depends_on_ids
         ?.map((depId) => deps.proposalState.resolveIssueIdAlias(depId, stagedWorkItemIds))
         .filter((depId): depId is string => Boolean(depId));
 
       const mutations: ProposeMutationsToolInput["mutations"] = [
-        {
-          type: "create_work_item",
-          entity_id: workItemId,
-          group_id: groupId,
-          payload: {
-            id: workItemId,
-            name: created.title,
-            kind: "issue",
-            state: "planned",
-            repo: params.repo,
-            issue_number: created.number,
-            issue_url: created.url,
-            scope_hint: params.scope_hint ?? null,
-            predicted_files: params.predicted_files ?? [],
-          } satisfies CreateWorkItemDto,
+        buildIssueNodeMutation({
+          workItemId,
+          repo: params.repo,
+          issueNumber: created.number,
+          issueUrl: created.url,
+          title: created.title,
+          scopeHint: params.scope_hint,
+          predictedFiles: params.predicted_files,
           rationale: `Graph representation for newly created GitHub issue #${created.number}.`,
-        },
+        }),
       ];
 
       if (parentId) {

@@ -187,7 +187,8 @@ a:hover {
 /* ── Filter toolbar ── */
 .toolbar {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Four filters share the width; the buttons after them keep their own. */
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto auto;
   gap: 6px;
   align-items: end;
 }

@@ -49,7 +49,7 @@ function makePlanningService(createdIssues: CreatedIssue[]) {
     createIssue.mockResolvedValueOnce(issue);
   }
 
-  const graphService = { getGraph: () => ({ graph_version: "7" }) } as never;
+  const graphService = { getGraph: () => ({ graph_version: "7", items: [{ id: "studio-1", kind: "issue", repo: "fusupo/escapement-studio", issue_number: 1 }] }) } as never;
   const githubService = { createIssue } as never;
   const memoryService = {} as never;
   // Phase 7 (#227): proposalState owns the staging/alias state that
@@ -96,7 +96,7 @@ function makePlanningService(createdIssues: CreatedIssue[]) {
 }
 
 function makeGitHubSyncTool() {
-  const graphService = { getGraph: () => ({ graph_version: "7" }) } as never;
+  const graphService = { getGraph: () => ({ graph_version: "7", items: [{ id: "studio-1", kind: "issue", repo: "fusupo/escapement-studio", issue_number: 1 }] }) } as never;
   const githubService = {
     stageManagedBlockSync: vi.fn(async (workItemId: string) => ({
       issue: {

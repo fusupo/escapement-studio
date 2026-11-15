@@ -68,4 +68,24 @@ describe("GitHubItemLookup", () => {
     runGh.mockRejectedValueOnce(new Error("gh command timed out after 30000ms"));
     await expect(lookup.issue("fusupo/escapement-studio", 100)).rejects.toThrow(/timed out/);
   });
+
+  it("reads one issue with its body", async () => {
+    runGh.mockResolvedValueOnce(JSON.stringify({
+      number: 281, title: "Import", url: "https://github.com/fusupo/escapement-studio/issues/281",
+      state: "OPEN", closedAt: null, body: "Depends on #12",
+    }));
+    const issue = await lookup.issueWithBody("fusupo/escapement-studio", 281);
+    expect(runGh).toHaveBeenCalledWith([
+      "issue", "view", "281", "--repo", "fusupo/escapement-studio", "--json", "number,title,url,state,closedAt,body",
+    ]);
+    expect(issue).toEqual({
+      number: 281, state: "open", closed_at: null, title: "Import",
+      url: "https://github.com/fusupo/escapement-studio/issues/281", body: "Depends on #12",
+    });
+  });
+
+  it("treats a missing body as empty", async () => {
+    runGh.mockResolvedValueOnce(JSON.stringify({ number: 1, title: "T", url: "u", state: "OPEN", body: null }));
+    expect((await lookup.issueWithBody("fusupo/escapement-studio", 1)).body).toBe("");
+  });
 });

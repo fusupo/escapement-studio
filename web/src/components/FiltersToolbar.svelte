@@ -3,6 +3,11 @@
   export let options = { repos: [], states: [], tracks: [], phases: [] };
   export let onChange = (..._args) => {};
   export let onReset = (..._args) => {};
+  /**
+   * #281: opens the GitHub issue import dialog; the button is hidden when not given.
+   * @type {(() => void) | null}
+   */
+  export let onImport = null;
 
   function update(key, value) {
     onChange({ ...filters, [key]: value });
@@ -51,4 +56,5 @@
   </label>
 
   <button class="secondary" on:click={onReset}>Reset</button>
+  {#if onImport}<button class="secondary" on:click={() => onImport?.()} title="Add GitHub issues that are not in the graph yet">Import issues…</button>{/if}
 </div>
