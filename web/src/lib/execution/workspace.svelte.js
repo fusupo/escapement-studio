@@ -1,5 +1,6 @@
 import { onMount, untrack } from 'svelte';
 import { createExecutionSyncCoordinator } from "../execution-sync.js";
+import { requestGitHubRefresh } from "../github-focus-refresh.js";
 import { shouldReplaceChecklistSnapshot } from "../checklist-sync.js";
 import { projectExecutionRecovery } from "../execution-recovery.js";
 import { createRunData } from "./run-data.js";
@@ -160,10 +161,18 @@ export function createWorkspace() {
         el.scrollTop = el.scrollHeight; s.prevActivityCount = count; }); });
     onMount(() => {
         let firstReload = true;
+        let githubRefreshWanted = false;
         s.syncCoordinator = createExecutionSyncCoordinator({
-            reload: () => {
+            reload: async () => {
                 const quiet = !firstReload;
                 firstReload = false;
+                if (githubRefreshWanted) {
+                    // Ask GitHub first so the data read below sees changes made
+                    // on github.com (#291). Never rejects; a failed refresh
+                    // falls through to the normal sync.
+                    githubRefreshWanted = false;
+                    await requestGitHubRefresh();
+                }
                 return actions.loadData({ quiet });
             },
             onStateChange: (state) => {
@@ -173,8 +182,10 @@ export function createWorkspace() {
             },
         });
         const requestVisibleSync = () => {
-            if (document.visibilityState === "visible")
+            if (document.visibilityState === "visible") {
+                githubRefreshWanted = true;
                 actions.requestDataSync();
+            }
         };
         const handleStreamOpen = () => {
             s.connected = true;
