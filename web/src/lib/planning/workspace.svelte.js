@@ -1,5 +1,6 @@
 import { onMount, untrack } from 'svelte';
 import { buildGraphNodeContextMenu } from "../graph-node-actions.js";
+import { requestGitHubRefresh } from "../github-focus-refresh.js";
 import { createGraphData } from "./graph-data.js";
 import { createWorkItemActions } from "./work-item-actions.js";
 import { createPlanActions } from "./plan-actions.js";
@@ -177,7 +178,21 @@ export function createWorkspace() {
         s.graphStream.addEventListener("work_item_state_changed", () => {
             actions.scheduleGraphRefresh();
         });
+        // #291: changes made on github.com are only seen by a cache sweep, so
+        // ask for one when the tab regains focus (rate-limited in the helper)
+        // and reload the graph once it has run. This workspace is mounted on
+        // every tab, which makes the refresh app-wide.
+        const refreshFromGitHub = async () => {
+            if (document.visibilityState !== "visible")
+                return;
+            if (await requestGitHubRefresh())
+                actions.scheduleGraphRefresh();
+        };
+        document.addEventListener("visibilitychange", refreshFromGitHub);
+        window.addEventListener("focus", refreshFromGitHub);
         return () => {
+            document.removeEventListener("visibilitychange", refreshFromGitHub);
+            window.removeEventListener("focus", refreshFromGitHub);
             window.clearTimeout(s.graphRefreshTimer);
             s.graphStream?.close();
         };
