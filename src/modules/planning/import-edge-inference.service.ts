@@ -132,7 +132,7 @@ export class ImportEdgeInferenceService {
         if (expired || Date.now() >= end) throw new Error("inference_deadline");
         const creation = createAgentSession({ model, settingsManager, resourceLoader: loader, sessionManager: SessionManager.inMemory(), noTools: "all", customTools: [] });
         const created = creation.then((result) => {
-          if (expired) { stop(result.session); throw new Error("inference_deadline"); }
+          if (expired || Date.now() >= end) { stop(result.session); throw new Error("inference_deadline"); }
           return result;
         });
         active = (await bounded(created)).session;

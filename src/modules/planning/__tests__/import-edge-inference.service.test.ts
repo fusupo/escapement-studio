@@ -81,6 +81,26 @@ describe("isolated model lifecycle", () => {
     await expect(service().infer(input)).rejects.toThrow("inference_attempts_exhausted");
     expect(a.dispose).toHaveBeenCalledTimes(1); expect(b.dispose).toHaveBeenCalledTimes(1);
   });
+  it("retries model error turns even if they contain apparently valid text", async () => {
+    const a = { ...session(), messages: [{ role: "assistant", stopReason: "error" }] }, b = session();
+    sdk.create.mockResolvedValueOnce({ session: a }).mockResolvedValueOnce({ session: b });
+    expect((await service().infer(input)).edges).toEqual([]);
+    expect(a.dispose).toHaveBeenCalledTimes(1); expect(b.dispose).toHaveBeenCalledTimes(1);
+  });
+  it("does not prompt a session resolving at the deadline before its timer callback", async () => {
+    vi.useFakeTimers(); const s = session();
+    sdk.create.mockImplementationOnce(async () => { vi.setSystemTime(Date.now() + 60000); return { session: s }; });
+    await expect(service().infer(input)).rejects.toThrow("deadline");
+    expect(s.prompt).not.toHaveBeenCalled(); expect(s.dispose).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+  });
+  it("clears the deadline timer after success and parse exhaustion", async () => {
+    vi.useFakeTimers(); sdk.create.mockResolvedValueOnce({ session: session() });
+    await service().infer(input); expect(vi.getTimerCount()).toBe(0);
+    const a = session("bad"), b = session("bad");
+    sdk.create.mockResolvedValueOnce({ session: a }).mockResolvedValueOnce({ session: b });
+    await expect(service().infer(input)).rejects.toThrow("exhausted");
+    expect(a.dispose).toHaveBeenCalledTimes(1); expect(b.dispose).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+  });
   it("does not retry setup errors", async () => {
     sdk.create.mockRejectedValue(new Error("setup"));
     await expect(service().infer(input)).rejects.toThrow("setup"); expect(sdk.create).toHaveBeenCalledTimes(1);
