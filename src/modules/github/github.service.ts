@@ -1,8 +1,8 @@
 import { BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
 import { EventBus } from "@nestjs/cqrs";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PullRequestTruthRefreshedEvent } from "../execution/events/pull-request-truth-refreshed.event.js";
+import { runGh as runGhCommand } from "../../lib/gh-runner.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
 import { GitHubIssueBodySyncService } from "./github-issue-body-sync.service.js";
 import type { UpdateWorkItemDto, WorkItemRecord } from "../graph/types.js";
@@ -138,7 +138,7 @@ export class GitHubService {
       args.push("--label", labels.join(","));
     }
 
-    const stdout = this.runGh(args).trim();
+    const stdout = (await this.runGh(args)).trim();
 
     // gh issue create outputs the issue URL, e.g. https://github.com/owner/repo/issues/42
     const issueNumberMatch = stdout.match(/\/issues\/(\d+)\s*$/);
@@ -165,7 +165,7 @@ export class GitHubService {
 
     const trimmedComment = typeof comment === "string" ? comment.trim() : "";
     if (trimmedComment) {
-      this.runGh([
+      await this.runGh([
         "issue",
         "comment",
         String(issueNumber),
@@ -176,7 +176,7 @@ export class GitHubService {
       ]);
     }
 
-    this.runGh([
+    await this.runGh([
       "issue",
       "close",
       String(issueNumber),
@@ -195,7 +195,7 @@ export class GitHubService {
       throw new BadRequestException("issue_number must be a positive integer");
     }
 
-    this.runGh([
+    await this.runGh([
       "issue",
       "delete",
       String(issueNumber),
@@ -691,17 +691,14 @@ export class GitHubService {
   }
 
   private async runGhJson<T>(args: string[]): Promise<T> {
-    const stdout = this.runGh(args);
+    const stdout = await this.runGh(args);
     return JSON.parse(stdout) as T;
   }
 
-  private runGh(args: string[], stdin?: string): string {
+  /** Non-blocking `gh` call (#290): bounded by the shared runner's timeout and slot limit. */
+  private async runGh(args: string[], stdin?: string): Promise<string> {
     try {
-      return execFileSync("gh", args, {
-        input: stdin,
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024 * 4,
-      });
+      return await runGhCommand(args, { stdin });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new BadRequestException(`gh command failed: ${message}`);
