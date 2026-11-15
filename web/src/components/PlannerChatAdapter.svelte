@@ -11,6 +11,8 @@
   } from "../lib/api.js";
   import { connectPlannerStream, extractMessageText, toToolStatus } from "../lib/planner-chat.js";
   import { renderMarkdown } from "../lib/markdown.js";
+  import { defaultSelection, isImportProposal, toggleSelection } from "../lib/planning/proposal-selection.js";
+  import ProposalReview from "./ProposalReview.svelte";
 
   const dispatch = createEventDispatcher();
   const graphModes = ["default", "focused", "full"];
@@ -53,7 +55,7 @@
     }
 
     const ids = proposal.mutations?.map((mutation) => mutation.id) ?? [];
-    selectedMutationIds = preserve ? selectedMutationIds.filter((id) => ids.includes(id)) : ids;
+    selectedMutationIds = preserve ? selectedMutationIds.filter((id) => ids.includes(id)) : defaultSelection(proposal);
   }
 
   function syncMemorySelection(change, preserve = false) {
@@ -126,24 +128,35 @@
     messages = [...messages, nextMessage];
   }
 
+  /**
+   * Show a proposal staged outside a planner turn (#281: issue import)
+   * without waiting for the stream to deliver it.
+   */
+  export function showProposal(proposal) {
+    receiveProposal(proposal ?? null);
+  }
+
+  function receiveProposal(nextProposal) {
+    // When the same proposal is updated (e.g. multi-issue accumulation),
+    // preserve existing selections and auto-select only the new mutations.
+    const isSameProposal = nextProposal && activeProposal && nextProposal.proposal_id === activeProposal.proposal_id;
+    lastCommitResult = null;
+    if (isSameProposal) {
+      const existingIds = new Set((activeProposal.mutations ?? []).map((m) => m.id));
+      const newIds = (nextProposal.mutations ?? []).filter((m) => !existingIds.has(m.id)).map((m) => m.id);
+      activeProposal = nextProposal;
+      selectedMutationIds = [...selectedMutationIds.filter((id) => nextProposal.mutations.some((m) => m.id === id)), ...newIds];
+    } else {
+      activeProposal = nextProposal;
+      syncMutationSelection(activeProposal);
+    }
+  }
+
   function handlePlannerEvent(event) {
     sessionId = event.session_id || sessionId;
 
     if (event.event_type === "mutation_proposal") {
-      const nextProposal = event.payload?.proposal ?? null;
-      // When the same proposal is updated (e.g. multi-issue accumulation),
-      // preserve existing selections and auto-select only the new mutations.
-      const isSameProposal = nextProposal && activeProposal && nextProposal.proposal_id === activeProposal.proposal_id;
-      lastCommitResult = null;
-      if (isSameProposal) {
-        const existingIds = new Set((activeProposal.mutations ?? []).map((m) => m.id));
-        const newIds = (nextProposal.mutations ?? []).filter((m) => !existingIds.has(m.id)).map((m) => m.id);
-        activeProposal = nextProposal;
-        selectedMutationIds = [...selectedMutationIds.filter((id) => nextProposal.mutations.some((m) => m.id === id)), ...newIds];
-      } else {
-        activeProposal = nextProposal;
-        syncMutationSelection(activeProposal);
-      }
+      receiveProposal(event.payload?.proposal ?? null);
       return;
     }
 
@@ -386,6 +399,13 @@
       return;
     }
 
+    // An import was not proposed by the planner, so there is nobody to
+    // tell: discard it on the server.
+    if (isImportProposal(activeProposal)) {
+      await dismissOverlay();
+      return;
+    }
+
     await sendPlannerMessage(`Reject proposal ${activeProposal.proposal_id}. Do not restage the same mutations unchanged. Briefly explain why it was rejected and propose a better alternative if appropriate.`);
   }
 
@@ -466,7 +486,7 @@
   }
 
   function toggleMutationSelection(mutationId, checked) {
-    selectedMutationIds = checked ? [...selectedMutationIds, mutationId] : selectedMutationIds.filter((id) => id !== mutationId);
+    selectedMutationIds = toggleSelection(activeProposal, selectedMutationIds, mutationId, checked);
   }
 
   function toggleMemorySelection(editId, checked) {
@@ -728,41 +748,17 @@
     {#if approvalError}<div class="banner error inline-banner approval-error-banner">{approvalError}</div>{/if}
 
     {#if activeProposal}
-    <div class="approval-section">
-      <div class="approval-header">
-        <h3>Graph mutation proposal</h3>
-        {#if activeProposal.context?.based_on_graph_version}<span class="status-pill healthy">graph v{activeProposal.context.based_on_graph_version}</span>{/if}
-      </div>
-      <div class="proposal-summary">
-        <strong>{activeProposal.proposal_id}</strong>
-        <p>{activeProposal.summary ?? '(no summary)'}</p>
-      </div>
-      {#if activeProposal.mutations?.length}
-      <div class="proposal-list">
-        {#each activeProposal.mutations as mutation}
-          <label class="proposal-card">
-            <div class="proposal-card-header">
-              <input type="checkbox" checked={selectedMutationIds.includes(mutation.id)} on:change={(event) => toggleMutationSelection(mutation.id, event.currentTarget.checked)} />
-              <div>
-                <strong>{mutation.id}</strong>
-                <span class="proposal-type">{mutation.type}</span>
-                {#if mutation.entity_id}<code>{mutation.entity_id}</code>{/if}
-              </div>
-            </div>
-            <p>{mutation.rationale}</p>
-            {#if mutation.payload}<pre>{JSON.stringify(mutation.payload, null, 2)}</pre>{/if}
-          </label>
-        {/each}
-      </div>
-      {:else}
-      <div class="banner error inline-banner">Proposal has no mutations. Dismiss or reject to recover.</div>
-      {/if}
-      <div class="approval-actions">
-        <button on:click={approveSelectedMutations} disabled={approving || selectedMutationIds.length === 0}>{approving ? 'Applying...' : `Approve ${selectedMutationIds.length} selected`}</button>
-        <button class="secondary" on:click={rejectProposal} disabled={sending}>Reject</button>
-        <button class="secondary" on:click={reviseProposal} disabled={sending}>Revise</button>
-      </div>
-    </div>
+    <ProposalReview
+      proposal={activeProposal}
+      selectedIds={selectedMutationIds}
+      commitResult={lastCommitResult}
+      {approving}
+      busy={sending || dismissing}
+      onToggle={toggleMutationSelection}
+      onApprove={approveSelectedMutations}
+      onReject={rejectProposal}
+      onRevise={reviseProposal}
+    />
     {/if}
 
     {#if activeMemoryChange}
