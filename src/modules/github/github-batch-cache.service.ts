@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import {
   GitHubService,
   type GitHubListedIssue,
@@ -32,12 +32,8 @@ interface CacheEntry<T> {
   writesDuringFetch: Map<number, T>;
 }
 
-const PULL_REQUEST_LIMIT = 300;
-const ISSUE_LIMIT = 500;
-
 @Injectable()
 export class GitHubBatchCache {
-  private readonly logger = new Logger(GitHubBatchCache.name);
   private readonly ttlMs = 60_000;
   private readonly prCache = new Map<string, CacheEntry<CachedPullRequest>>();
   private readonly issueCache = new Map<string, CacheEntry<CachedIssue>>();
@@ -53,9 +49,6 @@ export class GitHubBatchCache {
     entry.writesDuringFetch = new Map();
     entry.inFlight = this.githubService.listPullRequests(key)
       .then((pulls) => {
-        if (pulls.length === PULL_REQUEST_LIMIT) {
-          this.logger.warn(`Pull request cache fill for ${key} hit ${PULL_REQUEST_LIMIT} items; results may be truncated`);
-        }
         entry.data = this.withWrites(this.toPullRequestMap(pulls), entry.writesDuringFetch);
         entry.fetchedAt = Date.now();
         return entry.data;
@@ -76,9 +69,6 @@ export class GitHubBatchCache {
     entry.writesDuringFetch = new Map();
     entry.inFlight = this.githubService.listIssues(key)
       .then((issues) => {
-        if (issues.length === ISSUE_LIMIT) {
-          this.logger.warn(`Issue cache fill for ${key} hit ${ISSUE_LIMIT} items; results may be truncated`);
-        }
         entry.data = this.withWrites(this.toIssueMap(issues), entry.writesDuringFetch);
         entry.fetchedAt = Date.now();
         return entry.data;

@@ -33,7 +33,6 @@ describe("GitHubBatchCache", () => {
       ]),
     };
     const cache = new GitHubBatchCache(githubService as any);
-    (cache as any).logger = { warn: vi.fn() };
     return { cache, githubService };
   }
 

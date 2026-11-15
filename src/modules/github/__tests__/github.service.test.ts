@@ -726,7 +726,7 @@ describe("GitHubService batch list methods", () => {
       "--state",
       "all",
       "--limit",
-      "300",
+      "5000",
       "--json",
       "number,url,title,state,isDraft,baseRefName,headRefName,mergedAt",
     ]);
@@ -778,18 +778,18 @@ describe("GitHubService batch list methods", () => {
       "--state",
       "all",
       "--limit",
-      "500",
+      "5000",
       "--json",
       "number,title,url,state,closedAt",
     ]);
   });
 
-  it("warns when batch list results hit the hard limits", async () => {
+  it("warns when a batch list reaches the limit, and not at the old 300 / 500 caps", async () => {
     const service = new GitHubService({} as any, makeEventBusStub(), makeIssueBodySyncService());
     const logger = { warn: vi.fn() };
     (service as any).logger = logger;
     (service as any).runGhJson = vi.fn()
-      .mockResolvedValueOnce(Array.from({ length: 300 }, (_, index) => ({
+      .mockResolvedValueOnce(Array.from({ length: 5000 }, (_, index) => ({
         number: index + 1,
         url: `https://github.com/fusupo/escapement-studio/pull/${index + 1}`,
         title: `PR ${index + 1}`,
@@ -799,7 +799,7 @@ describe("GitHubService batch list methods", () => {
         headRefName: `branch-${index + 1}`,
         mergedAt: null,
       })))
-      .mockResolvedValueOnce(Array.from({ length: 500 }, (_, index) => ({
+      .mockResolvedValueOnce(Array.from({ length: 5000 }, (_, index) => ({
         number: index + 1,
         title: `Issue ${index + 1}`,
         url: `https://github.com/fusupo/escapement-studio/issues/${index + 1}`,
@@ -811,6 +811,14 @@ describe("GitHubService batch list methods", () => {
     await service.listIssues("fusupo/escapement-studio");
 
     expect(logger.warn).toHaveBeenCalledTimes(2);
+
+    logger.warn.mockClear();
+    (service as any).runGhJson = vi.fn()
+      .mockResolvedValueOnce(Array.from({ length: 300 }, (_, index) => ({ number: index + 1, url: "u", title: "t", state: "OPEN" })))
+      .mockResolvedValueOnce(Array.from({ length: 500 }, (_, index) => ({ number: index + 1, url: "u", title: "t", state: "OPEN" })));
+    expect(await service.listPullRequests("fusupo/escapement-studio")).toHaveLength(300);
+    expect(await service.listIssues("fusupo/escapement-studio")).toHaveLength(500);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it("propagates batch list failures", async () => {
