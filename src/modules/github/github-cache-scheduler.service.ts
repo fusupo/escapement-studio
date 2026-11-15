@@ -17,11 +17,15 @@ import { GitHubBatchCache, type CachedPullRequest, type CachedIssue } from "./gi
  * beyond the work item's local state.
  *
  * The same sweep logic is exposed via `sweep(repo?)` so the
- * `POST /api/github-cache/refresh` endpoint can trigger it on demand.
+ * `POST /api/github-cache/refresh` endpoint can trigger it on demand
+ * (the Refresh button, and the web UI when its tab regains focus, #291).
+ * Overlapping sweeps of one repo share a single run.
  */
 @Injectable()
 export class GitHubCacheScheduler {
   private readonly logger = new Logger(GitHubCacheScheduler.name);
+  /** Sweeps in flight, by repo, so overlapping triggers share one run. */
+  private readonly inFlight = new Map<string, Promise<SweepResult>>();
 
   constructor(
     @Inject(GitHubBatchCache) private readonly cache: GitHubBatchCache,
@@ -62,7 +66,7 @@ export class GitHubCacheScheduler {
     const results: SweepResult[] = [];
     for (const r of repos) {
       try {
-        const result = await this.sweepRepo(r);
+        const result = await this.sweepRepoOnce(r);
         results.push(result);
       } catch (error) {
         this.logger.warn(
@@ -72,6 +76,23 @@ export class GitHubCacheScheduler {
       }
     }
     return results;
+  }
+
+  /**
+   * Join the sweep already running for `repo`, or start one. The timer
+   * tick, the Refresh button and tab-focus refreshes from any number of
+   * browser tabs can overlap; running them in parallel would refetch the
+   * same lists and dispatch the same `gh.*` events twice. A joiner may get
+   * state fetched just before its own trigger; the next sweep corrects it.
+   */
+  private sweepRepoOnce(repo: string): Promise<SweepResult> {
+    const running = this.inFlight.get(repo);
+    if (running) return running;
+    const started = this.sweepRepo(repo).finally(() => {
+      this.inFlight.delete(repo);
+    });
+    this.inFlight.set(repo, started);
+    return started;
   }
 
   private async sweepRepo(repo: string): Promise<SweepResult> {
