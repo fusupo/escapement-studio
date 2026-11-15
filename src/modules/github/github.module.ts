@@ -4,6 +4,7 @@ import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { GitHubCacheController } from "./github-cache.controller.js";
 import { GitHubCacheScheduler } from "./github-cache-scheduler.service.js";
 import { GitHubController } from "./github.controller.js";
+import { GitHubItemLookup } from "./github-item-lookup.service.js";
 import { GitHubIssueBodySyncService } from "./github-issue-body-sync.service.js";
 import { GitHubService } from "./github.service.js";
 import { StudioIssueTemplateService } from "./studio-issue-template.service.js";
@@ -30,6 +31,7 @@ import { StudioIssueTemplateService } from "./studio-issue-template.service.js";
     GitHubIssueBodySyncService,
     StudioIssueTemplateService,
     GitHubBatchCache,
+    GitHubItemLookup,
     GitHubCacheScheduler,
   ],
   exports: [

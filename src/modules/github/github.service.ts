@@ -24,6 +24,14 @@ interface RawIssueResponse {
   assignees?: Array<{ login?: string; name?: string }>;
 }
 
+/**
+ * Upper bound for the full PR and issue listings (#292). `gh` pages
+ * through results up to `--limit`, so this is set far above any repo
+ * Studio manages rather than at a size a busy repo reaches; hitting it
+ * is logged as truncation.
+ */
+export const GITHUB_LIST_LIMIT = 5000;
+
 interface RawIssueListResponse {
   number: number;
   title: string;
@@ -300,13 +308,13 @@ export class GitHubService {
       "--state",
       "all",
       "--limit",
-      "300",
+      String(GITHUB_LIST_LIMIT),
       "--json",
       "number,url,title,state,isDraft,baseRefName,headRefName,mergedAt",
     ]);
 
-    if (pulls.length === 300) {
-      this.logger.warn(`gh pr list hit --limit 300 for ${normalizedRepo}; results may be truncated`);
+    if (pulls.length >= GITHUB_LIST_LIMIT) {
+      this.logger.warn(`gh pr list hit --limit ${GITHUB_LIST_LIMIT} for ${normalizedRepo}; results are truncated`);
     }
 
     return pulls.map((pull) => {
@@ -338,13 +346,13 @@ export class GitHubService {
       "--state",
       "all",
       "--limit",
-      "500",
+      String(GITHUB_LIST_LIMIT),
       "--json",
       "number,title,url,state,closedAt",
     ]);
 
-    if (issues.length === 500) {
-      this.logger.warn(`gh issue list hit --limit 500 for ${normalizedRepo}; results may be truncated`);
+    if (issues.length >= GITHUB_LIST_LIMIT) {
+      this.logger.warn(`gh issue list hit --limit ${GITHUB_LIST_LIMIT} for ${normalizedRepo}; results are truncated`);
     }
 
     return issues.map((issue) => ({

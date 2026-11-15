@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import {
   GitHubService,
   type GitHubListedIssue,
@@ -28,15 +28,12 @@ interface CacheEntry<T> {
   fetchedAt: number | null;
   data: Map<number, T>;
   inFlight: Promise<Map<number, T>> | null;
-  generation: number;
+  /** Items written through while a listing is in flight; laid over its result. */
+  writesDuringFetch: Map<number, T>;
 }
-
-const PULL_REQUEST_LIMIT = 300;
-const ISSUE_LIMIT = 500;
 
 @Injectable()
 export class GitHubBatchCache {
-  private readonly logger = new Logger(GitHubBatchCache.name);
   private readonly ttlMs = 60_000;
   private readonly prCache = new Map<string, CacheEntry<CachedPullRequest>>();
   private readonly issueCache = new Map<string, CacheEntry<CachedIssue>>();
@@ -49,23 +46,15 @@ export class GitHubBatchCache {
     if (this.isFresh(entry)) return entry.data;
     if (entry.inFlight) return entry.inFlight;
 
-    const fetchGeneration = entry.generation;
+    entry.writesDuringFetch = new Map();
     entry.inFlight = this.githubService.listPullRequests(key)
       .then((pulls) => {
-        if (pulls.length === PULL_REQUEST_LIMIT) {
-          this.logger.warn(`Pull request cache fill for ${key} hit ${PULL_REQUEST_LIMIT} items; results may be truncated`);
-        }
-        const nextData = this.toPullRequestMap(pulls);
-        if (entry.generation === fetchGeneration) {
-          entry.data = nextData;
-          entry.fetchedAt = Date.now();
-        }
+        entry.data = this.withWrites(this.toPullRequestMap(pulls), entry.writesDuringFetch);
+        entry.fetchedAt = Date.now();
         return entry.data;
       })
       .finally(() => {
-        if (entry.inFlight) {
-          entry.inFlight = null;
-        }
+        entry.inFlight = null;
       });
 
     return entry.inFlight;
@@ -77,23 +66,15 @@ export class GitHubBatchCache {
     if (this.isFresh(entry)) return entry.data;
     if (entry.inFlight) return entry.inFlight;
 
-    const fetchGeneration = entry.generation;
+    entry.writesDuringFetch = new Map();
     entry.inFlight = this.githubService.listIssues(key)
       .then((issues) => {
-        if (issues.length === ISSUE_LIMIT) {
-          this.logger.warn(`Issue cache fill for ${key} hit ${ISSUE_LIMIT} items; results may be truncated`);
-        }
-        const nextData = this.toIssueMap(issues);
-        if (entry.generation === fetchGeneration) {
-          entry.data = nextData;
-          entry.fetchedAt = Date.now();
-        }
+        entry.data = this.withWrites(this.toIssueMap(issues), entry.writesDuringFetch);
+        entry.fetchedAt = Date.now();
         return entry.data;
       })
       .finally(() => {
-        if (entry.inFlight) {
-          entry.inFlight = null;
-        }
+        entry.inFlight = null;
       });
 
     return entry.inFlight;
@@ -114,17 +95,13 @@ export class GitHubBatchCache {
   upsertPullRequest(repo: string, pr: CachedPullRequest): void {
     const key = this.normalizeRepo(repo);
     const entry = this.getOrCreateEntry(this.prCache, key);
-    entry.generation += 1;
-    entry.data.set(pr.number, { ...pr });
-    entry.fetchedAt ??= Date.now();
+    this.writeThrough(entry, pr.number, { ...pr });
   }
 
   upsertIssue(repo: string, issue: CachedIssue): void {
     const key = this.normalizeRepo(repo);
     const entry = this.getOrCreateEntry(this.issueCache, key);
-    entry.generation += 1;
-    entry.data.set(issue.number, { ...issue });
-    entry.fetchedAt ??= Date.now();
+    this.writeThrough(entry, issue.number, { ...issue });
   }
 
   invalidate(repo: string): void {
@@ -176,10 +153,26 @@ export class GitHubBatchCache {
       fetchedAt: null,
       data: new Map<number, T>(),
       inFlight: null,
-      generation: 0,
+      writesDuringFetch: new Map<number, T>(),
     };
     cache.set(repo, created);
     return created;
+  }
+
+  /**
+   * Store one item without claiming the listing is fresh: an entry that
+   * was never filled stays unfilled, so the next list read still fetches
+   * (#292: the sweep writes single items into caches nobody has listed).
+   */
+  private writeThrough<T>(entry: CacheEntry<T>, number: number, item: T): void {
+    entry.data.set(number, item);
+    if (entry.inFlight) entry.writesDuringFetch.set(number, item);
+  }
+
+  /** A listing that was in flight during a write is older than the write. */
+  private withWrites<T>(listing: Map<number, T>, writes: Map<number, T>): Map<number, T> {
+    for (const [number, item] of writes) listing.set(number, item);
+    return listing;
   }
 
   private toPullRequestMap(pulls: GitHubListedPullRequest[]): Map<number, CachedPullRequest> {
