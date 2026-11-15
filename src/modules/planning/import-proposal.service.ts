@@ -1,7 +1,10 @@
-import { BadGatewayException, BadRequestException, Inject, Injectable } from "@nestjs/common";
+import { BadGatewayException, BadRequestException, Inject, Injectable, Logger } from "@nestjs/common";
 import { GitHubItemLookup } from "../github/github-item-lookup.service.js";
 import { parseIssueReferences, type IssueReference } from "../github/issue-reference-parser.js";
 import { UntrackedIssuesService, type UntrackedIssue } from "../github/untracked-issues.service.js";
+import { findCycleThrough } from "../graph/cycle-detection.js";
+import { EdgesService } from "../graph/edges.service.js";
+import { ImportEdgeInferenceService } from "./import-edge-inference.service.js";
 import { GraphWriterService } from "../graph/graph-writer.service.js";
 import type { CreateEdgeDto, EdgeRel, ValidateGraphMutationsResult } from "../graph/types.js";
 import { WorkItemsService } from "../graph/work-items.service.js";
@@ -17,6 +20,7 @@ const SCOPE_HINT_LIMIT = 160;
 export interface ImportIssuesDto {
   repo: string;
   issue_numbers: number[];
+  suggest_relationships?: boolean;
 }
 
 /** One statement in an issue body that supports a proposed edge. */
@@ -46,13 +50,16 @@ export interface ImportProposalResult {
  * states explicitly. Nothing is written to the graph here; the proposal
  * is staged for the same review and atomic apply as planner proposals.
  *
- * Edges come only from text the issue author wrote (`issue_body`
- * evidence, confidence "certain"). A reference that resolves to nothing
+ * Explicit edges use issue-author text (`issue_body`, confidence "certain").
+ * Optional isolated model suggestions are filtered and require explicit review.
+ * A reference that resolves to nothing
  * is reported on the node, not turned into an edge, and an issue with
  * no resolvable reference is imported unconnected.
  */
 @Injectable()
 export class ImportProposalService {
+  private readonly logger = new Logger(ImportProposalService.name);
+
   constructor(
     @Inject(UntrackedIssuesService) private readonly untracked: UntrackedIssuesService,
     @Inject(GitHubItemLookup) private readonly lookup: GitHubItemLookup,
@@ -60,9 +67,14 @@ export class ImportProposalService {
     @Inject(GraphWriterService) private readonly graphWriter: GraphWriterService,
     @Inject(ProposalStateService) private readonly proposalState: ProposalStateService,
     @Inject(PlanningService) private readonly planning: PlanningService,
+    @Inject(EdgesService) private readonly persistedEdges: EdgesService,
+    @Inject(ImportEdgeInferenceService) private readonly inference: ImportEdgeInferenceService,
   ) {}
 
   async stage(input: ImportIssuesDto): Promise<ImportProposalResult> {
+    if (input?.suggest_relationships !== undefined && typeof input.suggest_relationships !== "boolean") {
+      throw new BadRequestException("suggest_relationships must be a boolean");
+    }
     const numbers = this.requireIssueNumbers(input?.issue_numbers);
     const discovery = await this.untracked.list(input?.repo);
     const repo = discovery.repo;
@@ -142,12 +154,51 @@ export class ImportProposalService {
         .filter((id): id is string => Boolean(id)),
     }));
 
-    const proposal = this.proposalState.normalizeProposal({
+    let proposal = this.proposalState.normalizeProposal({
       source: { agent: "issue-import", turn_id: null },
       context: { scope: `import:${repo}` },
       summary: `Import ${selected.length} GitHub issue${selected.length === 1 ? "" : "s"} from ${repo}: ${numbers.map((number) => `#${number}`).join(", ")}`,
       mutations: [...nodes, ...edgeMutations],
     }, { currentTurnId: null, sessionId: "issue-import" });
+
+    if (input.suggest_relationships) {
+      try {
+        const graphNodes = this.workItems.list();
+        const graphEdges = this.persistedEdges.list();
+        const suggestions = await this.inference.infer({
+          repo,
+          issues: selected.map((candidate, index) => ({ id: candidate.derived_id, title: bodies[index].title || candidate.title, body: bodies[index].body })),
+          nodes: graphNodes.map(({ id, name, kind, repo, scope_hint }) => ({ id, name, kind, repo, scope_hint })),
+          edges: graphEdges.map(({ from_id, rel, to_id }) => ({ from_id, rel, to_id })),
+        });
+        const allowed = new Set(suggestions.endpointIds);
+        const selectedById = new Map(selected.map((candidate) => [candidate.derived_id, candidate]));
+        const knownIds = new Set([...graphNodes.map((n) => n.id), ...selectedById.keys()]);
+        const working = [...graphEdges, ...[...edges.values()].map((entry) => entry.edge)];
+        const key = (edge: { from_id: string; rel: string; to_id: string }) => JSON.stringify([edge.from_id, edge.rel, edge.to_id]);
+        const seen = new Set(working.map(key));
+        const inferred: ProposedMutation[] = [];
+        for (const edge of suggestions.edges) {
+          if (!allowed.has(edge.from_id) || !allowed.has(edge.to_id) || !knownIds.has(edge.from_id) || !knownIds.has(edge.to_id)) continue;
+          const owner = selectedById.get(edge.from_id) ?? selectedById.get(edge.to_id);
+          if (!owner || edge.from_id === edge.to_id || seen.has(key(edge)) || findCycleThrough(working, edge)) continue;
+          seen.add(key(edge));
+          working.push(edge);
+          inferred.push({
+            id: `i${String(inferred.length + 1).padStart(4, "0")}`,
+            type: "create_edge", group_id: issueGroupId(owner.issue_number),
+            payload: { from_id: edge.from_id, rel: edge.rel, to_id: edge.to_id, confidence: edge.confidence, meta: { source: "model_inference", rationale: edge.rationale } },
+            rationale: edge.rationale,
+            depends_on_mutation_ids: [edge.from_id, edge.to_id].map((id) => nodeMutationIds.get(id)).filter((id): id is string => Boolean(id)),
+          });
+        }
+        proposal = this.proposalState.normalizeProposal({ ...proposal, mutations: [...proposal.mutations, ...inferred] }, { currentTurnId: null, sessionId: "issue-import" });
+      } catch {
+        // Do not log provider errors, issue text or raw model output.
+        this.logger.warn("Import relationship inference unavailable (setup, budget, deadline or analysis failure); staging issue-text relationships only");
+        proposal.summary += ". Relationship suggestions unavailable; showing issue-text relationships only";
+      }
+    }
 
     const validation = this.graphWriter.validate({
       proposal_id: proposal.proposal_id,
