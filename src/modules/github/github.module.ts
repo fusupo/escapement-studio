@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { GraphModule } from "../graph/graph.module.js";
+import { SettingsModule } from "../settings/settings.module.js";
 import { GitHubBatchCache } from "./github-batch-cache.service.js";
 import { GitHubCacheController } from "./github-cache.controller.js";
 import { GitHubCacheScheduler } from "./github-cache-scheduler.service.js";
@@ -8,6 +9,8 @@ import { GitHubItemLookup } from "./github-item-lookup.service.js";
 import { GitHubIssueBodySyncService } from "./github-issue-body-sync.service.js";
 import { GitHubService } from "./github.service.js";
 import { StudioIssueTemplateService } from "./studio-issue-template.service.js";
+import { UntrackedIssuesController } from "./untracked-issues.controller.js";
+import { UntrackedIssuesService } from "./untracked-issues.service.js";
 
 /**
  * Phase 6b (#236): `GitHubBatchCache`, `GitHubCacheScheduler`, and
@@ -22,10 +25,15 @@ import { StudioIssueTemplateService } from "./studio-issue-template.service.js";
  * PullRequestService, WorkItemReconcilerService) can still inject them
  * via the existing ExecutionModule → GitHubModule forward-referenced
  * edge.
+ *
+ * #281: `UntrackedIssuesService` (discovery of issues with no work
+ * item) and `GitHubItemLookup` are exported for the import proposal
+ * builder in `PlanningModule`. Discovery reads included repos from
+ * `SettingsModule`, which has no domain dependencies.
  */
 @Module({
-  imports: [GraphModule],
-  controllers: [GitHubController, GitHubCacheController],
+  imports: [GraphModule, SettingsModule],
+  controllers: [GitHubController, GitHubCacheController, UntrackedIssuesController],
   providers: [
     GitHubService,
     GitHubIssueBodySyncService,
@@ -33,6 +41,7 @@ import { StudioIssueTemplateService } from "./studio-issue-template.service.js";
     GitHubBatchCache,
     GitHubItemLookup,
     GitHubCacheScheduler,
+    UntrackedIssuesService,
   ],
   exports: [
     GitHubService,
@@ -40,6 +49,8 @@ import { StudioIssueTemplateService } from "./studio-issue-template.service.js";
     StudioIssueTemplateService,
     GitHubBatchCache,
     GitHubCacheScheduler,
+    GitHubItemLookup,
+    UntrackedIssuesService,
   ],
 })
 export class GitHubModule {}
