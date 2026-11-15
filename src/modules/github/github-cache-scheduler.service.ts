@@ -7,14 +7,17 @@ import type { WorkItemRecord, WorkItemState } from "../graph/types.js";
 import { GitHubRepoTruthRefreshedEvent, normalizeGitHubRepo } from "./events/github-repo-truth-refreshed.event.js";
 import { WorkItemMergedEvent } from "../execution/events/work-item-merged.event.js";
 import { GitHubBatchCache, type CachedPullRequest, type CachedIssue } from "./github-batch-cache.service.js";
+import { GitHubItemLookup } from "./github-item-lookup.service.js";
 
 /**
  * studio-197: periodic cache refresh + auto-dispatch of `gh.*` HSM events.
  *
- * Runs every 60s. For each tracked repo: invalidate the batch cache,
- * refetch PR + issue state from GitHub, then iterate reconcilable work
- * items and dispatch HSM events where the cached GH state has advanced
- * beyond the work item's local state.
+ * Runs every 60s. For each tracked repo: look up the GitHub state of
+ * the work items that are waiting on GitHub (#292: only those, not the
+ * whole repo), then dispatch HSM events where that state has advanced
+ * beyond the work item's local state. The full PR and issue listings in
+ * the batch cache are no longer refreshed here; readers that need them
+ * (reconciliation) fetch them when the cache is older than its TTL.
  *
  * The same sweep logic is exposed via `sweep(repo?)` so the
  * `POST /api/github-cache/refresh` endpoint can trigger it on demand
@@ -29,6 +32,7 @@ export class GitHubCacheScheduler {
 
   constructor(
     @Inject(GitHubBatchCache) private readonly cache: GitHubBatchCache,
+    @Inject(GitHubItemLookup) private readonly lookup: GitHubItemLookup,
     @Inject(WorkItemsService) private readonly workItemsService: WorkItemsService,
     @Inject(WorkItemHsmService) private readonly hsmService: WorkItemHsmService,
     @Inject(EventBus) private readonly eventBus: EventBus,
@@ -52,7 +56,7 @@ export class GitHubCacheScheduler {
   }
 
   /**
-   * Run a full cache-refresh + HSM-dispatch sweep. If `repo` is provided,
+   * Run a GitHub-refresh + HSM-dispatch sweep. If `repo` is provided,
    * only that repo is refreshed; otherwise all tracked repos are swept.
    *
    * Returns per-repo results for the response envelope.
@@ -96,18 +100,12 @@ export class GitHubCacheScheduler {
   }
 
   private async sweepRepo(repo: string): Promise<SweepResult> {
-    // Invalidate + refetch. Use sequential calls to avoid overwhelming
-    // the gh CLI with concurrent invocations.
-    this.cache.invalidate(repo);
-    const prs = await this.cache.listPullRequests(repo);
-    const issues = await this.cache.listIssues(repo);
+    const { prs, issues, complete } = await this.fetchTruth(repo, this.waitingItems(repo));
     const identity = normalizeGitHubRepo(repo);
-    if (identity) this.eventBus.publish(new GitHubRepoTruthRefreshedEvent(identity, Date.now()));
+    if (identity && complete) this.eventBus.publish(new GitHubRepoTruthRefreshedEvent(identity, Date.now()));
 
-    // Dispatch HSM events for any state advances
-    const workItems = this.workItemsService.list({}).filter(
-      (w) => w.repo === repo && DISPATCH_SOURCE_STATES.has(w.state),
-    );
+    // Read the items again: their state may have moved while gh ran.
+    const workItems = this.waitingItems(repo);
 
     let dispatched = 0;
     for (const workItem of workItems) {
@@ -157,6 +155,71 @@ export class GitHubCacheScheduler {
     }
 
     return { repo, prs: prs.size, issues: issues.size, dispatched };
+  }
+
+  /** Work items in `repo` whose next transition depends on GitHub. */
+  private waitingItems(repo: string): WorkItemRecord[] {
+    return this.workItemsService.list({}).filter(
+      (w) => w.repo === repo && DISPATCH_SOURCE_STATES.has(w.state),
+    );
+  }
+
+  /**
+   * Fetch the GitHub state the waiting items depend on (#292): the pull
+   * requests of each in-progress or open-PR item's branch and the issue
+   * of each merged item, one short `gh` call per distinct branch or
+   * issue, written through to the batch cache. Nothing waiting means no
+   * calls. A failed lookup is logged and leaves its item unchecked until
+   * the next sweep; `complete` is false so the sweep does not announce
+   * refreshed truth.
+   *
+   * Past `MAX_TARGETED_LOOKUPS` the two full listings are cheaper, so
+   * the sweep falls back to invalidating and re-listing the repo; a
+   * listing failure rejects and fails the repo's sweep.
+   */
+  private async fetchTruth(repo: string, waiting: WorkItemRecord[]): Promise<GitHubTruth> {
+    const branches = new Set<string>();
+    const issueNumbers = new Set<number>();
+    for (const workItem of waiting) {
+      const state = this.normalizeState(workItem.state);
+      const branch = workItem.branch?.trim();
+      if ((state === "in_progress" || state === "open_pr") && branch) branches.add(branch);
+      if (state === "merged_pr" && typeof workItem.issue_number === "number") issueNumbers.add(workItem.issue_number);
+    }
+
+    if (branches.size + issueNumbers.size > MAX_TARGETED_LOOKUPS) {
+      this.cache.invalidate(repo);
+      const prs = await this.cache.listPullRequests(repo);
+      const issues = await this.cache.listIssues(repo);
+      return { prs, issues, complete: true };
+    }
+
+    const prs = new Map<number, CachedPullRequest>();
+    const issues = new Map<number, CachedIssue>();
+    let complete = true;
+    const attempt = async (what: string, lookup: () => Promise<void>) => {
+      try {
+        await lookup();
+      } catch (error) {
+        complete = false;
+        this.logger.warn(`Sweep lookup of ${what} failed for ${repo}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    // Started together; the shared gh runner limits how many run at once.
+    await Promise.all([
+      ...Array.from(branches, (branch) => attempt(`branch ${branch}`, async () => {
+        for (const pr of await this.lookup.pullRequestsForBranch(repo, branch)) {
+          prs.set(pr.number, pr);
+          this.cache.upsertPullRequest(repo, pr);
+        }
+      })),
+      ...Array.from(issueNumbers, (issueNumber) => attempt(`issue #${issueNumber}`, async () => {
+        const issue = await this.lookup.issue(repo, issueNumber);
+        issues.set(issue.number, issue);
+        this.cache.upsertIssue(repo, issue);
+      })),
+    ]);
+    return { prs, issues, complete };
   }
 
   /**
@@ -227,10 +290,22 @@ export class GitHubCacheScheduler {
 
 export interface SweepResult {
   repo: string;
+  /** Pull requests looked at: those of the waiting items' branches, or the whole listing. */
   prs: number;
+  /** Issues looked at, likewise. */
   issues: number;
   dispatched: number;
 }
+
+interface GitHubTruth {
+  prs: Map<number, CachedPullRequest>;
+  issues: Map<number, CachedIssue>;
+  /** False when a lookup failed, so some waiting item went unchecked. */
+  complete: boolean;
+}
+
+/** Distinct branch and issue lookups per repo above which the full listings are used. */
+const MAX_TARGETED_LOOKUPS = 8;
 
 /**
  * Work item states that can produce gh.* events during a sweep.
