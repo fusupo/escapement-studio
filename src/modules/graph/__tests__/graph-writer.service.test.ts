@@ -344,4 +344,80 @@ describe("GraphWriterService", () => {
       expect((result as GraphMutationsAppliedResult).new_graph_version).toBe("2");
     });
   });
+  describe("apply — cycles (#281)", () => {
+    beforeEach(() => {
+      for (const id of ["a", "b", "c"]) seedWorkItem(sqlite, id);
+      seedEdge(sqlite, "a", "depends_on", "b");
+      seedEdge(sqlite, "b", "depends_on", "c");
+    });
+
+    it("rejects an edge that closes a dependency cycle and writes nothing", () => {
+      const result = writer.apply({
+        mutations: [
+          { mutation_id: "n", kind: "create_work_item", work_item: { id: "d", name: "D", kind: "capability" } },
+          { mutation_id: "e", kind: "create_edge", edge: { from_id: "c", rel: "depends_on", to_id: "a" } },
+        ],
+      });
+
+      expect(result.status).toBe("validation_failed");
+      const failed = result as GraphMutationsValidationFailedResult;
+      expect(failed.errors).toEqual([
+        { mutation_id: "e", code: "cycle", message: "depends_on edge would create a cycle: c -> a -> b -> c" },
+      ]);
+      expect(sqlite.getDb().prepare("SELECT COUNT(*) AS n FROM work_items WHERE id = 'd'").get()).toEqual({ n: 0 });
+      expect(sqlite.getGraphVersion()).toBe("0");
+    });
+
+    it("rejects a cycle formed only by edges inside the batch", () => {
+      const result = writer.apply({
+        mutations: [
+          { mutation_id: "n1", kind: "create_work_item", work_item: { id: "x", name: "X", kind: "capability" } },
+          { mutation_id: "n2", kind: "create_work_item", work_item: { id: "y", name: "Y", kind: "capability" } },
+          { mutation_id: "e1", kind: "create_edge", edge: { from_id: "x", rel: "is_part_of", to_id: "y" } },
+          { mutation_id: "e2", kind: "create_edge", edge: { from_id: "y", rel: "is_part_of", to_id: "x" } },
+        ],
+      });
+
+      expect(result.status).toBe("validation_failed");
+      expect((result as GraphMutationsValidationFailedResult).errors.map((error) => [error.mutation_id, error.code])).toEqual([["e2", "cycle"]]);
+    });
+
+    it("rejects a self-edge", () => {
+      const result = writer.apply({ mutations: [{ mutation_id: "e", kind: "create_edge", edge: { from_id: "a", rel: "depends_on", to_id: "a" } }] });
+      expect((result as GraphMutationsValidationFailedResult).errors[0].code).toBe("cycle");
+    });
+
+    it("allows the opposite direction in a different relation", () => {
+      const result = writer.apply({ mutations: [{ mutation_id: "e", kind: "create_edge", edge: { from_id: "c", rel: "is_part_of", to_id: "a" } }] });
+      expect(result.status).toBe("applied");
+    });
+  });
+
+  describe("validate (#281)", () => {
+    const batch: ApplyGraphMutationsDto = {
+      proposal_id: "p1",
+      mutations: [
+        { mutation_id: "n", kind: "create_work_item", work_item: { id: "a", name: "A", kind: "capability" } },
+        { mutation_id: "e", kind: "create_edge", edge: { from_id: "a", rel: "depends_on", to_id: "missing" } },
+      ],
+    };
+
+    it("returns the errors apply would return, without writing", () => {
+      const result = writer.validate(batch);
+      expect(result.status).toBe("validation_failed");
+      expect((result as GraphMutationsValidationFailedResult).errors[0].code).toBe("missing_entity");
+      expect(sqlite.getDb().prepare("SELECT COUNT(*) AS n FROM work_items").get()).toEqual({ n: 0 });
+    });
+
+    it("returns valid for a good batch and leaves the graph and its version alone", () => {
+      const result = writer.validate({ ...batch, mutations: batch.mutations.slice(0, 1) });
+      expect(result).toEqual({ status: "valid", proposal_id: "p1", current_graph_version: "0" });
+      expect(sqlite.getDb().prepare("SELECT COUNT(*) AS n FROM work_items").get()).toEqual({ n: 0 });
+      expect(sqlite.getGraphVersion()).toBe("0");
+    });
+
+    it("reports a stale graph version", () => {
+      expect(writer.validate({ ...batch, based_on_graph_version: "7" }).status).toBe("stale");
+    });
+  });
 });

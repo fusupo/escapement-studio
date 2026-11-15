@@ -172,6 +172,7 @@ export interface GraphMutationError {
     | "duplicate_entity"
     | "duplicate_edge"
     | "invalid_relation"
+    | "cycle"
     | "unsafe_delete"
     | "malformed_payload";
   message: string;
@@ -264,6 +265,18 @@ export interface HsmActionHandler {
     context: HsmActionHandlerContext,
   ): Promise<void>;
 }
+
+export interface GraphMutationsValidResult {
+  status: "valid";
+  proposal_id: string | null;
+  current_graph_version: string;
+}
+
+/** Result of a validate-only run: what `apply` would have refused, or "valid". */
+export type ValidateGraphMutationsResult =
+  | GraphMutationsValidResult
+  | GraphMutationsValidationFailedResult
+  | GraphMutationsStaleResult;
 
 export type ApplyGraphMutationsResult =
   | GraphMutationsAppliedResult

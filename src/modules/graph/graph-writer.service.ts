@@ -12,12 +12,16 @@ import {
   type EdgeRel,
   type GraphMutation,
   type GraphMutationError,
+  type GraphMutationsStaleResult,
+  type GraphMutationsValidationFailedResult,
   type UpdateEdgeDto,
   type UpdateWorkItemDto,
+  type ValidateGraphMutationsResult,
   type WorkItemKind,
   type WorkItemState,
 } from "./types.js";
 
+import { findCycleThrough } from "./cycle-detection.js";
 import { validateMutationInput } from "./mutation-validation.js";
 
 interface RawWorkItemRecord {
@@ -61,40 +65,20 @@ export class GraphWriterService {
     return this.sqlite.getDb();
   }
 
+  /**
+   * Run every check `apply` runs, without writing (#281). Returns "valid"
+   * or the same stale / validation_failed result `apply` would return.
+   */
+  validate(input: ApplyGraphMutationsDto): ValidateGraphMutationsResult {
+    const checked = this.check(input);
+    if ("failure" in checked) return checked.failure;
+    return { status: "valid", proposal_id: checked.proposalId, current_graph_version: checked.currentGraphVersion };
+  }
+
   apply(input: ApplyGraphMutationsDto): ApplyGraphMutationsResult {
-    const currentGraphVersion = this.sqlite.getGraphVersion();
-    const proposalId = typeof input?.proposal_id === "string" ? input.proposal_id : null;
-    const shapeErrors = validateMutationInput(input);
-    if (shapeErrors.length) {
-      return { status: "validation_failed", proposal_id: proposalId,
-        current_graph_version: currentGraphVersion, errors: shapeErrors };
-    }
-
-    if (input.based_on_graph_version && input.based_on_graph_version !== currentGraphVersion) {
-      return {
-        status: "stale",
-        proposal_id: proposalId,
-        previous_graph_version: input.based_on_graph_version,
-        current_graph_version: currentGraphVersion,
-        message: "Proposal is out of date and must be regenerated.",
-      };
-    }
-
-    const normalizedMutations = [...input.mutations].sort((left, right) => {
-      const order = this.getMutationOrder(left.kind) - this.getMutationOrder(right.kind);
-      return order !== 0 ? order : this.getMutationId(left).localeCompare(this.getMutationId(right));
-    });
-
-    const snapshot = this.loadSnapshot();
-    const errors = this.validateMutations(normalizedMutations, snapshot);
-    if (errors.length > 0) {
-      return {
-        status: "validation_failed",
-        proposal_id: proposalId,
-        current_graph_version: currentGraphVersion,
-        errors,
-      };
-    }
+    const checked = this.check(input);
+    if ("failure" in checked) return checked.failure;
+    const { proposalId, currentGraphVersion, normalizedMutations } = checked;
 
     const transaction = this.db.transaction((mutations: GraphMutation[]) => {
       for (const mutation of mutations) {
@@ -136,6 +120,40 @@ export class GraphWriterService {
         { kind: "delete_work_item", id: workItemId },
       ],
     });
+  }
+
+  private check(input: ApplyGraphMutationsDto):
+    | { failure: GraphMutationsValidationFailedResult | GraphMutationsStaleResult }
+    | { proposalId: string | null; currentGraphVersion: string; normalizedMutations: GraphMutation[] } {
+    const currentGraphVersion = this.sqlite.getGraphVersion();
+    const proposalId = typeof input?.proposal_id === "string" ? input.proposal_id : null;
+    const shapeErrors = validateMutationInput(input);
+    if (shapeErrors.length) {
+      return { failure: { status: "validation_failed", proposal_id: proposalId,
+        current_graph_version: currentGraphVersion, errors: shapeErrors } };
+    }
+
+    if (input.based_on_graph_version && input.based_on_graph_version !== currentGraphVersion) {
+      return { failure: {
+        status: "stale",
+        proposal_id: proposalId,
+        previous_graph_version: input.based_on_graph_version,
+        current_graph_version: currentGraphVersion,
+        message: "Proposal is out of date and must be regenerated.",
+      } };
+    }
+
+    const normalizedMutations = [...input.mutations].sort((left, right) => {
+      const order = this.getMutationOrder(left.kind) - this.getMutationOrder(right.kind);
+      return order !== 0 ? order : this.getMutationId(left).localeCompare(this.getMutationId(right));
+    });
+
+    const errors = this.validateMutations(normalizedMutations, this.loadSnapshot());
+    if (errors.length > 0) {
+      return { failure: { status: "validation_failed", proposal_id: proposalId,
+        current_graph_version: currentGraphVersion, errors } };
+    }
+    return { proposalId, currentGraphVersion, normalizedMutations };
   }
 
   private validateMutations(mutations: GraphMutation[], snapshot: GraphStateSnapshot): GraphMutationError[] {
@@ -216,6 +234,11 @@ export class GraphWriterService {
           }
           if (this.hasEdge(snapshot.edges, edge.from_id, edge.rel, edge.to_id)) {
             errors.push(this.error(mutation, "duplicate_edge", `edge already exists: ${edge.from_id} ${edge.rel} ${edge.to_id}`));
+            continue;
+          }
+          const cycle = findCycleThrough(snapshot.edges.values(), edge);
+          if (cycle) {
+            errors.push(this.error(mutation, "cycle", `${edge.rel} edge would create a cycle: ${cycle.join(" -> ")}`));
             continue;
           }
           const id = snapshot.nextEdgeId++;
