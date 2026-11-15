@@ -131,7 +131,7 @@ export function createImportActions(s, _actions) {
             return null;
         s.importDialog = { ...s.importDialog, staging: true, error: "" };
         try {
-            const result = await importIssues({ repo, issue_numbers: [...selected], suggest_relationships: Boolean(suggestRelationships) });
+            const result = await importIssues({ repo, issue_numbers: [...selected], ...(suggestRelationships ? { suggest_relationships: true } : {}) });
             s.importDialog = { ...s.importDialog, staging: false };
             closeImportDialog();
             return result?.proposal ?? null;

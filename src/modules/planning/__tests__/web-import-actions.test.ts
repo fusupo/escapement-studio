@@ -30,7 +30,7 @@ describe("GitHub import actions", () => {
     const { state, actions } = setup(); await actions.openImportDialog();
     actions.toggleImportCandidate(20, true); if (option !== undefined) actions.toggleSuggestRelationships(option);
     expect(await actions.stageImport()).toEqual({ proposal_id: "p" });
-    expect(api.importIssues).toHaveBeenCalledWith({ repo: "a/b", issue_numbers: [20], suggest_relationships: option ?? false });
+    expect(api.importIssues).toHaveBeenCalledWith({ repo: "a/b", issue_numbers: [20], ...(option ? { suggest_relationships: true } : {}) });
     expect(state.importDialog).toEqual(emptyImportDialog());
   });
   it("blocks duplicate submits, closing/reopening, toggles and repo changes while staging", async () => {
