@@ -55,3 +55,24 @@ describe("gh runner", () => {
     expect(getGhConcurrency()).toEqual({ active: 0, queued: 0 });
   });
 });
+
+describe("gh call sites", () => {
+  it("never invoke gh synchronously", async () => {
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== "__tests__" && entry.name !== "node_modules") walk(path);
+        } else if (entry.name.endsWith(".ts")) {
+          const source = readFileSync(path, "utf8");
+          if (/(execFileSync|execSync|spawnSync|runCommand)\(\s*["'`]gh\b/.test(source)) offenders.push(path);
+        }
+      }
+    };
+    walk(join(process.cwd(), "src"));
+    expect(offenders).toEqual([]);
+  });
+});
