@@ -6,7 +6,8 @@ import type { CachedIssue, CachedPullRequest } from "./github-batch-cache.servic
  * Targeted GitHub reads (#292): the state of one branch's pull requests
  * or of one issue, in a single short `gh` call each. The cache sweep
  * uses these to check only the work items that are waiting on GitHub,
- * instead of listing every PR and issue in the repo.
+ * instead of listing every PR and issue in the repo. Importing an
+ * untracked issue (#281) reads its body the same way.
  *
  * Results use the batch cache's shapes so they can be written through
  * to it. Failures reject; the caller decides what a missing answer means.
@@ -43,14 +44,28 @@ export class GitHubItemLookup {
       "--repo", repo.trim(),
       "--json", "number,title,url,state,closedAt",
     ])) as RawIssue;
-    return {
-      number: raw.number,
-      state: `${raw.state}`.toLowerCase() === "closed" ? "closed" : "open",
-      closed_at: raw.closedAt ?? null,
-      url: raw.url,
-      title: raw.title,
-    };
+    return toCachedIssue(raw);
   }
+
+  /** One issue with its body text, for reading the relationships it states (#281). */
+  async issueWithBody(repo: string, issueNumber: number): Promise<CachedIssue & { body: string }> {
+    const raw = JSON.parse(await runGh([
+      "issue", "view", String(issueNumber),
+      "--repo", repo.trim(),
+      "--json", "number,title,url,state,closedAt,body",
+    ])) as RawIssue;
+    return { ...toCachedIssue(raw), body: raw.body ?? "" };
+  }
+}
+
+function toCachedIssue(raw: RawIssue): CachedIssue {
+  return {
+    number: raw.number,
+    state: `${raw.state}`.toLowerCase() === "closed" ? "closed" : "open",
+    closed_at: raw.closedAt ?? null,
+    url: raw.url,
+    title: raw.title,
+  };
 }
 
 interface RawPullRequest {
@@ -70,6 +85,7 @@ interface RawIssue {
   url: string;
   state: string;
   closedAt?: string | null;
+  body?: string | null;
 }
 
 function pullRequestState(state: string, mergedAt: string | null): CachedPullRequest["state"] {
