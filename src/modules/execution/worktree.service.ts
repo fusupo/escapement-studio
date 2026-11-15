@@ -2,6 +2,7 @@ import { normalizeGitHubRepo } from "../github/events/github-repo-truth-refreshe
 import { runAsyncCommand } from "../../lib/async-command.js";
 import { Injectable, Logger } from "@nestjs/common";
 import { execFileSync } from "node:child_process";
+import { runGh } from "../../lib/gh-runner.js";
 import { existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getConfig } from "../../config.js";
@@ -22,8 +23,8 @@ export function parseChangedFilePath(line: string): string | null {
 }
 
 /**
- * Phase 4b of the cqrs refactor (#231): owns every
- * `execFileSync('git'|'gh', ...)` call in the execution module plus
+ * Phase 4b of the cqrs refactor (#231): owns every `git` and `gh`
+ * invocation in the execution module plus
  * worktree lifecycle management (create / remove / list / safety
  * checks). Extracted verbatim from ExecutionService.
  *
@@ -31,7 +32,8 @@ export function parseChangedFilePath(line: string): string | null {
  * public because ExecutionService's remaining pull-request-creation
  * and scratchpad-commit-guard code still needs to shell out until
  * Phase 4c (ScratchpadService) and Phase 4e (PullRequestService)
- * extract those clusters. Single owner of `execFileSync('git'|'gh')`.
+ * extract those clusters. `git` runs synchronously through `runCommand`;
+ * `gh` runs asynchronously through `src/lib/gh-runner.ts` (#290).
  *
  * Takes no injected dependencies — all state is either a constant or
  * computed from `getConfig()`. Tests construct directly via
@@ -63,8 +65,9 @@ export class WorktreeService {
     return this.runCommand("git", args, { cwd, allowFailure: options.allowFailure });
   }
 
-  runGhIn(cwd: string, args: string[], stdin?: string): string {
-    return this.runCommand("gh", args, { cwd, stdin });
+  /** Non-blocking `gh` call (#290) through the shared runner; rejects on failure or timeout. */
+  runGhIn(cwd: string, args: string[], stdin?: string, timeoutMs?: number): Promise<string> {
+    return runGh(args, { cwd, stdin, timeoutMs });
   }
 
   runCommand(
