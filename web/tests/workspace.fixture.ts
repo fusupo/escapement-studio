@@ -6,6 +6,7 @@ export async function mockWorkspace(page: Page, options: {
   failedCheck?: string;
   fastForward?: "success" | "refusal" | "deferred" | "drop";
   githubRefresh?: "success" | "fail" | "deferred";
+  untracked?: "success" | "fail";
 } = {}) {
   const item = { id: "studio-900", name: "Improve the workspace", kind: "issue", state: "drafting", repo: "example/studio", issue_number: 900, issue_url: "https://example.com/issues/900", predicted_files: [], actual_files: [], meta: {} };
   let run: any = options.run ?? { run_id: "exec_test", work_item_id: item.id, work_item_name: item.name, status: "disambiguating", phase: "awaiting_confirmation", repo: item.repo, branch: "studio-900-branch", base_ref: "develop", worktree_path: "/tmp/example", created_at: "2026-09-06T10:00:00Z", activity_log: [{ kind: "agent_message", message: "Refinement is ready for review.", timestamp: "2026-09-06T10:00:00Z" }], safety_checks: [], refinement: { items: [{ id: "q1", kind: "question", prompt: "Which implementation should we use?", options: [{ id: "safe", label: "Small change" }, { id: "broad", label: "Broader change" }], allow_other: true, response: null }], summary: "Ready for review" } };
@@ -61,6 +62,29 @@ export async function mockWorkspace(page: Page, options: {
       onGitHubRefresh?.();
       payload = { refreshed: [{ repo: item.repo, prs: 1, issues: 1, dispatched: 0 }] };
     }
+    else if (path === '/api/settings') payload = { repos: { 'example/studio': { default_branch: 'develop', included: true }, 'example/other': { default_branch: 'main', included: true }, 'example/excluded': { default_branch: 'main', included: false } }, config: {} };
+    else if (path === '/api/github/untracked') {
+      const repo = new URL(request.url()).searchParams.get('repo');
+      if (options.untracked === 'fail') return route.fulfill({ status: 502, json: { message: 'gh command timed out after 30000ms' } });
+      const candidate = (n: number, title: string, conflict: string | null = null) => ({ repo, issue_number: n, title, issue_url: `https://example.com/issues/${n}`, derived_id: `${repo === 'example/studio' ? 'studio' : 'other'}-${n}`, initial_state: 'planned', conflict });
+      payload = repo === 'example/studio'
+        ? { repo, open_issues: 4, candidates: [candidate(902, 'Second untracked'), candidate(901, 'First untracked'), candidate(77, 'Taken', 'ID studio-77 is already used by "Hand-made"')] }
+        : { repo, open_issues: 0, candidates: [] };
+    }
+    else if (path === '/api/agent/proposals/import') {
+      const evidence = [{ source: 'issue_body', issue: 'example/studio#902', quote: 'Depends on #901' }];
+      const node = (n: number) => ({ id: `n${n}`, type: 'create_work_item', entity_id: `studio-${n}`, group_id: `issue-${n}`, rationale: `Import untracked GitHub issue example/studio#${n}.`,
+        payload: { id: `studio-${n}`, name: n === 901 ? 'First untracked' : 'Second untracked', kind: 'issue', state: 'planned', repo: 'example/studio', issue_number: n, issue_url: `https://example.com/issues/${n}`, scope_hint: `Scope of ${n}`, predicted_files: [] } });
+      const proposal = { proposal_id: 'prop_import', created_at: '2026-11-15T10:00:00Z', source: { agent: 'issue-import', turn_id: null, session_id: 'issue-import' }, context: { scope: 'import:example/studio', based_on_graph_version: '1' },
+        summary: 'Import 2 GitHub issues from example/studio: #901, #902',
+        mutations: [node(901), node(902),
+          { id: 'e1', type: 'create_edge', entity_id: 'studio-902:depends_on:studio-901', group_id: 'issue-902', depends_on_mutation_ids: ['n902', 'n901'], rationale: 'Stated in example/studio#902: "Depends on #901"', payload: { from_id: 'studio-902', rel: 'depends_on', to_id: 'studio-901', confidence: 'certain', meta: { evidence } } },
+          { id: 'e2', type: 'create_edge', entity_id: 'studio-901:depends_on:studio-902', group_id: 'issue-901', depends_on_mutation_ids: ['n901', 'n902'], rationale: 'Stated in example/studio#901: "Blocked by #902"', payload: { from_id: 'studio-901', rel: 'depends_on', to_id: 'studio-902', confidence: 'certain', meta: { evidence: [{ source: 'issue_body', issue: 'example/studio#901', quote: 'Blocked by #902' }] } }, validation: { errors: [{ mutation_id: 'e2', code: 'cycle', message: 'depends_on edge would create a cycle: studio-901 -> studio-902 -> studio-901' }] } },
+        ] };
+      payload = { proposal, validation: { status: 'validation_failed', errors: [] } };
+    }
+    else if (path === '/api/agent/proposals/approve') payload = { proposal_id: body.proposal_id, approved_mutation_ids: body.approved_mutation_ids, result: { status: 'applied', proposal_id: body.proposal_id, applied_mutation_ids: body.approved_mutation_ids, previous_graph_version: '1', new_graph_version: '2' }, active_proposal: null };
+    else if (path === '/api/agent/proposals/dismiss') payload = { dismissed_proposal_ids: ['prop_import'], dismissed_memory_change_ids: [], dismissed_github_sync_ids: [] };
     else if (path === '/api/execution/runs') {
       if (failRuns) return route.fulfill({ status: 503, json: { message: 'Temporary sync failure' } });
       payload = options.dispatch ? [] : [run];

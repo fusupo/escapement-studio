@@ -108,6 +108,30 @@ export function listExecutionRuns() {
   return request("/api/execution/runs");
 }
 
+/**
+ * #281: open issues of an included repo that have no work item.
+ * `refresh` re-lists the repo on GitHub instead of using a recent listing.
+ * @param {string} repo
+ * @param {{ refresh?: boolean }} [options]
+ */
+export function listUntrackedIssues(repo, options = {}) {
+  const query = new URLSearchParams({ repo });
+  if (options.refresh) query.set("refresh", "1");
+  return request(`/api/github/untracked?${query.toString()}`);
+}
+
+/**
+ * #281: stage a proposal importing the given issues. Writes nothing.
+ * @param {{ repo: string, issue_numbers: number[] }} payload
+ */
+export function importIssues(payload) {
+  return request("/api/agent/proposals/import", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+}
+
 export function listArchivedExecutionRuns() {
   return request("/api/execution/archived-runs");
 }

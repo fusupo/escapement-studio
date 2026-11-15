@@ -5,6 +5,7 @@ import { createGraphData } from "./graph-data.js";
 import { createWorkItemActions } from "./work-item-actions.js";
 import { createPlanActions } from "./plan-actions.js";
 import { createPaneInteractions } from "./pane-interactions.js";
+import { createImportActions, emptyImportDialog } from "./import-actions.js";
 /** Owns reactive workspace state and lifecycle; actions live in focused modules. */
 export function createWorkspace() {
     const emptyGraph = { filters: {}, items: [], edges: [] };
@@ -16,7 +17,7 @@ export function createWorkspace() {
         { id: "reconciliation", label: "Reconcile", icon: "reconcile" },
         { id: "settings", label: "Settings", icon: "settings" },
     ];
-    /** @type {ReturnType<typeof createGraphData> & ReturnType<typeof createWorkItemActions> & ReturnType<typeof createPlanActions> & ReturnType<typeof createPaneInteractions>} */
+    /** @type {ReturnType<typeof createGraphData> & ReturnType<typeof createWorkItemActions> & ReturnType<typeof createPlanActions> & ReturnType<typeof createPaneInteractions> & ReturnType<typeof createImportActions>} */
     const actions = /** @type {any} */ ({});
     // Server snapshots are replaced wholesale, never mutated in place. Keep them
     // raw (unproxied) so components don't deep-walk them on every update.
@@ -38,6 +39,9 @@ export function createWorkspace() {
         get reconciliationReports() { return reconciliationReports; },
         set reconciliationReports(value) { reconciliationReports = value; },
         filters: { repo: "", state: "", track: "", phase: "" },
+        /** @type {string[]} Repos included in Settings (#281). */
+        includedRepos: [],
+        importDialog: emptyImportDialog(),
         selectedId: null,
         loading: true,
         saving: false,
@@ -122,7 +126,8 @@ export function createWorkspace() {
             : [],
     }));
     const filterOptions = $derived({
-        repos: [...new Set(catalog.map((item) => item.repo).filter(Boolean))].sort(),
+        // Repos included in Settings are listed even with no work items yet (#281).
+        repos: [...new Set([...catalog.map((item) => item.repo).filter(Boolean), ...s.includedRepos])].sort(),
         states: [...new Set(catalog.map((item) => item.state).filter(Boolean))].sort(),
         tracks: catalog.filter((item) => item.kind === "track"),
         phases: catalog.filter((item) => item.kind === "phase"),
@@ -162,6 +167,7 @@ export function createWorkspace() {
     Object.assign(actions, createWorkItemActions(s, actions));
     Object.assign(actions, createPlanActions(s, actions));
     Object.assign(actions, createPaneInteractions(s, actions));
+    Object.assign(actions, createImportActions(s, actions));
     // #291: moving between Studio tabs also asks GitHub for fresh state
     // (rate-limited in the helper), not only the browser tab regaining focus.
     // The first run is the initial mount, which does not refresh.
@@ -170,8 +176,10 @@ export function createWorkspace() {
         if (!tabSeen) { tabSeen = true; return; }
         void requestGitHubRefresh().then((ran) => { if (ran) actions.scheduleGraphRefresh(); });
     }); });
-    $effect(() => { const tab = s.activeTab; untrack(() => { if (tab === 'planning')
-        void actions.loadFrontier(); if (tab === 'execute')
+    $effect(() => { const tab = s.activeTab; untrack(() => { if (tab === 'planning') {
+        void actions.loadFrontier();
+        void actions.loadIncludedRepos();
+    } if (tab === 'execute')
         void actions.loadExecutionStats(); if (tab === 'reconciliation')
         void actions.loadReconciliationStats(); }); });
     $effect(() => { const item = s.selectedItem; untrack(() => { if (item?.id) {
