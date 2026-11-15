@@ -12,7 +12,7 @@ export interface IssueReference {
   /**
    * "outgoing": this issue depends on / is part of the target.
    * "incoming": the target depends on / is part of this issue
-   * ("blocks #12", a task-list entry "- [ ] #12").
+   * ("blocks #12", a task-list entry that is only "- [ ] #12").
    */
   direction: "outgoing" | "incoming";
   /** Repo of the referenced issue; null when the reference is a work-item ID. */
@@ -33,7 +33,9 @@ const KEYWORDS: Array<{ pattern: string; rel: IssueReference["rel"]; direction: 
   { pattern: String.raw`part\s+of|sub-?issue\s+of|child\s+of|parent(?:\s+issue)?|epic`, rel: "is_part_of", direction: "outgoing" },
 ];
 
-const TASK_LIST_ITEM = new RegExp(String.raw`^\s*[-*]\s+\[[ xX]\]\s+(${REF_LIST})`);
+// A task-list entry names a child only when the references are the whole
+// entry; "- [ ] #12 is closed when this lands" is a to-do that mentions #12.
+const TASK_LIST_ITEM = new RegExp(String.raw`^\s*[-*]\s+\[[ xX]\]\s+(${REF_LIST})\s*$`);
 const QUOTE_LIMIT = 200;
 
 /** Parse the relationship references in `body`. `repo` is the issue's own repo, used for bare `#N`. */

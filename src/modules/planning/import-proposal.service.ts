@@ -209,7 +209,7 @@ export function scopeHint(body: string | null | undefined): string | null {
       continue;
     }
     if (fenced || /^\s*(#|<!--|[-*]\s+\[[ xX]\]|\||---)/.test(raw)) continue;
-    const line = raw.replace(/^\s*(?:[-*>]|\d+\.)\s+/, "").replace(/[*_`]/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").trim();
+    const line = raw.replace(/^\s*(?:[-*>]|\d+\.)\s+/, "").replace(/[*`]/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").trim();
     if (line.length < 3) continue;
     return line.length > SCOPE_HINT_LIMIT ? `${line.slice(0, SCOPE_HINT_LIMIT - 1)}…` : line;
   }

@@ -20,9 +20,13 @@ describe("parseIssueReferences (#281)", () => {
   });
 
   it("reads the reverse direction from 'blocks' and task lists", () => {
-    expect(brief("Blocks #30\n- [ ] #31\n* [x] #32 done already")).toEqual([
-      `<-depends_on:${REPO}#30`, `<-is_part_of:${REPO}#31`, `<-is_part_of:${REPO}#32`,
+    expect(brief("Blocks #30\n- [ ] #31\n* [x] #32, #33 ")).toEqual([
+      `<-depends_on:${REPO}#30`, `<-is_part_of:${REPO}#31`, `<-is_part_of:${REPO}#32`, `<-is_part_of:${REPO}#33`,
     ]);
+  });
+
+  it("does not read a to-do that merely mentions an issue as a child", () => {
+    expect(parse("- [ ] #281 is closed when this lands.\n- [x] Fix #12")).toEqual([]);
   });
 
   it("resolves cross-repo references, issue URLs and literal work-item IDs", () => {

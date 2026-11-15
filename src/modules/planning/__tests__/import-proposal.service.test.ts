@@ -270,7 +270,7 @@ describe("approving an import proposal (#281)", () => {
 
 describe("scopeHint", () => {
   it("takes the first line of prose, skipping headings, comments, task lists, tables and code", () => {
-    expect(scopeHint("## Summary\n\n<!-- note -->\n- [ ] #1\n| a | b |\n```\ncode\n```\n- **Studio** only reconciles [linked](http://x) `issues`.\nMore.")).toBe("Studio only reconciles linked issues.");
+    expect(scopeHint("## Summary\n\n<!-- note -->\n- [ ] #1\n| a | b |\n```\ncode\n```\n- **Studio** only reconciles [linked](http://x) `issue_nodes`.\nMore.")).toBe("Studio only reconciles linked issue_nodes.");
   });
   it("caps the length and returns null for an empty body", () => {
     expect(scopeHint("x".repeat(300))).toHaveLength(160);
