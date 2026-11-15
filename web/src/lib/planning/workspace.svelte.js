@@ -162,6 +162,14 @@ export function createWorkspace() {
     Object.assign(actions, createWorkItemActions(s, actions));
     Object.assign(actions, createPlanActions(s, actions));
     Object.assign(actions, createPaneInteractions(s, actions));
+    // #291: moving between Studio tabs also asks GitHub for fresh state
+    // (rate-limited in the helper), not only the browser tab regaining focus.
+    // The first run is the initial mount, which does not refresh.
+    let tabSeen = false;
+    $effect(() => { s.activeTab; untrack(() => {
+        if (!tabSeen) { tabSeen = true; return; }
+        void requestGitHubRefresh().then((ran) => { if (ran) actions.scheduleGraphRefresh(); });
+    }); });
     $effect(() => { const tab = s.activeTab; untrack(() => { if (tab === 'planning')
         void actions.loadFrontier(); if (tab === 'execute')
         void actions.loadExecutionStats(); if (tab === 'reconciliation')

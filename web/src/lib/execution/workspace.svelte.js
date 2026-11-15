@@ -193,6 +193,10 @@ export function createWorkspace() {
         };
         const handleStreamError = () => { s.connected = false; };
         actions.requestDataSync();
+        // Opening the Execute tab shows Studio's data at once and, when a
+        // GitHub refresh runs for the tab change (#291), syncs again after it.
+        let mounted = true;
+        void requestGitHubRefresh().then((ran) => { if (ran && mounted) actions.requestDataSync(); });
         document.addEventListener("visibilitychange", requestVisibleSync);
         window.addEventListener("focus", requestVisibleSync);
         s.stream = new EventSource("/api/execution/stream");
@@ -228,6 +232,7 @@ export function createWorkspace() {
         s.stream.addEventListener("execution_result", handleEnvelope);
         s.stream.addEventListener("execution_checklist", handleChecklistEvent);
         return () => {
+            mounted = false;
             document.removeEventListener("visibilitychange", requestVisibleSync);
             window.removeEventListener("focus", requestVisibleSync);
             s.syncCoordinator?.dispose();

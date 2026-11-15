@@ -194,11 +194,50 @@ test.describe('GitHub refresh on tab focus', () => {
     expect(errors).toEqual([]);
   });
 
+  test('refreshes when moving between Studio tabs, within the same interval', async ({ page }) => {
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+    await page.clock.install();
+    const fixture = await mockWorkspace(page);
+    const count = (path: string) => fixture.calls.filter(call => call.path === path).length;
+    await page.goto('/');
+    await expect(page.locator('.graph-canvas g.node')).toHaveCount(1);
+    expect(count(refreshPath)).toBe(0);
+
+    // Opening Execute: data shows at once, then syncs again after the refresh.
+    await page.getByRole('button', { name: 'Execute', exact: true }).click();
+    await expect.poll(() => count(refreshPath)).toBe(1);
+    await expect.poll(() => count('/api/execution/runs')).toBe(2);
+    await expect(page.getByRole('status').filter({ hasText: 'synced at' })).toBeVisible();
+
+    // Back to Planning inside the interval: no second refresh.
+    await page.getByRole('button', { name: 'Planning', exact: true }).click();
+    await expect(page.locator('.graph-canvas g.node')).toHaveCount(1);
+    await page.waitForTimeout(250);
+    expect(count(refreshPath)).toBe(1);
+
+    // After the interval a tab change refreshes and the graph picks up the merge.
+    await page.clock.fastForward(10_500);
+    fixture.advanceItemOnGitHubRefresh('merged_pr');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Planning', exact: true }).click();
+    await expect(page.locator('.graph-canvas g.node.graph-node--merged-pr')).toHaveCount(1);
+    expect(count(refreshPath)).toBe(2);
+    expect(errors).toEqual([]);
+  });
+
   test('asks GitHub before the Execute data sync and shows it as synchronizing', async ({ page }) => {
+    await page.clock.install();
     const fixture = await mockWorkspace(page, { githubRefresh: 'deferred' });
     await page.goto('/');
+    // Opening the tab makes its own refresh; let it finish and leave its interval.
     await page.getByRole('button', { name: 'Execute', exact: true }).click();
+    await expect.poll(() => fixture.calls.filter(call => call.path === refreshPath).length).toBe(1);
+    fixture.finishGitHubRefresh();
+    // Initial sync, stream-open sync and the post-refresh sync may coalesce; wait until they settle.
+    await expect.poll(() => fixture.calls.filter(call => call.path === '/api/execution/runs').length).toBeGreaterThanOrEqual(2);
+    await page.waitForTimeout(300);
     await expect(page.getByRole('status').filter({ hasText: 'synced at' })).toBeVisible();
+    await page.clock.fastForward(10_500);
     const before = fixture.calls.length;
     const since = (path: string) => fixture.calls.slice(before).filter(call => call.path === path).length;
 
@@ -215,10 +254,14 @@ test.describe('GitHub refresh on tab focus', () => {
 
   test('still synchronizes when the GitHub refresh fails', async ({ page }) => {
     const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+    await page.clock.install();
     const fixture = await mockWorkspace(page, { githubRefresh: 'fail' });
     await page.goto('/');
+    // Opening the tab makes its own (failing) refresh; leave its interval.
     await page.getByRole('button', { name: 'Execute', exact: true }).click();
+    await expect.poll(() => fixture.calls.filter(call => call.path === refreshPath).length).toBe(1);
     await expect(page.getByRole('status').filter({ hasText: 'synced at' })).toBeVisible();
+    await page.clock.fastForward(10_500);
     const before = fixture.calls.length;
     await refocus(page);
     await expect.poll(() => fixture.calls.slice(before).filter(call => call.path === '/api/execution/runs').length).toBe(1);
