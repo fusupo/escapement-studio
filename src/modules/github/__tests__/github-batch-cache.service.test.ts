@@ -191,7 +191,30 @@ describe("GitHubBatchCache", () => {
 
     const pulls = await pending;
     expect(pulls.get(88)).toMatchObject({ head_ref: "hotfix" });
-    expect(pulls.has(12)).toBe(false);
+    expect(pulls.get(12)).toMatchObject({ state: "CLOSED" });
+    expect(githubService.listPullRequests).toHaveBeenCalledTimes(1);
+  });
+
+  it("lays a write made during a fetch over the listing's older copy", async () => {
+    const { cache, githubService } = makeCache();
+    let resolveFetch: ((value: any) => void) | undefined;
+    githubService.listIssues.mockReturnValueOnce(new Promise((resolve) => { resolveFetch = resolve; }));
+    const pending = cache.listIssues("fusupo/escapement-studio");
+    const closed = { number: 194, state: "closed" as const, closed_at: "2026-04-12T00:00:00.000Z", url: "https://github.com/fusupo/escapement-studio/issues/194", title: "Batch cache issue" };
+    cache.upsertIssue("fusupo/escapement-studio", closed);
+    resolveFetch?.([{ ...closed, state: "open", closed_at: null }]);
+    expect((await pending).get(194)?.state).toBe("closed");
+  });
+
+  it("does not treat a single written-through item as a full listing (#292)", async () => {
+    const { cache, githubService } = makeCache();
+    cache.upsertIssue("fusupo/escapement-studio", { number: 300, state: "open", closed_at: null, url: "https://github.com/fusupo/escapement-studio/issues/300", title: "Written first" });
+    cache.upsertPullRequest("fusupo/escapement-studio", { number: 301, state: "OPEN", merged_at: null, head_ref: "b", base_ref: "develop", url: "https://github.com/fusupo/escapement-studio/pull/301", title: "Written first", is_draft: false });
+    const issues = await cache.listIssues("fusupo/escapement-studio");
+    expect(githubService.listIssues).toHaveBeenCalledTimes(1);
+    expect(issues.has(194)).toBe(true);
+    await cache.findPullRequestForBranch("fusupo/escapement-studio", "studio-194-branch");
+    expect(githubService.listPullRequests).toHaveBeenCalledTimes(1);
   });
 
   it("reports cache diagnostics", async () => {
