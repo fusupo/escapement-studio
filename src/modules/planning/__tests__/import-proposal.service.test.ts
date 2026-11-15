@@ -1,8 +1,10 @@
-import { BadGatewayException, BadRequestException } from "@nestjs/common";
+import { BadGatewayException, BadRequestException, Logger } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import { initManifest } from "../../../lib/manifest-core.js";
 import { SQLiteService } from "../../../platform/sqlite.service.js";
 import { UntrackedIssuesService } from "../../github/untracked-issues.service.js";
+import { EdgesService } from "../../graph/edges.service.js";
+import type { ImportInferenceInput, ImportInferenceResult, InferredImportEdge } from "../import-edge-inference.service.js";
 import { GraphWriterService } from "../../graph/graph-writer.service.js";
 import type { GraphMutationsValidationFailedResult } from "../../graph/types.js";
 import { WorkItemsService } from "../../graph/work-items.service.js";
@@ -55,10 +57,11 @@ function setup(bodies: Record<number, string>, repo = STUDIO) {
   const emitted: Array<{ type: string; payload: any }> = [];
   (planning as any).emitStudioEvent = (type: string, payload: unknown) => { emitted.push({ type, payload }); };
 
-  const service = new ImportProposalService(untracked, lookup as never, workItems, writer, proposalState, planning);
+  const inference = { infer: vi.fn(async (input: ImportInferenceInput): Promise<ImportInferenceResult> => ({ edges: [], endpointIds: [...input.issues.map((i) => i.id), ...input.nodes.map((n) => n.id)] })) };
+  const service = new ImportProposalService(untracked, lookup as never, workItems, writer, proposalState, planning, new EdgesService(sqlite, writer), inference as never);
   const edges = () => db.prepare("SELECT from_id, rel, to_id, confidence, meta FROM edges ORDER BY id").all() as Array<Record<string, string>>;
   const itemIds = () => (db.prepare("SELECT id FROM work_items ORDER BY id").all() as Array<{ id: string }>).map((row) => row.id);
-  return { service, planning, proposalState, lookup, emitted, sqlite, edges, itemIds, repo };
+  return { service, planning, proposalState, lookup, emitted, sqlite, edges, itemIds, repo, inference, writer, cache };
 }
 
 const brief = (proposal: { mutations: Array<{ id: string; type: string; entity_id?: string }> }) =>
@@ -265,6 +268,135 @@ describe("approving an import proposal (#281)", () => {
     const { proposal } = await ctx.service.stage({ repo: STUDIO, issue_numbers: [20] });
     await approve(ctx, proposal.proposal_id, ["n20"]);
     await expect(ctx.service.stage({ repo: STUDIO, issue_numbers: [20] })).rejects.toThrow(/not an open, untracked issue/);
+  });
+});
+
+describe("model-inferred import relationships (#296)", () => {
+  const suggested = (from_id = "studio-20", to_id = "studio-10", rel: InferredImportEdge["rel"] = "depends_on", confidence: InferredImportEdge["confidence"] = "inferred"): InferredImportEdge => ({ from_id, to_id, rel, confidence, rationale: "The selected work requires this groundwork." });
+  const stage = (ctx: ReturnType<typeof setup>, issue_numbers = [20]) => ctx.service.stage({ repo: ctx.repo, issue_numbers, suggest_relationships: true });
+  const supply = (ctx: ReturnType<typeof setup>, edges: InferredImportEdge[], omitted: string[] = []) => ctx.inference.infer.mockImplementation(async (input) => ({ edges, endpointIds: [...input.issues.map((i) => i.id), ...input.nodes.map((n) => n.id)].filter((id) => !omitted.includes(id)) }));
+  const suggestions = (proposal: Awaited<ReturnType<typeof stage>>["proposal"]) => proposal.mutations.filter((m) => m.id.startsWith("i"));
+
+  it("does not call inference by default/false, and rejects nonbooleans before GitHub", async () => {
+    const ctx = setup({ 20: "" });
+    await ctx.service.stage({ repo: STUDIO, issue_numbers: [20] });
+    await ctx.service.stage({ repo: STUDIO, issue_numbers: [20], suggest_relationships: false });
+    expect(ctx.inference.infer).not.toHaveBeenCalled();
+    ctx.lookup.issueWithBody.mockClear(); ctx.cache.listIssues.mockClear();
+    for (const value of [null, "true", 1, {}]) await expect(ctx.service.stage({ repo: STUDIO, issue_numbers: [20], suggest_relationships: value as boolean })).rejects.toThrow(/boolean/);
+    expect(ctx.lookup.issueWithBody).not.toHaveBeenCalled(); expect(ctx.cache.listIssues).not.toHaveBeenCalled();
+  });
+
+  it("reuses selected bodies and sends only compact whole-graph records", async () => {
+    const ctx = setup({ 20: "Specific issue context", 21: "Second" });
+    ctx.sqlite.getDb().prepare("INSERT INTO work_items (id, name, kind, state, repo) VALUES ('remote', 'Remote', 'issue', 'planned', ?), ('hierarchy', 'Root', 'capability', 'planned', NULL)").run(SPIRAL);
+    supply(ctx, [suggested("studio-20", "remote"), suggested("studio-20", "hierarchy", "is_part_of")]);
+    const { proposal } = await stage(ctx, [21, 20]);
+    expect(ctx.lookup.issueWithBody).toHaveBeenCalledTimes(2);
+    expect(ctx.inference.infer.mock.calls[0][0]).toEqual({ repo: STUDIO, issues: [{ id: "studio-20", title: "Issue 20", body: "Specific issue context" }, { id: "studio-21", title: "Issue 21", body: "Second" }], nodes: expect.arrayContaining([
+      { id: "remote", name: "Remote", kind: "issue", repo: SPIRAL, scope_hint: null },
+      { id: "hierarchy", name: "Root", kind: "capability", repo: null, scope_hint: null },
+    ]), edges: [{ from_id: "studio-10", rel: "depends_on", to_id: "studio-11" }] });
+    expect(suggestions(proposal)).toHaveLength(2);
+  });
+
+  it("merges only valid selected-endpoint suggestions with reference precedence and stable IDs", async () => {
+    const ctx = setup({ 20: "Depends on #10", 21: "Part of #20" });
+    supply(ctx, [suggested(), suggested("studio-10", "studio-11"), suggested("studio-11", "studio-10", "is_part_of"), suggested("missing", "studio-20"), suggested("studio-20", "missing"), suggested("studio-20", "studio-20"), suggested("studio-10", "studio-20", "is_part_of", "ambiguous"), suggested("studio-20", "studio-21"), suggested("studio-20", "studio-21")]);
+    const { proposal, validation } = await stage(ctx, [20, 21]);
+    expect(validation.status).toBe("valid");
+    expect(proposal.mutations.map((m) => m.id)).toEqual(["n20", "n21", "e1", "e2", "i0001", "i0002"]);
+    expect(proposal.mutations[2].payload).toMatchObject({ confidence: "certain", meta: { evidence: [{ source: "issue_body" }] } });
+    expect(suggestions(proposal)).toMatchObject([
+      { id: "i0001", group_id: "issue-20", depends_on_mutation_ids: ["n20"], payload: { confidence: "ambiguous", meta: { source: "model_inference", rationale: suggested().rationale } }, rationale: suggested().rationale },
+      { id: "i0002", group_id: "issue-20", depends_on_mutation_ids: ["n20", "n21"] },
+    ]);
+    expect(ctx.itemIds()).toEqual(["studio-10", "studio-11"]); expect(ctx.edges()).toHaveLength(1);
+  });
+
+  it("rejects omitted endpoints even if present in the full graph", async () => {
+    const ctx = setup({ 20: "" }); supply(ctx, [suggested()], ["studio-10"]);
+    expect(suggestions((await stage(ctx)).proposal)).toEqual([]);
+  });
+
+  it.each(["exhausted", "skipped", "failed"])("stages reference-only with a fixed notice and diagnostic when inference is %s", async (kind) => {
+    const ctx = setup({ 20: "Depends on #10" });
+    const diagnostic = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+    ctx.inference.infer.mockRejectedValueOnce(new Error(`${kind}: PRIVATE BODY`));
+    try {
+      const { proposal, validation } = await stage(ctx);
+      expect(validation.status).toBe("valid"); expect(proposal.mutations.map((m) => m.id)).toEqual(["n20", "e1"]);
+      expect(proposal.summary.endsWith("Relationship suggestions unavailable; showing issue-text relationships only")).toBe(true);
+      expect(diagnostic).toHaveBeenCalledTimes(1); expect(diagnostic.mock.calls.flat().join(" ")).not.toContain("PRIVATE BODY");
+    } finally { diagnostic.mockRestore(); }
+  });
+
+  it("treats successful empty edges as success without a notice", async () => {
+    const ctx = setup({ 20: "" });
+    expect((await stage(ctx)).proposal.summary).not.toContain("unavailable");
+  });
+
+  it.each(["depends_on", "is_part_of"] as const)("filters %s cycles through persisted, reference, and earlier inferred edges", async (rel) => {
+    const ctx = setup({ 20: rel === "depends_on" ? "Depends on #10" : "Part of #10", 21: "" });
+    if (rel === "is_part_of") ctx.sqlite.getDb().prepare("INSERT INTO edges (from_id, rel, to_id) VALUES ('studio-10', 'is_part_of', 'studio-11')").run();
+    supply(ctx, [suggested("studio-11", "studio-20", rel), suggested("studio-21", "studio-20", rel), suggested("studio-20", "studio-21", rel)]);
+    const { proposal } = await stage(ctx, [20, 21]);
+    expect(suggestions(proposal).map((m) => m.entity_id)).toEqual([`studio-21:${rel}:studio-20`]);
+  });
+
+  it("checks cycles through omitted repositories using the entire graph", async () => {
+    const ctx = setup({ 20: "Depends on #10" });
+    ctx.sqlite.getDb().prepare("INSERT INTO work_items (id, name, kind, state, repo) VALUES ('remote', 'Remote', 'issue', 'planned', ?)").run(SPIRAL);
+    ctx.sqlite.getDb().prepare("DELETE FROM edges").run();
+    ctx.sqlite.getDb().prepare("INSERT INTO edges (from_id, rel, to_id) VALUES ('studio-10', 'depends_on', 'remote'), ('remote', 'depends_on', 'studio-11')").run();
+    supply(ctx, [suggested("studio-11", "studio-20")], ["remote"]);
+    const { proposal } = await stage(ctx);
+    expect(suggestions(proposal)).toEqual([]);
+    expect(proposal.mutations.some((m) => m.validation?.errors)).toBe(false);
+  });
+
+  it("does not count mixed-relation paths as cycles", async () => {
+    const ctx = setup({ 20: "Depends on #10" }); supply(ctx, [suggested("studio-10", "studio-20", "is_part_of")]);
+    expect(suggestions((await stage(ctx)).proposal)).toHaveLength(1);
+  });
+
+  it("retains reference validation errors with more than nine reference edges", async () => {
+    const ctx = setup({ 20: "Depends on #10 and #11\nBlocks #10", ...Object.fromEntries(Array.from({ length: 10 }, (_, i) => [i + 21, "Depends on #10"])) });
+    supply(ctx, [suggested("studio-20", "studio-21", "is_part_of")]);
+    const { proposal, validation } = await stage(ctx, Array.from({ length: 11 }, (_, i) => i + 20));
+    expect(validation.status).toBe("validation_failed");
+    expect(proposal.mutations.filter((m) => m.id.startsWith("e"))).toHaveLength(13);
+    expect(proposal.mutations.some((m) => m.id.startsWith("e") && m.validation?.errors)).toBe(true);
+    expect(suggestions(proposal)).toHaveLength(1);
+  });
+
+  it.each(["inferred", "ambiguous"] as const)("approves %s suggestions explicitly, with nodes-only and atomic required-node protection", async (confidence) => {
+    const ctx = setup({ 20: "", 21: "" }); supply(ctx, [suggested("studio-20", "studio-21", "depends_on", confidence)]);
+    const { proposal } = await stage(ctx, [20, 21]);
+    const approve = (ids: string[]) => ctx.planning.approveProposal({ proposal_id: proposal.proposal_id, approved_mutation_ids: ids });
+    expect((await approve(["n20", "i0001"])).result.status).toBe("validation_failed");
+    expect(ctx.itemIds()).not.toContain("studio-20");
+    expect((await approve(["n20", "n21"])).result.status).toBe("applied"); expect(ctx.edges()).toHaveLength(1);
+    // Partial approval retains the original baseline; normal stale checks still apply.
+    expect((await approve(["i0001"])).result.status).toBe("stale");
+    const fresh = setup({ 20: "", 21: "" }); supply(fresh, [suggested("studio-20", "studio-21", "depends_on", confidence)]);
+    const staged = await stage(fresh, [20, 21]);
+    expect((await fresh.planning.approveProposal({ proposal_id: staged.proposal.proposal_id, approved_mutation_ids: ["n20", "n21", "i0001"] })).result.status).toBe("applied");
+    expect(fresh.edges()[1]).toMatchObject({ confidence });
+    expect(JSON.parse(fresh.edges()[1].meta)).toEqual({ source: "model_inference", rationale: suggested().rationale });
+  });
+
+  it.each(["during", "after"])("preserves the pre-inference graph baseline when graph changes %s analysis", async (when) => {
+    const ctx = setup({ 20: "" });
+    const change = () => ctx.writer.apply({ mutations: [{ kind: "create_work_item", work_item: { id: "other", name: "Other", kind: "capability" } }] });
+    if (when === "during") ctx.inference.infer.mockImplementationOnce(async (input) => {
+      change(); return { edges: [suggested()], endpointIds: [...input.nodes.map((n) => n.id), "studio-20"] };
+    }); else supply(ctx, [suggested()]);
+    const { proposal, validation } = await stage(ctx);
+    expect(proposal.context?.based_on_graph_version).toBe("0");
+    if (when === "during") expect(validation.status).toBe("stale"); else change();
+    const result = await ctx.planning.approveProposal({ proposal_id: proposal.proposal_id, approved_mutation_ids: ["n20", "i0001"] });
+    expect(result.result.status).toBe("stale"); expect(ctx.itemIds()).not.toContain("studio-20"); expect(ctx.edges()).toHaveLength(1);
   });
 });
 

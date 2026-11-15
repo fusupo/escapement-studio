@@ -47,6 +47,20 @@ describe("proposal selection (#281)", () => {
     expect(toggleSelection(remaining, [], "e1", true)).toEqual(["e1"]);
   });
 
+  it.each(["inferred", "ambiguous"])("requires explicit approval for %s import edges, including restored/remaining proposals", (confidence) => {
+    const suggestion = edge("i0001", "issue-20", ["n20", "n21"], { payload: { confidence } });
+    const mixed = { ...proposal, mutations: [...proposal.mutations, suggestion] };
+    expect(defaultSelection(mixed)).toEqual(["n20", "n21", "e1", "e2"]);
+    expect(toggleSelection(mixed, [], "i0001", true)).toEqual(["n20", "n21", "i0001"]);
+    expect(toggleSelection(mixed, [], "n20", true)).toEqual(["n20"]);
+    expect(toggleSelection(mixed, ["n20", "n21", "i0001"], "n21", false)).toEqual(["n20"]);
+    const remaining = { ...mixed, mutations: [suggestion] };
+    expect(defaultSelection(remaining)).toEqual([]);
+    expect(toggleSelection(remaining, [], "i0001", true)).toEqual(["i0001"]);
+    expect(defaultSelection({ ...remaining, source: { agent: "root-planner" } })).toEqual(["i0001"]);
+    expect(defaultSelection({ ...mixed, source: { agent: "root-planner" } })).toContain("i0001");
+  });
+
   it("groups an issue's node before its edges and keeps ungrouped mutations apart", () => {
     const mixed = { proposal_id: "p", mutations: [edge("e1", "issue-20", []), node("n20", "issue-20"), { id: "m3", type: "update_work_item" }, { id: "m4", type: "delete_edge" }] };
     expect(groupMutations(mixed).map((group: any) => [group.key, group.mutations.map((mutation: any) => mutation.id)])).toEqual([

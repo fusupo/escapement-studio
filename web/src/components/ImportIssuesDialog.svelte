@@ -25,13 +25,14 @@
       class="import-card"
       role="dialog" tabindex="-1" use:modalFocus
       aria-modal="true"
+      aria-busy={dialog.staging}
       aria-labelledby="import-issues-title"
       onclick={(event) => event.stopPropagation()}
       onkeydown={(event) => { if (event.key === "Escape") workspace.closeImportDialog(); }}
     >
       <header class="import-header">
         <h3 id="import-issues-title">Import GitHub issues</h3>
-        <button class="small" onclick={workspace.closeImportDialog} aria-label="Close import dialog">×</button>
+        <button class="small" onclick={workspace.closeImportDialog} disabled={dialog.staging} aria-label="Close import dialog">×</button>
       </header>
 
       <div class="import-controls">
@@ -92,11 +93,22 @@
         {/if}
       </div>
 
+      <div class="import-suggestions">
+        <label>
+          <input type="checkbox" checked={dialog.suggestRelationships}
+            disabled={dialog.loading || dialog.staging}
+            aria-describedby="import-suggestions-hint"
+            onchange={(event) => workspace.toggleSuggestRelationships(event.currentTarget.checked)} />
+          Suggest relationships
+        </label>
+        <p id="import-suggestions-hint">Model suggestions start unchecked and require your review.</p>
+      </div>
+
       <footer class="import-footer">
         <span class="import-hint">Nothing is added until you approve the proposal on the next screen.</span>
         <button class="secondary" onclick={workspace.closeImportDialog} disabled={dialog.staging}>Cancel</button>
-        <button onclick={review} disabled={dialog.staging || dialog.selected.length === 0}>
-          {dialog.staging ? "Reading issues…" : `Review import (${dialog.selected.length})`}
+        <button onclick={review} disabled={dialog.loading || dialog.staging || dialog.selected.length === 0}>
+          {dialog.staging ? (dialog.suggestRelationships ? "Reading issues and suggesting relationships…" : "Reading issues…") : `Review import (${dialog.selected.length})`}
         </button>
       </footer>
     </div>
@@ -232,8 +244,31 @@
     font-size: 11px;
   }
 
+  .import-suggestions {
+    padding: 0 14px 10px;
+  }
+
+  .import-suggestions label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  .import-suggestions input {
+    width: auto;
+    margin: 0;
+  }
+
+  .import-suggestions p {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
   .import-footer {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     padding: 10px 14px;
@@ -241,6 +276,6 @@
   }
 
   .import-hint {
-    flex: 1;
+    flex: 1 1 240px;
   }
 </style>
