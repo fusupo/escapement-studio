@@ -36,9 +36,9 @@ loop per tracked repo
   else more than 8: full listings
     Sched -> Cache : invalidate(repo)
     Sched -> Cache : listPullRequests(repo)
-    Cache -> Gh : gh pr list --state all --limit 5000
+    Cache -> Gh : gh pr list ~--state all ~--limit 5000
     Sched -> Cache : listIssues(repo)
-    Cache -> Gh : gh issue list --state all --limit 5000
+    Cache -> Gh : gh issue list ~--state all ~--limit 5000
   end
 
   Sched -> Bus : publish GitHubRepoTruthRefreshedEvent\n(unless a lookup failed)
