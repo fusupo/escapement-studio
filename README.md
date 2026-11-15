@@ -142,6 +142,7 @@ the workspace controller layout is documented in `STUDIO_ARCHITECTURE.md`.
 39. Expand the collapsed **Edges** section, create an edge between two nodes, and confirm it appears in the graph and edge list.
 40. Collapse and re-expand the **Edges** section, then delete an edge from the sidebar.
 41. Change repo/state/track/phase filters and confirm the rendered graph updates.
+42. Open **Import GitHub issues** and confirm **Suggest relationships** starts unchecked. Select issues, enable suggestions with the keyboard, and review the import at normal and resized desktop widths. While staging, confirm header/overlay/Escape/Cancel cannot close the dialog. In review, confirm model-inferred edges show rationale/confidence, start unchecked, and require explicit selection (which also selects required new nodes). Importing nodes alone must add no suggestions. Verify unavailable analysis shows the nonblocking summary notice described in the import API section below.
 
 ## API smoke checks
 
@@ -514,6 +515,10 @@ curl -X POST http://localhost:3000/api/agent/proposals/import \
 ```
 
 Each issue becomes a `planned` node (`n{number}`), and each relationship its body states ("depends on #N", "part of #N", "blocks #N") becomes an edge (`e1`, `e2`, …) with the quoted line in `payload.meta.evidence`. Approve it with `proposals/approve` as above. IDs are `{prefix}-{issue number}`, where the prefix is the one the repo's existing items use, or the repo name for a repo with none.
+
+Optionally add `"suggest_relationships": true` to that request (omitted/false keeps issue-text-only import). The browser's **Suggest relationships** checkbox is off by default. The model selected in Settings analyzes issue text and a compact digest of all graph repositories, including repo-less hierarchy items, without repository-code tools or checkout. Each inferred `depends_on`/`is_part_of` edge must touch a selected issue in either direction. Suggestions appear in the same proposal as `i0001`, …, labeled **model-inferred**, with `inferred` or `ambiguous` confidence, a review rationale, and `payload.meta: { source: "model_inference", rationale }`. They start unchecked, including restored/remaining import proposals; explicitly select and approve them to create them. Issue-text evidence takes precedence. Missing/omitted endpoints, duplicates, self-links and cycles are dropped against the full persisted graph, even when context is omitted. No relationship is added merely to connect an isolated issue.
+
+Inference uses at most two attempts within one 60-second deadline. Prompt (including instructions) and response ceilings are each 100,000 characters, with at most 100 candidate edges and 2,000 characters per rationale. Selected IDs/titles are reserved before allocating issue bodies (up to 8,000 characters each) and graph context (names up to 200, scope hints up to 300). Graph nodes are ordered by import repository first, then ID; whole node records are included while space remains, with graph edges only between included nodes and explicit truncation/omission counts. Mandatory-field overflow skips analysis. These character bounds do not guarantee a fit in every model's token window. Exhausted/skipped/failed analysis still stages all issue-text relationships, appends **Relationship suggestions unavailable; showing issue-text relationships only** to the review summary, and logs a server diagnostic. A successful empty suggestions result is not failure and shows no unavailable notice.
 
 ### Delete test data
 

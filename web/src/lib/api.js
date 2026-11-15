@@ -122,7 +122,7 @@ export function listUntrackedIssues(repo, options = {}) {
 
 /**
  * #281: stage a proposal importing the given issues. Writes nothing.
- * @param {{ repo: string, issue_numbers: number[] }} payload
+ * @param {{ repo: string, issue_numbers: number[], suggest_relationships?: boolean }} payload
  */
 export function importIssues(payload) {
   return request("/api/agent/proposals/import", {
