@@ -12,14 +12,17 @@ export function mutationErrors(mutation) {
 
 /**
  * What is ticked when a proposal first appears: everything that passed
- * validation. A mutation with errors starts unticked, and so does an
+ * validation, except model suggestions in issue imports (explicit opt-in).
+ * A mutation with errors starts unticked, and so does an
  * edge whose new node is unticked, so "Approve" works without editing.
  * @param {Proposal | null} proposal
  * @returns {string[]}
  */
 export function defaultSelection(proposal) {
     const mutations = proposal?.mutations ?? [];
-    const excluded = new Set(mutations.filter((mutation) => mutationErrors(mutation).length > 0).map((mutation) => mutation.id));
+    const excluded = new Set(mutations.filter((mutation) => mutationErrors(mutation).length > 0
+        || (isImportProposal(proposal) && mutation.type === "create_edge"
+            && ["inferred", "ambiguous"].includes(mutation.payload?.confidence))).map((mutation) => mutation.id));
     for (const mutation of mutations) {
         if ((mutation.depends_on_mutation_ids ?? []).some((id) => excluded.has(id)))
             excluded.add(mutation.id);
