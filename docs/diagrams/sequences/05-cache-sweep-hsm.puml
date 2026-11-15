@@ -6,7 +6,9 @@ skinparam shadowing false
 participant "@Cron EVERY_MINUTE" as Cron
 participant "GitHubCacheScheduler" as Sched
 participant "GitHubBatchCache\n(60s TTL)" as Cache
+participant "GitHubItemLookup" as Lookup
 participant "GitHubService" as Gh
+participant "gh-runner\n(async, max 4)" as Runner
 participant "WorkItemsService" as Items
 participant "WorkItemHsmService" as Hsm
 participant "GraphWriterService" as Writer
@@ -16,21 +18,34 @@ Cron -> Sched : handleTick()
 Sched -> Sched : discoverTrackedRepos\n(distinct repo values\nacross work_items)
 
 loop per tracked repo
-  Sched -> Cache : invalidate(repo)
-  Sched -> Cache : listPullRequests(repo)
-  Cache -> Gh : execFileSync gh pr list\n(only when stale or empty)
-  Gh --> Cache : GitHubListedPullRequest[]
-  Cache --> Sched : Map<number, CachedPullRequest>
-
-  Sched -> Cache : listIssues(repo)
-  Cache -> Gh : execFileSync gh issue list\n(when stale)
-  Gh --> Cache : GitHubListedIssue[]
-  Cache --> Sched : Map<number, CachedIssue>
-
   Sched -> Items : list({}) filter repo\n+ DISPATCH_SOURCE_STATES\n(in_progress / pre_pr.in_progress /\nopen_pr / merged_pr)
 
+  alt at most 8 distinct branches + issues (#292)
+    loop per waiting branch (in_progress / open_pr)
+      Sched -> Lookup : pullRequestsForBranch(repo, branch)
+      Lookup -> Runner : gh pr list --head <branch>\n--state all
+      Lookup --> Sched : CachedPullRequest[]
+      Sched -> Cache : upsertPullRequest (write-through)
+    end
+    loop per waiting issue (merged_pr)
+      Sched -> Lookup : issue(repo, number)
+      Lookup -> Runner : gh issue view <number>
+      Lookup --> Sched : CachedIssue
+      Sched -> Cache : upsertIssue (write-through)
+    end
+  else more than 8: full listings
+    Sched -> Cache : invalidate(repo)
+    Sched -> Cache : listPullRequests(repo)
+    Cache -> Gh : gh pr list --state all --limit 5000
+    Sched -> Cache : listIssues(repo)
+    Cache -> Gh : gh issue list --state all --limit 5000
+  end
+
+  Sched -> Bus : publish GitHubRepoTruthRefreshedEvent\n(unless a lookup failed)
+  Sched -> Items : list({}) again\n(state may have moved)
+
   loop per candidate work item
-    Sched -> Sched : detectStateAdvances\n(normalize state leaf +\ncompare vs cached PRs/issues)
+    Sched -> Sched : detectStateAdvances\n(normalize state leaf +\ncompare vs the PRs/issues just fetched)
 
     alt in_progress & PR for branch exists
       Sched -> Hsm : dispatch(gh.pr_opened, pr)
@@ -66,7 +81,10 @@ end note
 note left of Sched
   The same sweep logic is exposed via
   POST /api/github-cache/refresh?repo=... for
-  on-demand sync from the UI.
+  on-demand sync from the UI (Refresh button,
+  tab focus). Nothing waiting = no gh calls.
+  The full listings are fetched by cache readers
+  (reconciliation) when older than the 60s TTL.
 end note
 
 @enduml
