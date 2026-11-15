@@ -65,6 +65,7 @@ function makeService(stubs: {
   (scheduler as unknown as { workItemsService: typeof workItemsService }).workItemsService = workItemsService;
   (scheduler as unknown as { hsmService: typeof hsmService }).hsmService = hsmService;
   (scheduler as unknown as { eventBus: typeof eventBus }).eventBus = eventBus;
+  (scheduler as unknown as { inFlight: Map<string, unknown> }).inFlight = new Map();
   (scheduler as unknown as { logger: { log: () => void; warn: () => void } }).logger = {
     log: vi.fn(),
     warn: vi.fn(),
@@ -105,6 +106,31 @@ describe("GitHubCacheScheduler", () => {
     await scheduler.sweep();
     expect(eventBus.publish).toHaveBeenCalledTimes(1);
     expect(eventBus.publish).toHaveBeenCalledWith(new GitHubRepoTruthRefreshedEvent("a/b", expect.any(Number)));
+  });
+
+  it("shares one run between overlapping sweeps of a repo (#291)", async () => {
+    const { scheduler, cache, hsmService } = makeService({
+      workItems: [makeWorkItem()],
+      prMap: new Map([[7, { number: 7, state: "MERGED", merged_at: "2026-04-11T00:00:00Z", head_ref: "studio-100-branch", base_ref: "develop", url: "https://github.com/fusupo/escapement-studio/pull/7", title: "PR", is_draft: false }]]),
+    });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    cache.listPullRequests.mockImplementationOnce(async () => { await gate; return new Map([[7, { number: 7, state: "MERGED", merged_at: "2026-04-11T00:00:00Z", head_ref: "studio-100-branch", base_ref: "develop", url: "https://github.com/fusupo/escapement-studio/pull/7", title: "PR", is_draft: false }]]); });
+    const first = scheduler.sweep();
+    const second = scheduler.sweep("fusupo/escapement-studio");
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toEqual(b);
+    expect(a[0].dispatched).toBe(1);
+    expect(cache.invalidate).toHaveBeenCalledTimes(1);
+    expect(cache.listPullRequests).toHaveBeenCalledTimes(1);
+    expect(hsmService.dispatch).toHaveBeenCalledTimes(1);
+
+    // Once it settles, the next sweep runs again, also after a failure.
+    cache.listIssues.mockRejectedValueOnce(new Error("unavailable"));
+    await scheduler.sweep();
+    await scheduler.sweep();
+    expect(cache.listPullRequests).toHaveBeenCalledTimes(3);
   });
 
   it("returns empty array when no repos are tracked", async () => {

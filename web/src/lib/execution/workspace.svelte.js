@@ -1,5 +1,6 @@
 import { onMount, untrack } from 'svelte';
 import { createExecutionSyncCoordinator } from "../execution-sync.js";
+import { requestGitHubRefresh } from "../github-focus-refresh.js";
 import { shouldReplaceChecklistSnapshot } from "../checklist-sync.js";
 import { projectExecutionRecovery } from "../execution-recovery.js";
 import { createRunData } from "./run-data.js";
@@ -160,10 +161,18 @@ export function createWorkspace() {
         el.scrollTop = el.scrollHeight; s.prevActivityCount = count; }); });
     onMount(() => {
         let firstReload = true;
+        let githubRefreshWanted = false;
         s.syncCoordinator = createExecutionSyncCoordinator({
-            reload: () => {
+            reload: async () => {
                 const quiet = !firstReload;
                 firstReload = false;
+                if (githubRefreshWanted) {
+                    // Ask GitHub first so the data read below sees changes made
+                    // on github.com (#291). Never rejects; a failed refresh
+                    // falls through to the normal sync.
+                    githubRefreshWanted = false;
+                    await requestGitHubRefresh();
+                }
                 return actions.loadData({ quiet });
             },
             onStateChange: (state) => {
@@ -173,8 +182,10 @@ export function createWorkspace() {
             },
         });
         const requestVisibleSync = () => {
-            if (document.visibilityState === "visible")
+            if (document.visibilityState === "visible") {
+                githubRefreshWanted = true;
                 actions.requestDataSync();
+            }
         };
         const handleStreamOpen = () => {
             s.connected = true;
@@ -182,6 +193,10 @@ export function createWorkspace() {
         };
         const handleStreamError = () => { s.connected = false; };
         actions.requestDataSync();
+        // Opening the Execute tab shows Studio's data at once and, when a
+        // GitHub refresh runs for the tab change (#291), syncs again after it.
+        let mounted = true;
+        void requestGitHubRefresh().then((ran) => { if (ran && mounted) actions.requestDataSync(); });
         document.addEventListener("visibilitychange", requestVisibleSync);
         window.addEventListener("focus", requestVisibleSync);
         s.stream = new EventSource("/api/execution/stream");
@@ -217,6 +232,7 @@ export function createWorkspace() {
         s.stream.addEventListener("execution_result", handleEnvelope);
         s.stream.addEventListener("execution_checklist", handleChecklistEvent);
         return () => {
+            mounted = false;
             document.removeEventListener("visibilitychange", requestVisibleSync);
             window.removeEventListener("focus", requestVisibleSync);
             s.syncCoordinator?.dispose();

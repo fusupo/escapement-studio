@@ -1,5 +1,6 @@
 import { onMount, untrack } from 'svelte';
 import { buildGraphNodeContextMenu } from "../graph-node-actions.js";
+import { requestGitHubRefresh } from "../github-focus-refresh.js";
 import { createGraphData } from "./graph-data.js";
 import { createWorkItemActions } from "./work-item-actions.js";
 import { createPlanActions } from "./plan-actions.js";
@@ -161,6 +162,14 @@ export function createWorkspace() {
     Object.assign(actions, createWorkItemActions(s, actions));
     Object.assign(actions, createPlanActions(s, actions));
     Object.assign(actions, createPaneInteractions(s, actions));
+    // #291: moving between Studio tabs also asks GitHub for fresh state
+    // (rate-limited in the helper), not only the browser tab regaining focus.
+    // The first run is the initial mount, which does not refresh.
+    let tabSeen = false;
+    $effect(() => { s.activeTab; untrack(() => {
+        if (!tabSeen) { tabSeen = true; return; }
+        void requestGitHubRefresh().then((ran) => { if (ran) actions.scheduleGraphRefresh(); });
+    }); });
     $effect(() => { const tab = s.activeTab; untrack(() => { if (tab === 'planning')
         void actions.loadFrontier(); if (tab === 'execute')
         void actions.loadExecutionStats(); if (tab === 'reconciliation')
@@ -177,7 +186,21 @@ export function createWorkspace() {
         s.graphStream.addEventListener("work_item_state_changed", () => {
             actions.scheduleGraphRefresh();
         });
+        // #291: changes made on github.com are only seen by a cache sweep, so
+        // ask for one when the tab regains focus (rate-limited in the helper)
+        // and reload the graph once it has run. This workspace is mounted on
+        // every tab, which makes the refresh app-wide.
+        const refreshFromGitHub = async () => {
+            if (document.visibilityState !== "visible")
+                return;
+            if (await requestGitHubRefresh())
+                actions.scheduleGraphRefresh();
+        };
+        document.addEventListener("visibilitychange", refreshFromGitHub);
+        window.addEventListener("focus", refreshFromGitHub);
         return () => {
+            document.removeEventListener("visibilitychange", refreshFromGitHub);
+            window.removeEventListener("focus", refreshFromGitHub);
             window.clearTimeout(s.graphRefreshTimer);
             s.graphStream?.close();
         };

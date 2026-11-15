@@ -3,7 +3,7 @@
 import ExecutionDispatchList from "./ExecutionDispatchList.svelte";
 import ExecutionDetailPane from "./ExecutionDetailPane.svelte";
 
-import { refreshGitHubCache } from "../lib/api.js";
+import { requestGitHubRefresh } from "../lib/github-focus-refresh.js";
 
 import { createWorkspace } from '../lib/execution/workspace.svelte.js';
 const workspace = createWorkspace();
@@ -34,7 +34,7 @@ import ExecutionConfirmationDrawer from './ExecutionConfirmationDrawer.svelte';
         {/if}
       {/if}
     </div>
-    <button class="secondary small" on:click={async () => { workspace.refreshing = true; try { await refreshGitHubCache(); } catch (e) { /* best-effort */ } await workspace.requestDataSync(); }} disabled={workspace.refreshing || workspace.loading}>{workspace.refreshing ? "Refreshing..." : "Refresh"}</button>
+    <button class="secondary small" on:click={async () => { workspace.refreshing = true; await requestGitHubRefresh({ force: true }); await workspace.requestDataSync(); }} disabled={workspace.refreshing || workspace.loading}>{workspace.refreshing ? "Refreshing..." : "Refresh"}</button>
   </div>
 
   {#if workspace.copiedMessage}
