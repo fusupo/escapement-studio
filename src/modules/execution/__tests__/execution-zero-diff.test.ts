@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 vi.mock("../../../lib/github-cli.js", () => ({
-  fetchIssueBody: vi.fn(() => null),
+  fetchIssueBody: vi.fn(async () => null),
 }));
 
 import { ExecutionService } from "../execution.service.js";

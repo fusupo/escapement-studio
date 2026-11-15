@@ -91,7 +91,7 @@ export class PlansService {
 
     // Fetch the issue body once and pass it into both the drafter and the
     // renderer. The drafter doesn't need its own gh access.
-    const issueBody = fetchIssueBody(workItem.repo, workItem.issue_number);
+    const issueBody = await fetchIssueBody(workItem.repo, workItem.issue_number);
 
     // Run bounded preparation and final synthesis BEFORE any state mutation.
     // If either throws, no state changes are visible and the caller can retry.
@@ -294,19 +294,8 @@ export class PlansService {
   }
 
   /**
-   * Generate a skeleton scratchpad for a work item in the plan phase (no run
-   * context yet). Seeded from the issue body and the Studio issue templates.
-   * No sub-agent call — per Q2 decision, prepare writes structure only.
-   */
-  buildPlanScratchpad(workItem: WorkItemRecord): string {
-    const issueBody = fetchIssueBody(workItem.repo, workItem.issue_number);
-    const templates = this.templateService.listTemplates();
-    return this.renderPlanScratchpad(workItem, issueBody, templates);
-  }
-
-  /**
-   * Pure rendering function for the plan scratchpad. Separated from
-   * `buildPlanScratchpad` so tests can drive it with injected issue bodies,
+   * Pure rendering function for the plan scratchpad, seeded from the issue
+   * body and the Studio issue templates. Tests drive it with injected issue bodies,
    * templates, and (optionally) a `PlanDraftEnvelope` from the auto-drafter
    * (#167) without mocking `gh`, the filesystem, or pi-coding-agent.
    *

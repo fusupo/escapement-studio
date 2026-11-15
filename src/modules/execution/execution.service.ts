@@ -416,7 +416,7 @@ export class ExecutionService implements OnModuleInit {
 
     // --- Gather context ---
     const workItem = this.workItemsService.get(run.work_item_id);
-    const issueBody = fetchIssueBody(workItem.repo, workItem.issue_number);
+    const issueBody = await fetchIssueBody(workItem.repo, workItem.issue_number);
     const projectContext = this.readProjectContext(run.worktree_path);
     this.runInteractionService.pushActivity(run.run_id, "status_change", `Context gathered: issue body ${issueBody ? "found" : "not found"}, project conventions ${projectContext ? "found" : "not found"}`);
 
