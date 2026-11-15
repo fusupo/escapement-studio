@@ -22,6 +22,6 @@ plantuml docs/diagrams/components/*.puml docs/diagrams/sequences/*.puml
 
 - [`01-plan-lifecycle.puml`](sequences/01-plan-lifecycle.puml) — `POST /api/plans/.../prepare|approve|reopen` and the HSM transitions they drive.
 - [`02-execution-run.puml`](sequences/02-execution-run.puml) — `POST /api/execution/launch` through worktree + setup phase + disambiguation gate + do-work phase + completion.
-- [`03-mutation-approval.puml`](sequences/03-mutation-approval.puml) — planner chat turn → `propose_mutations` tool → staged proposal → `POST /api/agent/proposals/approve` → `GraphWriterService.apply`. Memory and GitHub sync approvals follow the same shape.
+- [`03-mutation-approval.puml`](sequences/03-mutation-approval.puml) — planner chat turn → `propose_mutations` tool → staged proposal → `POST /api/agent/proposals/approve` → `GraphWriterService.apply`. Memory and GitHub sync approvals follow the same shape. Also shows the stage path that needs no planner turn: importing untracked GitHub issues (`POST /api/agent/proposals/import`, #281).
 - [`04-merged-pr-disposition.puml`](sequences/04-merged-pr-disposition.puml) — `POST /api/execution/close-merged` (and the archive-and-close variant) flowing through CQRS → `RunDispositionService` → HSM action handlers → `RunStore.disposeRunsForWorkItem`.
 - [`05-cache-sweep-hsm.puml`](sequences/05-cache-sweep-hsm.puml) — `GitHubCacheScheduler` `@Cron` tick looking up the work items waiting on GitHub and auto-dispatching `gh.*` HSM events.

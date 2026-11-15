@@ -497,6 +497,24 @@ curl -X POST http://localhost:3000/api/agent/proposals/approve \
 
 The approval result returns the graph writer status (`applied`, `validation_failed`, or `stale`) plus any remaining active proposal state for the browser.
 
+### Import untracked GitHub issues
+
+List the open issues of a repo included in Settings that have no work item (`refresh=1` re-lists the repo on GitHub):
+
+```bash
+curl "http://localhost:3000/api/github/untracked?repo=fusupo/escapement-studio"
+```
+
+Stage a proposal that imports some of them. Nothing is written to the graph; the response holds the proposal and its validation result, and the proposal becomes the active one:
+
+```bash
+curl -X POST http://localhost:3000/api/agent/proposals/import \
+  -H 'content-type: application/json' \
+  -d '{ "repo": "fusupo/escapement-studio", "issue_numbers": [287, 288] }'
+```
+
+Each issue becomes a `planned` node (`n{number}`), and each relationship its body states ("depends on #N", "part of #N", "blocks #N") becomes an edge (`e1`, `e2`, …) with the quoted line in `payload.meta.evidence`. Approve it with `proposals/approve` as above. IDs are `{prefix}-{issue number}`, where the prefix is the one the repo's existing items use, or the repo name for a repo with none.
+
 ### Delete test data
 
 ```bash

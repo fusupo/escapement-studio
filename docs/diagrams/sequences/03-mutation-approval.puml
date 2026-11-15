@@ -4,8 +4,11 @@ title Graph mutation proposal — stage / review / approve
 skinparam shadowing false
 
 actor User
-participant "PlannerChatAdapter\n(browser)" as UI
+participant "PlannerChatAdapter\n+ ProposalReview (browser)" as UI
+participant "ImportIssuesDialog\n(browser)" as Dialog
 participant "PlanningController" as Ctrl
+participant "ImportProposalService" as Import
+participant "UntrackedIssuesService /\nGitHubItemLookup" as GH
 participant "PlanningService" as Svc
 participant "ContextService" as Ctx
 participant "pi AgentSession\n(root planner)" as Pi
@@ -38,15 +41,34 @@ Sse --> UI : render reviewable card\nwith per-mutation checkboxes
 Pi --> Svc : turn_end
 Svc --> Sse : turn_end
 
+== Stage without the planner: import untracked issues (#281) ==
+User -> Dialog : "Import issues…", pick repo
+Dialog -> GH : GET /api/github/untracked?repo
+GH --> Dialog : open issues with no work item\n(derived id, conflict)
+User -> Dialog : select issues, "Review import"
+Dialog -> Ctrl : POST /api/agent/proposals/import\n{ repo, issue_numbers }
+Ctrl -> Import : stage
+Import -> GH : list(repo), issueWithBody(n) per issue
+Import -> Import : parseIssueReferences(body)\n→ create_work_item per issue +\ncreate_edge per stated reference\n(confidence certain, meta.evidence)
+Import -> State : normalizeProposal
+Import -> Writer : validate(mutations)\n(nothing written)
+Writer --> Import : valid / validation_failed
+Import -> Import : attach errors to their mutations
+Import -> Svc : stageProposal(proposal)
+Svc -> State : setActiveProposal
+Svc --> Sse : mutation_proposal
+Import --> Dialog : { proposal, validation }
+Dialog -> UI : showProposal(proposal)
+
 == Approve ==
 User -> UI : select subset + click Approve
 UI -> Ctrl : POST /api/agent/proposals/approve\n{ proposal_id, approved_mutation_ids }
 Ctrl -> Svc : approveProposal
 Svc -> State : getProposal(id)
-Svc -> Svc : toGraphMutation()\nper selected mutation
+Svc -> Svc : toGraphMutation()\nper selected mutation\n(proposal-graph-mutation.ts)
 Svc -> Writer : apply({ proposal_id, mutations,\nbased_on_graph_version })
 
-Writer -> Writer : normalize order +\nvalidate whole batch\n(missing_entity / duplicate /\ninvalid_relation / unsafe_delete /\nmalformed_payload)
+Writer -> Writer : normalize order +\nvalidate whole batch\n(missing_entity / duplicate /\ncycle / unsafe_delete /\nmalformed_payload)
 
 alt applied
   Writer --> Svc : { status: "applied",\nprevious_/new_graph_version }
