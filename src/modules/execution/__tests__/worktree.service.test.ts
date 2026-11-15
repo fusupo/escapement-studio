@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAsyncCommand } from "../../../lib/async-command.js";
 vi.mock("../../../lib/async-command.js", () => ({ runAsyncCommand: vi.fn() }));
+const ghRunner = vi.hoisted(() => vi.fn());
+vi.mock("../../../lib/gh-runner.js", () => ({ runGh: ghRunner }));
 import { WorktreeService } from "../worktree.service.js";
 import type { ExecutionRunRecord } from "../types.js";
 
@@ -123,14 +125,12 @@ describe("WorktreeService", () => {
       );
     });
 
-    it("runGhIn calls runCommand with gh and an optional stdin", () => {
+    it("runGhIn uses the async gh runner, not the synchronous runCommand", async () => {
       const service = makeService(tmpRoot);
-      service.runGhIn("/tmp/worktree", ["pr", "create"], "body content");
-      expect(service.runCommand).toHaveBeenCalledWith(
-        "gh",
-        ["pr", "create"],
-        expect.objectContaining({ cwd: "/tmp/worktree", stdin: "body content" }),
-      );
+      ghRunner.mockResolvedValueOnce("ok");
+      await expect(service.runGhIn("/tmp/worktree", ["pr", "create"], "body content", 60_000)).resolves.toBe("ok");
+      expect(ghRunner).toHaveBeenCalledWith(["pr", "create"], { cwd: "/tmp/worktree", stdin: "body content", timeoutMs: 60_000 });
+      expect(service.runCommand).not.toHaveBeenCalled();
     });
   });
 

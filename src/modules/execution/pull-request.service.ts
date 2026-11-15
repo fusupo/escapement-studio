@@ -52,6 +52,9 @@ import type {
  * too because executeRun still calls it; duplicating the 10-line body
  * is cheaper than forcing a cross-service call for a one-purpose helper.
  */
+/** `gh pr create` follows a push and can be slow; allow more than the runner's default. */
+const PR_CREATE_TIMEOUT_MS = 60_000;
+
 @Injectable()
 export class PullRequestService {
   private readonly logger = new Logger(PullRequestService.name);
@@ -207,7 +210,7 @@ export class PullRequestService {
     }
 
     this.worktreeService.runGitIn(run.worktree_path, ["push", "--set-upstream", "origin", run.branch]);
-    this.worktreeService.runGhIn(run.worktree_path, [
+    await this.worktreeService.runGhIn(run.worktree_path, [
       "pr",
       "create",
       "--base",
@@ -219,9 +222,9 @@ export class PullRequestService {
       "--body-file",
       "-",
       ...(input.draft ? ["--draft"] : []),
-    ], body);
+    ], body, PR_CREATE_TIMEOUT_MS);
 
-    const pullRequest = this.readPullRequest(run.worktree_path, title, body);
+    const pullRequest = await this.readPullRequest(run.worktree_path, title, body);
     const nextRun = this.runStore.updateRun(run.run_id, { pull_request: pullRequest }) ?? run;
     mkdirSync(join(run.artifact_dir, "outputs"), { recursive: true });
     writeFileSync(join(run.artifact_dir, "outputs", "pull-request.json"), JSON.stringify(pullRequest, null, 2), "utf8");
@@ -407,8 +410,8 @@ export class PullRequestService {
 
   // ─── Internal PR helpers ─────────────────────────────────────────
 
-  private readPullRequest(worktreePath: string, fallbackTitle: string, body: string): ExecutionPullRequestRecord {
-    const raw = this.worktreeService.runGhIn(worktreePath, ["pr", "view", "--json", "number,url,title,body,baseRefName,headRefName,isDraft"]);
+  private async readPullRequest(worktreePath: string, fallbackTitle: string, body: string): Promise<ExecutionPullRequestRecord> {
+    const raw = await this.worktreeService.runGhIn(worktreePath, ["pr", "view", "--json", "number,url,title,body,baseRefName,headRefName,isDraft"]);
     const parsed = JSON.parse(raw) as {
       number?: number;
       url?: string;

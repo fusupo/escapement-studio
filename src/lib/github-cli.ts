@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { runGh } from "./gh-runner.js";
 
 /**
  * Thin wrappers around the `gh` CLI. Extracted in ADR 014 step 4 (#154) so
@@ -6,26 +6,26 @@ import { execFileSync } from "node:child_process";
  * issue-fetching helper without duplicating the `gh` invocation or creating
  * an inter-module dependency for a simple utility.
  *
- * All helpers here are synchronous and swallow `gh` failures by returning
- * `null` — the caller decides how to surface missing issue data.
+ * All helpers here are asynchronous (#290) and swallow `gh` failures by
+ * returning `null` — the caller decides how to surface missing issue data.
  */
 
 /**
- * Fetch the body of a GitHub issue via `gh issue view`. Returns the body
- * text, or `null` if inputs are missing, the CLI fails, or the body is empty.
+ * Fetch the body of a GitHub issue via `gh issue view`. Resolves with the
+ * body text, or `null` if inputs are missing, the CLI fails or times out,
+ * or the body is empty.
  *
- * Uses a 15s timeout to avoid hanging the calling request on flaky network
+ * Uses a 15s timeout to avoid holding the calling request on flaky network
  * conditions.
  */
-export function fetchIssueBody(repo: string | null, issueNumber: number | null): string | null {
+export async function fetchIssueBody(repo: string | null, issueNumber: number | null): Promise<string | null> {
   if (!repo || !issueNumber) return null;
   try {
-    const raw = execFileSync(
-      "gh",
+    const raw = await runGh(
       ["issue", "view", String(issueNumber), "--repo", repo, "--json", "body", "--jq", ".body"],
-      { encoding: "utf8", timeout: 15000 },
-    ).trim();
-    return raw || null;
+      { timeoutMs: 15_000 },
+    );
+    return raw.trim() || null;
   } catch {
     return null;
   }

@@ -28,7 +28,7 @@ import type { WorkItemRecord, WorkItemState } from "../../graph/types.js";
  */
 
 vi.mock("../../../lib/github-cli.js", () => ({
-  fetchIssueBody: vi.fn(() => "Mocked issue body from fixture."),
+  fetchIssueBody: vi.fn(async () => "Mocked issue body from fixture."),
 }));
 
 interface HarnessWorkItemsService {
@@ -499,7 +499,7 @@ describe("PlansService.prepare", () => {
   });
 });
 
-describe("PlansService.buildPlanScratchpad / renderPlanScratchpad", () => {
+describe("PlansService.renderPlanScratchpad", () => {
   let harness: Harness;
 
   afterEach(() => {
